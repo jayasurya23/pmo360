@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------
+# Production-style stack for PMO 360.
+# Brings up:
+#   db        — PostgreSQL 16 with a named volume for data persistence
+#   backend   — FastAPI + Uvicorn workers, talks to `db`, persists files
+#               to a named volume `pmo360_outputs`
+#   frontend  — Nginx serving the built React SPA + reverse-proxying
+#               /api → backend on the docker network
+#
+# Quick start:
+#   1. cp backend/.env.example backend/.env  (fill OPENAI_API_KEY)
+#   2. docker compose up -d --build
+#   3. Open http://localhost — the SPA + API are both there.
+#
+# For multi-user deployments behind a real domain, sit Caddy / Traefik /
+# Cloudflare Tunnel in front of `frontend` for TLS termination, and
+# add your domain to CORS_ORIGINS in backend/.env.
+# ---------------------------------------------------------------
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pmo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pmo}
+      POSTGRES_DB: ${POSTGRES_DB:-pmo360}
+    volumes:
+      - pmo360_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pmo} -d ${POSTGRES_DB:-pmo360}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - ./backend/.env
+    environment:
+      # Force production mode regardless of what .env says — local-dev paths
+      # don't apply inside the container.
+      LOCAL_DEV_MODE: "false"
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-pmo}:${POSTGRES_PASSWORD:-pmo}@db:5432/${POSTGRES_DB:-pmo360}"
+      UVICORN_WORKERS: ${UVICORN_WORKERS:-4}
+    volumes:
+      - pmo360_outputs:/app/data/outputs
+    expose:
+      - "8000"
+    # If you want to hit FastAPI directly during debugging, uncomment:
+    # ports:
+    #   - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: /api
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+
+volumes:
+  pmo360_pgdata:
+  pmo360_outputs:

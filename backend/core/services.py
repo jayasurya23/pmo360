@@ -1,0 +1,336 @@
+"""Orchestration layer between API routers and the data / AI / docgen / storage
+layers. Mirrors ``app/services.py`` from the original Streamlit project, so
+behaviour is identical from the user's perspective.
+"""
+from datetime import date, datetime
+from typing import Optional
+
+from sqlalchemy.orm import Session
+
+from db.models import (
+    Meeting, MeetingAttendee, AgendaItem, DiscussionPoint, ActionItem,
+    Project, ProjectAttendee, Deliverable, MeetingDeliverable,
+)
+from db.repository import (
+    upsert_project_attendee, latest_meeting, open_actions, all_actions,
+)
+from llm.providers import get_provider, ParsedMeeting
+from docgen import (
+    generate_meeting_minutes_docx,
+    generate_meeting_minutes_pdf,
+    generate_action_items_xlsx,
+    generate_premeeting_agenda_docx,
+    generate_premeeting_agenda_pdf,
+    add_status_form_fields,
+)
+from storage import get_storage
+
+
+# ============================================================
+# AI parsing → save draft meeting
+# ============================================================
+def parse_notes_with_ai(
+    minutes_text: str,
+    agenda_text: str,
+    actions_text: str,
+    project: Project,
+    attendees_roster: Optional[list[dict]] = None,
+) -> ParsedMeeting:
+    provider = get_provider()
+    context = f"{project.client.name if project.client else ''} / {project.name}"
+    return provider.parse_meeting_notes(
+        minutes_text=minutes_text,
+        agenda_text=agenda_text,
+        actions_text=actions_text,
+        project_context=context,
+        attendees_roster=attendees_roster,
+    )
+
+
+def _write_meeting_children(session: Session, meeting: Meeting,
+                            project: Project, parsed: ParsedMeeting,
+                            deliverables: Optional[list[dict]] = None) -> None:
+    for a in parsed.attendees:
+        upsert_project_attendee(
+            session, project_id=project.id,
+            full_name=a.full_name or a.initials,
+            initials=a.initials, organization=a.organization,
+            first_seen_meeting_id=meeting.id,
+        )
+        session.add(MeetingAttendee(
+            meeting_id=meeting.id,
+            full_name=a.full_name or a.initials,
+            initials=a.initials, organization=a.organization,
+        ))
+
+    for idx, d in enumerate(deliverables or []):
+        task = (d.get("task") or "").strip()
+        if not task:
+            continue
+        deliv = Deliverable(
+            project_id=project.id,
+            project_segment=(d.get("project_segment") or "").strip() or None,
+            task=task,
+            start_status=(d.get("start_status") or "In Progress"),
+            delivery_date=d.get("delivery_date"),
+            source="manual",
+            schedule_version_added=project.schedule_version,
+        )
+        session.add(deliv)
+        session.flush()
+        session.add(MeetingDeliverable(
+            meeting_id=meeting.id,
+            deliverable_id=deliv.id,
+            order_index=idx,
+            carried_from_prior=False,
+        ))
+
+    for idx, item in enumerate(parsed.agenda_items):
+        session.add(AgendaItem(
+            meeting_id=meeting.id, order_index=idx,
+            text=item.text, discipline=item.discipline,
+        ))
+
+    def _persist_dp(dp, parent_id, idx):
+        row = DiscussionPoint(
+            meeting_id=meeting.id, parent_id=parent_id,
+            order_index=idx, label=dp.label, content=dp.content,
+            discipline=dp.discipline, ai_extracted=True,
+        )
+        session.add(row)
+        session.flush()
+        for sub_idx, sub in enumerate(dp.sub_points or []):
+            _persist_dp(sub, row.id, sub_idx)
+    for idx, dp in enumerate(parsed.discussion_points):
+        _persist_dp(dp, None, idx)
+
+    for a in parsed.action_items:
+        due = None
+        if a.due_date:
+            try:
+                due = date.fromisoformat(a.due_date)
+            except ValueError:
+                due = None
+        session.add(ActionItem(
+            project_id=project.id,
+            originating_meeting_id=meeting.id,
+            text=a.text, owner=a.owner, due_date=due, status=a.status,
+        ))
+
+
+def save_parsed_meeting(
+    session: Session,
+    project: Project,
+    meeting_date: date,
+    parsed: ParsedMeeting,
+    raw_notes: str = "",
+    title: str = "",
+    deliverables: Optional[list[dict]] = None,
+) -> Meeting:
+    meeting = Meeting(
+        project_id=project.id,
+        meeting_date=meeting_date,
+        title=title or f"Weekly coordination — {meeting_date.isoformat()}",
+        raw_notes=raw_notes,
+        stage="draft",
+        schedule_version_at_meeting=project.schedule_version,
+    )
+    session.add(meeting)
+    session.flush()
+    _write_meeting_children(session, meeting, project, parsed,
+                            deliverables=deliverables)
+    session.flush()
+    return meeting
+
+
+def update_parsed_meeting(
+    session: Session,
+    meeting: Meeting,
+    parsed: ParsedMeeting,
+    meeting_date: date,
+    raw_notes: str = "",
+    title: str = "",
+    deliverables: Optional[list[dict]] = None,
+) -> Meeting:
+    meeting.meeting_date = meeting_date
+    if title:
+        meeting.title = title
+    meeting.raw_notes = raw_notes
+    meeting.updated_at = datetime.utcnow()
+
+    for child in list(meeting.attendees):
+        session.delete(child)
+    for child in list(meeting.agenda_items):
+        session.delete(child)
+    for child in list(meeting.discussion_points):
+        session.delete(child)
+    for child in list(meeting.raised_actions):
+        session.delete(child)
+    for md in list(meeting.meeting_deliverables):
+        deliv = md.deliverable
+        session.delete(md)
+        if deliv is not None:
+            session.delete(deliv)
+    session.flush()
+
+    _write_meeting_children(session, meeting, meeting.project, parsed,
+                            deliverables=deliverables)
+    session.flush()
+    return meeting
+
+
+# ============================================================
+# Filename helpers
+# ============================================================
+def safe_filename_slug(s: str) -> str:
+    import re
+    if not s:
+        return "project"
+    s = s.strip().replace(" ", "_")
+    s = re.sub(r"[/\\:*?\"<>|]", "-", s)
+    s = re.sub(r"[^\w\-.]", "", s)
+    return s or "project"
+
+
+def meeting_filename(meeting: Meeting, kind: str, ext: str,
+                     draft: bool = False) -> str:
+    project_name = meeting.project.name if meeting.project else ""
+    date_str = meeting.meeting_date.strftime("%Y-%m-%d")
+    parts = [
+        safe_filename_slug(project_name) if project_name else None,
+        ("Draft_" if draft else "") + kind,
+        date_str,
+    ]
+    base = "_".join(p for p in parts if p)
+    return f"{base}.{ext}"
+
+
+# ============================================================
+# Document generation in-memory (for browser download / preview)
+# ============================================================
+def build_meeting_docs(session: Session, meeting: Meeting,
+                       draft: bool = True) -> dict[str, dict]:
+    """Generate all three meeting documents in memory.
+
+    Returns dict keyed by kind with {filename, content_type, bytes}.
+    """
+    pdf_bytes = generate_meeting_minutes_pdf(meeting)
+    pdf_bytes = add_status_form_fields(pdf_bytes, len(meeting.raised_actions))
+    docx_bytes = generate_meeting_minutes_docx(meeting)
+    actions = all_actions(session, meeting.project.id)
+    xlsx_bytes = generate_action_items_xlsx(meeting.project, actions)
+
+    return {
+        "pdf": {
+            "filename": meeting_filename(meeting, "Meeting_Minutes", "pdf", draft=draft),
+            "content_type": "application/pdf",
+            "bytes": pdf_bytes,
+        },
+        "docx": {
+            "filename": meeting_filename(meeting, "Meeting_Minutes", "docx", draft=draft),
+            "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "bytes": docx_bytes,
+        },
+        "xlsx": {
+            "filename": f"Action_Items_Log_{safe_filename_slug(meeting.project.client.name) if meeting.project.client else 'project'}.xlsx",
+            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "bytes": xlsx_bytes,
+        },
+    }
+
+
+def finalize_meeting(session: Session, meeting: Meeting) -> dict:
+    """Generate final client-ready documents and save to storage."""
+    storage = get_storage()
+    project = meeting.project
+    proj_slug = safe_filename_slug(project.name or "project")
+
+    pdf_bytes = generate_meeting_minutes_pdf(meeting)
+    pdf_bytes = add_status_form_fields(pdf_bytes, len(meeting.raised_actions))
+    pdf_path = storage.save(
+        f"{proj_slug}/{meeting_filename(meeting, 'Meeting_Minutes', 'pdf')}",
+        pdf_bytes,
+    )
+
+    docx_bytes = generate_meeting_minutes_docx(meeting)
+    docx_path = storage.save(
+        f"{proj_slug}/{meeting_filename(meeting, 'Meeting_Minutes', 'docx')}",
+        docx_bytes,
+    )
+
+    actions = all_actions(session, project.id)
+    xlsx_bytes = generate_action_items_xlsx(project, actions)
+    xlsx_path = storage.save(
+        f"{proj_slug}/Action_Items_Log_{safe_filename_slug(project.client.name) if project.client else 'project'}.xlsx",
+        xlsx_bytes,
+    )
+
+    meeting.stage = "final"
+    meeting.updated_at = datetime.utcnow()
+
+    return {"pdf": pdf_path, "docx": docx_path, "xlsx": xlsx_path}
+
+
+# ============================================================
+# Pre-meeting agenda
+# ============================================================
+class _DraftAttendeeView:
+    __slots__ = ("full_name", "initials", "organization")
+
+    def __init__(self, full_name, initials, organization=None):
+        self.full_name = full_name
+        self.initials = initials
+        self.organization = organization
+
+
+class _DraftMeetingView:
+    __slots__ = ("project", "meeting_date", "attendees")
+
+    def __init__(self, project, meeting_date, attendees):
+        self.project = project
+        self.meeting_date = meeting_date
+        self.attendees = attendees
+
+
+def build_draft_meeting_view(
+    session: Session,
+    project: Project,
+    upcoming_date: date,
+    attendees: Optional[list[dict]] = None,
+    source_meeting_id: Optional[int] = None,
+) -> _DraftMeetingView:
+    """Build the in-memory Meeting-shaped view that the agenda docgen consumes.
+
+    If `attendees` is supplied we use those verbatim (this is the typical path
+    from the Next Agenda editor — PM has hand-curated the list). Otherwise we
+    pull from the source meeting (or latest meeting) just like the Streamlit
+    `generate_next_agenda` does.
+    """
+    if attendees:
+        att_views = [
+            _DraftAttendeeView(
+                full_name=a.get("full_name") or a.get("initials") or "",
+                initials=a.get("initials") or "",
+                organization=a.get("organization") or "",
+            ) for a in attendees
+        ]
+        return _DraftMeetingView(
+            project=project, meeting_date=upcoming_date, attendees=att_views,
+        )
+
+    source = None
+    if source_meeting_id:
+        source = session.get(Meeting, source_meeting_id)
+    if source is None:
+        source = latest_meeting(session, project.id)
+
+    att_views = []
+    if source:
+        for a in source.attendees:
+            att_views.append(_DraftAttendeeView(
+                full_name=a.full_name, initials=a.initials,
+                organization=a.organization,
+            ))
+    return _DraftMeetingView(
+        project=project, meeting_date=upcoming_date, attendees=att_views,
+    )

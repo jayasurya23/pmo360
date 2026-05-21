@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply font-sans bg-slate-50 text-slate-900 antialiased;
+  }
+  input,
+  textarea,
+  select {
+    @apply font-sans;
+  }
+}
+
+@layer components {
+  /* ---------- Buttons ---------- */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg
+      font-semibold text-sm transition disabled:opacity-50 disabled:cursor-not-allowed
+      whitespace-nowrap;
+  }
+  .btn-primary {
+    @apply btn bg-brand-red text-white shadow-sm hover:bg-brand-darkred
+      focus:outline-none focus:ring-2 focus:ring-brand-red/30;
+  }
+  .btn-ghost {
+    @apply btn border border-slate-200 bg-white text-slate-700
+      hover:border-slate-300 hover:bg-slate-50;
+  }
+  .btn-danger {
+    @apply btn bg-white border border-rose-300 text-rose-600
+      hover:bg-rose-50 hover:border-rose-400;
+  }
+
+  /* ---------- Form controls ---------- */
+  .input,
+  .select,
+  .textarea {
+    @apply w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm
+      text-slate-900 placeholder:text-slate-400
+      focus:outline-none focus:ring-2 focus:ring-brand-red/30 focus:border-brand-red/60;
+  }
+  .textarea {
+    @apply leading-relaxed;
+  }
+  .label {
+    @apply text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5 block;
+  }
+
+  /* ---------- Surfaces ---------- */
+  .card {
+    @apply bg-white rounded-xl border border-slate-200 shadow-sm;
+  }
+  .surface {
+    @apply bg-white rounded-2xl border border-slate-200;
+  }
+  .section-title {
+    @apply text-slate-900 font-semibold text-base flex items-center gap-2;
+  }
+  .section-title::before {
+    content: "";
+    @apply inline-block h-4 w-1 rounded-full bg-brand-red;
+  }
+
+  /* ---------- Pills ---------- */
+  .pill {
+    @apply inline-flex items-center px-2.5 py-0.5 text-xs font-semibold rounded-full border;
+  }
+  .pill-open {
+    @apply pill bg-rose-50 text-rose-700 border-rose-200;
+  }
+  .pill-pending {
+    @apply pill bg-amber-50 text-amber-700 border-amber-200;
+  }
+  .pill-completed {
+    @apply pill bg-emerald-50 text-emerald-700 border-emerald-200;
+  }
+  .pill-cancelled {
+    @apply pill bg-slate-100 text-slate-600 border-slate-200;
+  }
+}

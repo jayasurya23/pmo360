@@ -1,0 +1,27 @@
+# ---- Web framework ----
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9        # multipart/form-data for file uploads
+
+# ---- Same data stack as the Streamlit app ----
+sqlalchemy>=2.0.0
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Database drivers
+psycopg2-binary>=2.9.0          # PostgreSQL (production)
+
+# LLM
+openai>=1.30.0
+
+# Document generation
+python-docx>=1.1.0
+openpyxl>=3.1.0
+reportlab>=4.0.0
+pikepdf>=8.0.0
+pdfplumber>=0.11.0
+mammoth>=1.7.0                  # .docx → text for transcript parsing
+
+# Microsoft Graph (production / phase 5)
+msal>=1.28.0
+requests>=2.31.0
