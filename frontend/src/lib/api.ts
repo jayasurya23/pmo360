@@ -123,6 +123,20 @@ export const deleteMeeting = (id: number) => apiClient.delete(`/meetings/${id}`)
 export const parseNotes = (payload: ParseRequest) =>
   apiClient.post<ParsedMeeting>("/parse", payload).then((r) => r.data);
 
+export const parseTranscriptFile = async (file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await apiClient.post<{
+    filename: string;
+    format: string;
+    char_count: number;
+    text: string;
+  }>("/parse/transcript", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return res.data;
+};
+
 // ---------- documents ----------
 // Note: helper returns a URL the browser can hit directly (img/iframe/a[href]).
 // We deliberately use `${API_BASE}` so production builds pick up an absolute
