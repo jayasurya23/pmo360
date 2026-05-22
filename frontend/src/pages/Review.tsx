@@ -3,6 +3,9 @@ import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import DiscussionPointsEditor from "@/components/DiscussionPointsEditor";
+import AgendaEditor, { PreviewDisclosure } from "@/components/AgendaEditor";
+import { StatusPill } from "@/components/StatusPill";
+import { handleTextareaTab } from "@/lib/textareaTab";
 import { useApp } from "@/lib/state";
 import { saveMeeting } from "@/lib/api";
 import type {
@@ -11,9 +14,9 @@ import type {
   ParsedDiscussionPoint,
   ParsedActionItem,
 } from "@/lib/types";
+import { format, parseISO } from "date-fns";
 
 const STATUS_OPTS = ["open", "pending", "completed", "cancelled"] as const;
-const DISCIPLINES = ["Electrical", "Civil", "General"];
 
 export default function Review() {
   const nav = useNavigate();
@@ -39,6 +42,12 @@ export default function Review() {
   const [closingRemarks, setClosingRemarks] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // ---- Preview disclosure open-state (collapsed by default everywhere) ----
+  const [showAttendeesPreview, setShowAttendeesPreview] = useState(false);
+  const [showDeliverablesPreview, setShowDeliverablesPreview] = useState(false);
+  const [showActionsPreview, setShowActionsPreview] = useState(false);
+  const [showClosingPreview, setShowClosingPreview] = useState(false);
 
   useEffect(() => {
     if (!parsed) return;
@@ -102,7 +111,6 @@ export default function Review() {
         },
       });
       setDraftMeetingId(meeting.id);
-      // Reflect saved data into context (so Preview can use it)
       setParsed({
         attendees,
         agenda_items: agendaItems,
@@ -117,11 +125,21 @@ export default function Review() {
     }
   };
 
+  // ---- Group attendees by organization for the preview ----
+  const attendeesByOrg = attendees.reduce<Record<string, ParsedAttendee[]>>(
+    (acc, a) => {
+      const org = a.organization || "Other";
+      (acc[org] = acc[org] || []).push(a);
+      return acc;
+    },
+    {}
+  );
+
   return (
     <div className="space-y-6 max-w-6xl">
       <PageHeader
         title="Review parsed meeting"
-        subtitle="Edit each section before saving. Click + to add new rows; trash to remove."
+        subtitle="Edit each section before saving. Click + to add new rows; × to remove. Every section has a 👁️ Preview disclosure showing how it'll render in the PDF."
         actions={
           <button
             className="btn-primary"
@@ -139,8 +157,9 @@ export default function Review() {
         </div>
       )}
 
-      <section className="card p-5">
-        <h3 className="section-title mb-3">Attendees ({attendees.length})</h3>
+      {/* ---------- Attendees ---------- */}
+      <section className="card p-5 space-y-3">
+        <h3 className="section-title">Attendees ({attendees.length})</h3>
         <div className="space-y-2">
           {attendees.map((a, idx) => (
             <div key={idx} className="grid grid-cols-12 gap-2 items-center">
@@ -202,10 +221,36 @@ export default function Review() {
             + Add attendee
           </button>
         </div>
+
+        {attendees.length > 0 && (
+          <PreviewDisclosure
+            open={showAttendeesPreview}
+            onToggle={() => setShowAttendeesPreview(!showAttendeesPreview)}
+            label={`👁️ Preview (${attendees.length} attendees · ${
+              Object.keys(attendeesByOrg).length
+            } orgs)`}
+          >
+            <div className="space-y-1">
+              {Object.entries(attendeesByOrg).map(([org, people]) => (
+                <div
+                  key={org}
+                  className="text-[13px] text-slate-800"
+                  style={{ lineHeight: 1.5 }}
+                >
+                  <b>{org}:</b>{" "}
+                  {people
+                    .map((p) => `${p.full_name} (${p.initials})`)
+                    .join(", ")}
+                </div>
+              ))}
+            </div>
+          </PreviewDisclosure>
+        )}
       </section>
 
-      <section className="card p-5">
-        <h3 className="section-title mb-3">
+      {/* ---------- Deliverable Timelines ---------- */}
+      <section className="card p-5 space-y-3">
+        <h3 className="section-title">
           Deliverable Timelines ({selectedDeliverables.length})
         </h3>
         <div className="space-y-2">
@@ -290,63 +335,35 @@ export default function Review() {
             + Add deliverable
           </button>
         </div>
-      </section>
 
-      <section className="card p-5">
-        <h3 className="section-title mb-3">Agenda ({agendaItems.length})</h3>
-        <div className="space-y-2">
-          {agendaItems.map((it, idx) => (
-            <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-              <input
-                className="input col-span-9"
-                value={it.text}
-                onChange={(e) =>
-                  setAgendaItems(
-                    agendaItems.map((x, i) =>
-                      i === idx ? { ...x, text: e.target.value } : x
-                    )
-                  )
-                }
-              />
-              <select
-                className="select col-span-2"
-                value={it.discipline || "General"}
-                onChange={(e) =>
-                  setAgendaItems(
-                    agendaItems.map((x, i) =>
-                      i === idx ? { ...x, discipline: e.target.value } : x
-                    )
-                  )
-                }
-              >
-                {DISCIPLINES.map((d) => (
-                  <option key={d}>{d}</option>
-                ))}
-              </select>
-              <button
-                className="btn-danger col-span-1"
-                onClick={() =>
-                  setAgendaItems(agendaItems.filter((_, i) => i !== idx))
-                }
-              >
-                ×
-              </button>
-            </div>
-          ))}
-          <button
-            className="btn-ghost"
-            onClick={() =>
-              setAgendaItems([
-                ...agendaItems,
-                { text: "", discipline: "General" },
-              ])
+        {selectedDeliverables.length > 0 && (
+          <PreviewDisclosure
+            open={showDeliverablesPreview}
+            onToggle={() =>
+              setShowDeliverablesPreview(!showDeliverablesPreview)
             }
+            label={`👁️ Preview (${selectedDeliverables.length} deliverables)`}
           >
-            + Add agenda item
-          </button>
-        </div>
+            <PdfTable
+              headers={["#", "Project", "Task", "Start", "Delivery"]}
+              rows={selectedDeliverables.map((d, i) => [
+                String(i + 1),
+                d.project_segment || currentProject.name,
+                d.task,
+                d.start_status || "In Progress",
+                formatDate(d.delivery_date),
+              ])}
+            />
+          </PreviewDisclosure>
+        )}
       </section>
 
+      {/* ---------- Agenda (single textarea + preview) ---------- */}
+      <section className="card p-5">
+        <AgendaEditor items={agendaItems} setItems={setAgendaItems} />
+      </section>
+
+      {/* ---------- Discussion Points ---------- */}
       <section className="card p-5">
         <DiscussionPointsEditor
           points={discussion}
@@ -354,8 +371,9 @@ export default function Review() {
         />
       </section>
 
-      <section className="card p-5">
-        <h3 className="section-title mb-3">Action Items ({actionItems.length})</h3>
+      {/* ---------- Action Items ---------- */}
+      <section className="card p-5 space-y-3">
+        <h3 className="section-title">Action Items ({actionItems.length})</h3>
         <div className="space-y-2">
           {actionItems.map((a, idx) => (
             <div key={idx} className="grid grid-cols-12 gap-2 items-start">
@@ -370,6 +388,7 @@ export default function Review() {
                     )
                   )
                 }
+                onKeyDown={handleTextareaTab}
               />
               <input
                 className="input col-span-2"
@@ -390,7 +409,9 @@ export default function Review() {
                 onChange={(e) =>
                   setActionItems(
                     actionItems.map((x, i) =>
-                      i === idx ? { ...x, due_date: e.target.value || null } : x
+                      i === idx
+                        ? { ...x, due_date: e.target.value || null }
+                        : x
                     )
                   )
                 }
@@ -434,18 +455,147 @@ export default function Review() {
             + Add action item
           </button>
         </div>
+
+        {actionItems.length > 0 && (
+          <PreviewDisclosure
+            open={showActionsPreview}
+            onToggle={() => setShowActionsPreview(!showActionsPreview)}
+            label={`👁️ Preview (${actionItems.length} action items)`}
+          >
+            <PdfActionTable items={actionItems} />
+          </PreviewDisclosure>
+        )}
       </section>
 
-      <section className="card p-5">
-        <h3 className="section-title mb-3">Closing remarks</h3>
+      {/* ---------- Closing remarks ---------- */}
+      <section className="card p-5 space-y-3">
+        <h3 className="section-title">Closing remarks</h3>
         <textarea
           className="textarea min-h-[100px]"
           value={closingRemarks}
           onChange={(e) => setClosingRemarks(e.target.value)}
+          onKeyDown={handleTextareaTab}
           placeholder="Thank you to everyone for attending this meeting…"
         />
+
+        <PreviewDisclosure
+          open={showClosingPreview}
+          onToggle={() => setShowClosingPreview(!showClosingPreview)}
+          label="👁️ Preview"
+        >
+          <div
+            className="text-[13px] text-slate-800"
+            style={{ lineHeight: 1.5 }}
+          >
+            {closingRemarks?.trim() ||
+              "Thank you to everyone for attending this meeting. Your time is very much appreciated."}
+          </div>
+        </PreviewDisclosure>
       </section>
     </div>
   );
 }
 
+/* ============================================================
+ * Helpers — PDF-shaped previews
+ * ============================================================ */
+
+function formatDate(iso?: string | null): string {
+  if (!iso) return "";
+  try {
+    return format(parseISO(iso), "M/d/yyyy");
+  } catch {
+    return iso;
+  }
+}
+
+function PdfTable({
+  headers,
+  rows,
+}: {
+  headers: string[];
+  rows: string[][];
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table
+        className="w-full border-collapse"
+        style={{ fontSize: 12 }}
+      >
+        <thead>
+          <tr>
+            {headers.map((h) => (
+              <th
+                key={h}
+                className="text-left px-3 py-2 text-white"
+                style={{ background: "#8b1f2b" }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className="even:bg-slate-50">
+              {row.map((cell, j) => (
+                <td
+                  key={j}
+                  className="px-3 py-1.5 align-top border-b border-slate-200 text-slate-800"
+                >
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PdfActionTable({ items }: { items: ParsedActionItem[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table
+        className="w-full border-collapse"
+        style={{ fontSize: 12 }}
+      >
+        <thead>
+          <tr>
+            {["#", "Action", "Owner(s)", "Due", "Status"].map((h) => (
+              <th
+                key={h}
+                className="text-left px-3 py-2 text-white"
+                style={{ background: "#8b1f2b" }}
+              >
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((a, i) => (
+            <tr key={i} className="even:bg-slate-50">
+              <td className="px-3 py-1.5 align-top text-center border-b border-slate-200 text-slate-700 w-10">
+                {i + 1}
+              </td>
+              <td className="px-3 py-1.5 align-top border-b border-slate-200 text-slate-800">
+                {a.text}
+              </td>
+              <td className="px-3 py-1.5 align-top border-b border-slate-200 text-slate-800 whitespace-nowrap">
+                {a.owner}
+              </td>
+              <td className="px-3 py-1.5 align-top border-b border-slate-200 text-slate-800 whitespace-nowrap">
+                {formatDate(a.due_date)}
+              </td>
+              <td className="px-3 py-1.5 align-top border-b border-slate-200">
+                <StatusPill status={a.status} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
