@@ -11,7 +11,7 @@ interface NavItem {
 const PRIMARY_NAV: NavItem[] = [
   { to: "/", label: "Home" },
   { to: "/capture", label: "Capture" },
-  { to: "/next-agenda", label: "Agendas" },
+  { to: "/next-agenda", label: "Next Agenda" },
   { to: "/actions", label: "Actions" },
   { to: "/notes", label: "Notes" },
   { to: "/history", label: "History" },
