@@ -48,21 +48,17 @@ export default function Layout() {
 }
 
 function TopNav() {
-  const { settings } = useApp();
   const location = useLocation();
   return (
     <header className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-slate-200">
       <div className="max-w-screen-2xl mx-auto px-6 md:px-10 h-16 flex items-center gap-6">
-        <NavLink to="/" className="flex items-center gap-2 shrink-0">
+        <NavLink to="/" className="shrink-0" aria-label="PMO 360 home">
           <img
             src="/assets/logo/pmo360_logo.png"
             alt="PMO 360"
-            className="h-7"
+            className="h-8"
             onError={(e) => (e.currentTarget.style.display = "none")}
           />
-          <span className="font-bold tracking-tight text-slate-900 hidden sm:inline">
-            {settings?.app.title || "PMO 360"}
-          </span>
         </NavLink>
 
         <nav className="hidden md:flex items-center gap-1">
