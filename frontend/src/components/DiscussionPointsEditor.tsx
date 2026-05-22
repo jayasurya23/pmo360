@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type { ParsedDiscussionPoint } from "@/lib/types";
+import { handleTextareaTab } from "@/lib/textareaTab";
 
 const DISCIPLINES = ["General", "Electrical", "Civil", "Structural"];
 const BULLET_PREFIXES = ["- ", "* ", "• ", "○ ", "● ", "o "];
@@ -217,6 +218,7 @@ export default function DiscussionPointsEditor({ points, setPoints }: Props) {
     setPoints(next);
   };
 
+
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
@@ -235,6 +237,7 @@ export default function DiscussionPointsEditor({ points, setPoints }: Props) {
         rows={14}
         value={text}
         onChange={(e) => handleTextChange(e.target.value)}
+        onKeyDown={handleTextareaTab}
         placeholder={
           "- Project Schedule Updates: Roashaael led the review of action items…\n" +
           "- Technical Questions: Andrew, Ricky, Avinash, Arun, and Jalen discussed…\n" +

@@ -24,6 +24,7 @@ import type {
 } from "@/lib/types";
 import { format, parseISO } from "date-fns";
 import AttendeeChips from "@/components/AttendeeChips";
+import { handleTextareaTab } from "@/lib/textareaTab";
 
 const DEFAULT_DISCIPLINES = ["Civil", "Electrical", "Structural", "General"];
 
@@ -414,6 +415,7 @@ export default function NextAgenda() {
               rows={4}
               value={dpText[d] || ""}
               onChange={(e) => setDpText({ ...dpText, [d]: e.target.value })}
+              onKeyDown={handleTextareaTab}
               placeholder="One discussion point per line. Use 'Label: detail' for bold lead-in. Indent with two spaces for sub-bullets."
             />
           </div>
@@ -432,6 +434,7 @@ export default function NextAgenda() {
               onChange={(e) =>
                 setRecapText({ ...recapText, [d]: e.target.value })
               }
+              onKeyDown={handleTextareaTab}
             />
           </div>
         ))}

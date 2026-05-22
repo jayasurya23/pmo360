@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import EmptyState from "@/components/EmptyState";
+import { handleTextareaTab } from "@/lib/textareaTab";
 import {
   listProjectRoster,
   listGlobalRoster,
@@ -644,6 +645,7 @@ export default function Capture() {
             onChange={(e) =>
               setRawNotes({ ...rawNotes, agenda: e.target.value })
             }
+            onKeyDown={handleTextareaTab}
             placeholder={
               "List agenda topics one per line.\n\nExample: Due Diligence · Folder Structure · General Concerns"
             }
@@ -663,6 +665,7 @@ export default function Capture() {
               onChange={(e) =>
                 setRawNotes({ ...rawNotes, minutes: e.target.value })
               }
+              onKeyDown={handleTextareaTab}
               placeholder={
                 "Attendees and discussion notes. Don't worry about formatting — the AI sorts these into the right buckets.\n\nExample:\n\nAttendees: AR, RC from Castillo, CM from Heelstone\n\nElectrical:\n- HDR pushing 0% soil moisture, causing thermal failures\n- We want 52% load factor, IE wants 60%"
               }
@@ -681,6 +684,7 @@ export default function Capture() {
               onChange={(e) =>
                 setRawNotes({ ...rawNotes, actions: e.target.value })
               }
+              onKeyDown={handleTextareaTab}
               placeholder={
                 "List action items one per line. Include owner initials and a due date when known.\n\nExample:\n\n- CK, KC to set up call with HDR IE by 11/10 — open\n- KC to resend Heelstone tech specs by 11/10 — completed"
               }
