@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
+import DiscussionPointsEditor from "@/components/DiscussionPointsEditor";
 import { useApp } from "@/lib/state";
 import { saveMeeting } from "@/lib/api";
 import type {
@@ -347,10 +348,7 @@ export default function Review() {
       </section>
 
       <section className="card p-5">
-        <h3 className="section-title mb-3">
-          Discussion Points ({discussion.length})
-        </h3>
-        <DiscussionEditor
+        <DiscussionPointsEditor
           points={discussion}
           setPoints={setDiscussion}
         />
@@ -451,106 +449,3 @@ export default function Review() {
   );
 }
 
-function DiscussionEditor({
-  points,
-  setPoints,
-}: {
-  points: ParsedDiscussionPoint[];
-  setPoints: (p: ParsedDiscussionPoint[]) => void;
-}) {
-  const update = (
-    path: number[],
-    patch: Partial<ParsedDiscussionPoint>
-  ) => {
-    const next = structuredClone(points);
-    let arr: ParsedDiscussionPoint[] = next;
-    for (let i = 0; i < path.length - 1; i++) arr = arr[path[i]].sub_points;
-    arr[path[path.length - 1]] = {
-      ...arr[path[path.length - 1]],
-      ...patch,
-    };
-    setPoints(next);
-  };
-  const remove = (path: number[]) => {
-    const next = structuredClone(points);
-    if (path.length === 1) {
-      next.splice(path[0], 1);
-    } else {
-      let arr: ParsedDiscussionPoint[] = next;
-      for (let i = 0; i < path.length - 1; i++) arr = arr[path[i]].sub_points;
-      arr.splice(path[path.length - 1], 1);
-    }
-    setPoints(next);
-  };
-  const addSub = (path: number[]) => {
-    const next = structuredClone(points);
-    let arr: ParsedDiscussionPoint[] = next;
-    for (let i = 0; i < path.length; i++) arr = arr[path[i]].sub_points;
-    arr.push({ label: "", content: "", discipline: "General", sub_points: [] });
-    setPoints(next);
-  };
-
-  const renderNode = (
-    dp: ParsedDiscussionPoint,
-    path: number[]
-  ): JSX.Element => (
-    <div
-      key={path.join("-")}
-      className="space-y-2 border-l-2 border-brand-lightgray pl-3"
-    >
-      <div className="grid grid-cols-12 gap-2">
-        <input
-          className="input col-span-3"
-          value={dp.label}
-          placeholder="Label"
-          onChange={(e) => update(path, { label: e.target.value })}
-        />
-        <textarea
-          className="textarea col-span-7"
-          rows={2}
-          value={dp.content}
-          placeholder="Detail"
-          onChange={(e) => update(path, { content: e.target.value })}
-        />
-        <select
-          className="select col-span-1"
-          value={dp.discipline}
-          onChange={(e) => update(path, { discipline: e.target.value })}
-        >
-          {DISCIPLINES.map((d) => (
-            <option key={d}>{d}</option>
-          ))}
-        </select>
-        <button className="btn-danger col-span-1" onClick={() => remove(path)}>
-          ×
-        </button>
-      </div>
-      <div className="ml-2 space-y-2">
-        {dp.sub_points.map((sub, i) => renderNode(sub, [...path, i]))}
-        <button
-          className="text-xs text-brand-red font-semibold"
-          onClick={() => addSub(path)}
-        >
-          + sub-point
-        </button>
-      </div>
-    </div>
-  );
-
-  return (
-    <div className="space-y-3">
-      {points.map((dp, idx) => renderNode(dp, [idx]))}
-      <button
-        className="btn-ghost"
-        onClick={() =>
-          setPoints([
-            ...points,
-            { label: "", content: "", discipline: "General", sub_points: [] },
-          ])
-        }
-      >
-        + Add discussion point
-      </button>
-    </div>
-  );
-}
