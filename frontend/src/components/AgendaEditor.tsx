@@ -62,11 +62,12 @@ export default function AgendaEditor({ items, setItems }: Props) {
 
   return (
     <section className="space-y-3">
-      <h3 className="section-title">Agenda ({items.length})</h3>
+      <h3 className="section-title">Pre-Meeting Agenda ({items.length})</h3>
       <p className="text-xs text-slate-500 -mt-1">
-        One line per topic. Bullet markers (<code>-</code>, <code>*</code>,{" "}
-        <code>o</code>) at the start of a line are stripped automatically.
-        Reorder by moving lines.
+        Topics that were on the agenda going INTO this meeting (what you
+        planned to talk about). One line per topic. Bullet markers
+        (<code>-</code>, <code>*</code>, <code>o</code>) at the start of a
+        line are stripped automatically. Reorder by moving lines.
       </p>
       <textarea
         className="textarea font-mono text-[13px] leading-relaxed"
