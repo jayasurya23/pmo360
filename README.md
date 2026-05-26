@@ -119,10 +119,40 @@ The frontend listens on `${FRONTEND_PORT:-80}`. Point your TLS-terminating
 reverse proxy (Caddy / Traefik / Cloudflare Tunnel) at the same port for
 a public deployment.
 
+### Database migrations
+
+Schema evolution is owned by **Alembic** (see `backend/alembic/`). The
+backend's `init_db()` runs `alembic upgrade head` programmatically on
+startup, so a freshly-deployed container brings its schema up to HEAD
+automatically — no separate step needed.
+
+If you want to run migrations manually (e.g. before flipping traffic to a
+new image), exec into the backend container:
+
+```bash
+docker compose exec backend alembic upgrade head      # apply pending
+docker compose exec backend alembic current           # check current rev
+docker compose exec backend alembic history --verbose # see the full graph
+```
+
+To create a new migration after a schema change, run from the **backend**
+directory (autogenerate diffs against the live DB):
+
+```bash
+cd backend && alembic revision --autogenerate -m "what you changed"
+```
+
+Edit the generated file in `backend/alembic/versions/` — Alembic
+autogenerate handles ~80% of changes but always inspect the result before
+applying, especially for `NOT NULL` adds (needs `server_default=`) and
+column renames (autogenerate treats them as drop+add).
+
 ### Scaling
 
 - **Backend horizontal scale:** `docker compose up -d --scale backend=4`.
-  PostgreSQL row-locking handles concurrent meeting edits safely.
+  PostgreSQL row-locking handles concurrent meeting edits safely; the
+  optimistic-concurrency `version` columns on Meeting / Agenda prevent
+  silent overwrites across replicas.
 - **Backend vertical scale:** raise `UVICORN_WORKERS` in `backend/.env`.
 - **Static assets:** Nginx in the frontend container caches JS / CSS / logos
   with long `Cache-Control` headers (see `frontend/nginx.conf`).

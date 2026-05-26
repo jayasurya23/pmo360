@@ -60,6 +60,11 @@ services:
       context: ./frontend
       args:
         VITE_API_BASE: /api
+        # Azure IDs are public values inlined at build time — pull from
+        # the top-level .env file so we don't hardcode them in compose.
+        VITE_AZURE_TENANT_ID: ${VITE_AZURE_TENANT_ID:-}
+        VITE_AZURE_CLIENT_ID: ${VITE_AZURE_CLIENT_ID:-}
+        VITE_AZURE_REDIRECT_URI: ${VITE_AZURE_REDIRECT_URI:-http://localhost}
     restart: unless-stopped
     depends_on:
       - backend

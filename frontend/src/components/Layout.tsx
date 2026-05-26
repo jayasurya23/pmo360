@@ -1,7 +1,12 @@
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "@/lib/state";
+import { useAuth } from "@/auth/useAuth";
 import { useEffect, useState, useRef } from "react";
 import clsx from "clsx";
+import NewClientDialog from "@/components/admin/NewClientDialog";
+import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
+import DeletePortfolioDialog from "@/components/admin/DeletePortfolioDialog";
+import CommandPalette from "./CommandPalette";
 
 interface NavItem {
   to: string;
@@ -10,6 +15,7 @@ interface NavItem {
 
 const PRIMARY_NAV: NavItem[] = [
   { to: "/", label: "Home" },
+  { to: "/portfolio", label: "📊 Dashboard" },
   { to: "/capture", label: "Capture" },
   { to: "/next-agenda", label: "Next Agenda" },
   { to: "/actions", label: "Actions" },
@@ -29,6 +35,13 @@ export default function Layout() {
   const { settings } = useApp();
   const location = useLocation();
 
+  // ----- Admin dialog state (gear popover -> create/delete) -----
+  // Lifted here so the modal portals are mounted once at the top of the tree
+  // and remain available even when ContextBar re-renders.
+  const [showNewClient, setShowNewClient] = useState(false);
+  const [showNewPortfolio, setShowNewPortfolio] = useState(false);
+  const [showDeletePortfolio, setShowDeletePortfolio] = useState(false);
+
   useEffect(() => {
     if (settings)
       document.title = `${settings.app.title} — ${settings.app.tool_name}`;
@@ -37,12 +50,31 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
       <TopNav />
-      <ContextBar />
+      <ContextBar
+        onNewClient={() => setShowNewClient(true)}
+        onNewPortfolio={() => setShowNewPortfolio(true)}
+        onDeletePortfolio={() => setShowDeletePortfolio(true)}
+      />
       <MeetingStepper currentPath={location.pathname} />
       <main className="flex-1 px-6 md:px-10 py-8 max-w-screen-2xl w-full mx-auto">
         <Outlet />
       </main>
       <Footer />
+
+      <NewClientDialog
+        open={showNewClient}
+        onClose={() => setShowNewClient(false)}
+      />
+      <NewPortfolioDialog
+        open={showNewPortfolio}
+        onClose={() => setShowNewPortfolio(false)}
+      />
+      <DeletePortfolioDialog
+        open={showDeletePortfolio}
+        onClose={() => setShowDeletePortfolio(false)}
+      />
+
+      <CommandPalette />
     </div>
   );
 }
@@ -124,15 +156,31 @@ function MobileNav() {
   );
 }
 
-function ContextBar() {
+interface ContextBarProps {
+  onNewClient: () => void;
+  onNewPortfolio: () => void;
+  onDeletePortfolio: () => void;
+}
+
+function ContextBar({
+  onNewClient,
+  onNewPortfolio,
+  onDeletePortfolio,
+}: ContextBarProps) {
   const { clients, projects, selectedClientId, selectedProjectId } = useApp();
   const client = clients.find((c) => c.id === selectedClientId);
   const project = projects.find((p) => p.id === selectedProjectId);
 
   return (
     <div className="bg-white border-b border-slate-200">
-      <div className="max-w-screen-2xl mx-auto px-6 md:px-10 py-3 flex items-center gap-4">
+      <div className="max-w-screen-2xl mx-auto px-6 md:px-10 py-3 flex items-center gap-2">
         <ContextSwitcher />
+        <ContextAdminGear
+          hasProject={!!project}
+          onNewClient={onNewClient}
+          onNewPortfolio={onNewPortfolio}
+          onDeletePortfolio={onDeletePortfolio}
+        />
         <div className="flex-1" />
         {project?.schedule_version && (
           <span className="hidden md:inline-flex items-center text-xs font-semibold text-slate-500">
@@ -154,6 +202,111 @@ function ContextBar() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Small gear-icon popover next to the ContextSwitcher.
+ *
+ * Three actions:
+ *   - + New client
+ *   - + New portfolio
+ *   - Delete portfolio (destructive, requires a portfolio to be selected)
+ *
+ * Uses the same click-outside dismiss pattern as ContextSwitcher above.
+ */
+function ContextAdminGear({
+  hasProject,
+  onNewClient,
+  onNewPortfolio,
+  onDeletePortfolio,
+}: {
+  hasProject: boolean;
+  onNewClient: () => void;
+  onNewPortfolio: () => void;
+  onDeletePortfolio: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const click = (e: MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", click);
+    return () => document.removeEventListener("mousedown", click);
+  }, []);
+
+  function fire(fn: () => void) {
+    setOpen(false);
+    fn();
+  }
+
+  return (
+    <div ref={wrap} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="Manage clients and portfolios"
+        title="Manage clients and portfolios"
+        className={clsx(
+          "h-8 w-8 inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900 transition",
+          open && "border-slate-300 text-slate-900 bg-slate-50"
+        )}
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          className="h-4 w-4"
+          aria-hidden="true"
+        >
+          <path
+            fillRule="evenodd"
+            d="M8.34 1.804A1 1 0 019.32 1h1.36a1 1 0 01.98.804l.247 1.232a7.011 7.011 0 011.255.726l1.18-.418a1 1 0 011.21.443l.68 1.178a1 1 0 01-.222 1.268l-.962.838a7.04 7.04 0 010 1.458l.962.838a1 1 0 01.222 1.268l-.68 1.178a1 1 0 01-1.21.443l-1.18-.418a7.014 7.014 0 01-1.255.727l-.247 1.232a1 1 0 01-.98.803H9.32a1 1 0 01-.98-.803l-.247-1.232a7.022 7.022 0 01-1.255-.727l-1.18.418a1 1 0 01-1.21-.443l-.68-1.178a1 1 0 01.222-1.268l.962-.838a7.04 7.04 0 010-1.458l-.962-.838a1 1 0 01-.222-1.268l.68-1.178a1 1 0 011.21-.443l1.18.418a7.011 7.011 0 011.255-.726l.247-1.232zM10 13a3 3 0 100-6 3 3 0 000 6z"
+            clipRule="evenodd"
+          />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 mt-2 w-56 bg-white border border-slate-200 rounded-xl shadow-lg z-50 py-1.5">
+          <button
+            type="button"
+            onClick={() => fire(onNewClient)}
+            className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+          >
+            <span className="text-slate-400">+</span> New client
+          </button>
+          <button
+            type="button"
+            onClick={() => fire(onNewPortfolio)}
+            className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
+          >
+            <span className="text-slate-400">+</span> New portfolio
+          </button>
+          <div className="my-1 border-t border-slate-100" />
+          <button
+            type="button"
+            onClick={() => hasProject && fire(onDeletePortfolio)}
+            disabled={!hasProject}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasProject
+                ? "text-rose-600 hover:bg-rose-50"
+                : "text-slate-400 cursor-not-allowed"
+            )}
+            title={
+              hasProject
+                ? undefined
+                : "Pick a portfolio first to delete it"
+            }
+          >
+            <span aria-hidden="true">🗑️</span> Delete portfolio
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -262,26 +415,117 @@ function ContextSwitcher() {
 }
 
 function CommandSearch() {
+  // The chip is a thin shortcut to the Cmd+K palette; clicking it triggers
+  // the same imperative open that the global keydown listener uses.
+  const openPalette = () => {
+    const fn = (window as any).__pmo360OpenPalette as
+      | (() => void)
+      | undefined;
+    fn?.();
+  };
   return (
-    <div className="hidden md:flex items-center gap-2 text-xs text-slate-400 px-3 py-1.5 rounded-md border border-slate-200 bg-slate-50">
+    <button
+      type="button"
+      onClick={openPalette}
+      aria-label="Open search palette"
+      title="Search (⌘K)"
+      className="hidden md:flex items-center gap-2 text-xs text-slate-500 hover:text-slate-700 px-3 py-1.5 rounded-md border border-slate-200 bg-slate-50 hover:border-slate-300 transition"
+    >
       <span>Search</span>
       <kbd className="px-1.5 py-0.5 bg-white border border-slate-200 rounded text-[10px] font-mono">
         ⌘K
       </kbd>
-    </div>
+    </button>
   );
 }
 
 function UserMenu() {
   const { settings } = useApp();
+  const { user, isAuthenticated, signIn, signOut } = useAuth();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+
+  // Click-outside close
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node))
+        setOpen(false);
+    }
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  // Two-letter avatar from the signed-in name; falls back to "CE" when
+  // anonymous so the header doesn't look broken before the user clicks in.
+  const initials = (() => {
+    if (!user?.name) return "CE";
+    const parts = user.name.trim().split(/\s+/);
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  })();
+
+  if (!isAuthenticated) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="hidden lg:inline text-xs text-slate-500">
+          {settings?.app.local_dev_mode ? "Local dev" : "Production"}
+        </span>
+        <button
+          type="button"
+          onClick={() => void signIn()}
+          className="btn-ghost h-9 text-sm"
+        >
+          Sign in
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex items-center gap-2">
+    <div className="relative flex items-center gap-2" ref={wrapRef}>
       <span className="hidden lg:inline text-xs text-slate-500">
         {settings?.app.local_dev_mode ? "Local dev" : "Production"}
       </span>
-      <div className="h-9 w-9 rounded-full bg-brand-red text-white flex items-center justify-center font-semibold text-sm">
-        CE
-      </div>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="h-9 w-9 rounded-full bg-brand-red text-white flex items-center justify-center font-semibold text-sm hover:bg-brand-darkred"
+        title={user?.name || user?.email || "Signed in"}
+        aria-label="Open user menu"
+      >
+        {initials}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-12 z-50 w-64 card p-3 shadow-xl">
+          <div className="text-sm font-semibold text-slate-900 truncate">
+            {user?.name || "Signed in"}
+          </div>
+          {user?.email && (
+            <div className="text-xs text-slate-500 truncate mb-2">
+              {user.email}
+            </div>
+          )}
+          <button
+            type="button"
+            className="w-full text-left px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-50 rounded-md flex items-center gap-2"
+            onClick={() => {
+              setOpen(false);
+              navigate("/settings");
+            }}
+          >
+            <span aria-hidden="true">⚙</span> Settings
+          </button>
+          <button
+            type="button"
+            className="btn-ghost w-full text-sm mt-1"
+            onClick={() => void signOut()}
+          >
+            Sign out
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
+import UpdatedByLine from "@/components/UpdatedByLine";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
 import {
   listMeetings,
@@ -24,6 +26,7 @@ export default function History() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [agendas, setAgendas] = useState<Agenda[]>([]);
   const [loading, setLoading] = useState(false);
+  const confirm = useConfirm();
 
   useEffect(() => {
     if (!currentProject) return;
@@ -86,16 +89,28 @@ export default function History() {
     nav("/review");
   };
 
-  const handleDeleteMeeting = async (id: number) => {
-    if (!confirm("Delete this meeting and all its content?")) return;
-    await deleteMeeting(id);
-    setMeetings(meetings.filter((m) => m.id !== id));
+  const handleDeleteMeeting = async (m: Meeting) => {
+    const ok = await confirm({
+      title: "Delete this meeting?",
+      body: `${m.title || "(no title)"} — ${format(parseISO(m.meeting_date), "EEE, MMM d, yyyy")}`,
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
+    await deleteMeeting(m.id);
+    setMeetings(meetings.filter((x) => x.id !== m.id));
   };
 
-  const handleDeleteAgenda = async (id: number) => {
-    if (!confirm("Delete this saved agenda?")) return;
-    await deleteAgenda(id);
-    setAgendas(agendas.filter((a) => a.id !== id));
+  const handleDeleteAgenda = async (a: Agenda) => {
+    const ok = await confirm({
+      title: "Delete this agenda?",
+      body: `${a.title || `Pre-meeting agenda — ${a.upcoming_date}`} — ${format(parseISO(a.upcoming_date), "EEE, MMM d, yyyy")}`,
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
+    await deleteAgenda(a.id);
+    setAgendas(agendas.filter((x) => x.id !== a.id));
   };
 
   return (
@@ -134,6 +149,7 @@ export default function History() {
                     {format(parseISO(m.meeting_date), "EEE, MMM d, yyyy")} ·{" "}
                     Stage <span className="font-medium">{m.stage}</span>
                   </div>
+                  <UpdatedByLine user={m.updated_by} at={m.updated_at} />
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -160,7 +176,7 @@ export default function History() {
                   </a>
                   <button
                     className="btn-danger"
-                    onClick={() => handleDeleteMeeting(m.id)}
+                    onClick={() => handleDeleteMeeting(m)}
                   >
                     Delete
                   </button>
@@ -186,6 +202,7 @@ export default function History() {
                   {format(parseISO(a.upcoming_date), "EEE, MMM d, yyyy")} ·{" "}
                   {a.meeting_duration_minutes || 30} min
                 </div>
+                <UpdatedByLine user={a.updated_by} at={a.updated_at} />
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -196,7 +213,7 @@ export default function History() {
                 </button>
                 <button
                   className="btn-danger"
-                  onClick={() => handleDeleteAgenda(a.id)}
+                  onClick={() => handleDeleteAgenda(a)}
                 >
                   Delete
                 </button>

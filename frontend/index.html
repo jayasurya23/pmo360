@@ -5,10 +5,15 @@
     <link rel="icon" type="image/png" href="/assets/logo/pmo360_logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PMO 360 — Castillo Engineering</title>
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Jost is self-hosted via @font-face in src/styles/index.css.
+         Preload the variable-weight Latin woff2 so first paint isn't
+         FOIT-ed by the font request. -->
     <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Jost:wght@400;500;600;700;800&display=swap"
+      rel="preload"
+      href="/fonts/jost/jost-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
     />
   </head>
   <body>

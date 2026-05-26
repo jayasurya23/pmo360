@@ -16,6 +16,36 @@ from sqlalchemy.orm import declarative_base, relationship, backref
 Base = declarative_base()
 
 
+class User(Base):
+    """A Castillo PM (or anyone with Entra access to PMO 360).
+
+    Auto-upserted on the first authenticated request — we identify users by
+    their Microsoft Entra `oid` (object id), which is stable across the
+    tenant and survives email changes. `email` and `name` are denormalized
+    here so we can show them in the UI without re-decoding a JWT for every
+    'last edited by' line.
+    """
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True)
+    oid = Column(String(64), nullable=False, unique=True)
+    email = Column(String(200))
+    name = Column(String(200))
+    # Per-user preferences (default portfolio, meeting duration, action
+    # due-date offset, email signature). See schemas/common.py::UserPreferences
+    # for the schema shape; null means "no prefs saved yet → use defaults".
+    preferences = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    # The value `last_seen_at` had **before** the current request bumped it.
+    # We need a stable "since when" cutoff for the Home briefing — if the
+    # briefing endpoint reads `last_seen_at` directly, it'd always see "now"
+    # because the auth dependency that produced the row already bumped it.
+    # The upsert helper copies the old `last_seen_at` value here first, then
+    # overwrites `last_seen_at`, so the briefing endpoint can safely read
+    # `previous_last_seen_at` as the cutoff. NULL on a brand-new user row.
+    previous_last_seen_at = Column(DateTime)
+
+
 class Client(Base):
     __tablename__ = "clients"
     id = Column(Integer, primary_key=True)
@@ -84,13 +114,28 @@ class Meeting(Base):
     title = Column(String(300))
     raw_notes = Column(Text)            # Original pasted/uploaded notes
     closing_remarks = Column(Text)
+    # AI-generated executive summary — short paragraph (~3 lines) rendered at
+    # the top of the meeting-minutes PDF. Generated once on save (so we don't
+    # re-spend OpenAI tokens on every re-export). Re-generated only when the
+    # PM clicks "↻ Regenerate" from Review.
+    executive_summary = Column(Text)
     stage = Column(String(20), default="draft")    # draft / final / sent
     sent_at = Column(DateTime)
     schedule_version_at_meeting = Column(String(20))
+    # Optimistic concurrency token. Every save bumps this; clients send the
+    # value they read with their PUT and the server rejects with 409 when it
+    # doesn't match (i.e. someone else saved in the meantime).
+    version = Column(Integer, nullable=False, default=1)
+    # Per-user attribution. Null when the row pre-dates auth being wired in,
+    # OR when the write came from an anonymous (un-authenticated) session.
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    updated_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     project = relationship("Project", back_populates="meetings")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
     attendees = relationship("MeetingAttendee", back_populates="meeting", cascade="all, delete-orphan")
     agenda_items = relationship("AgendaItem", back_populates="meeting", cascade="all, delete-orphan")
     discussion_points = relationship("DiscussionPoint", back_populates="meeting", cascade="all, delete-orphan")
@@ -114,6 +159,10 @@ class MeetingAttendee(Base):
     full_name = Column(String(200), nullable=False)
     initials = Column(String(10), nullable=False)
     organization = Column(String(150))
+    # Captured at time-of-meeting from the roster so the Send page has a
+    # recipient list without round-tripping to ProjectAttendee. Manually
+    # editable per-meeting too — sometimes someone's company changed since.
+    email = Column(String(200))
 
     meeting = relationship("Meeting", back_populates="attendees")
 
@@ -200,6 +249,9 @@ class ActionItem(Base):
     due_date = Column(Date)
     status = Column(String(20), default="open")  # open / pending / completed / cancelled
     last_status_change = Column(DateTime, default=datetime.utcnow)
+    # Per-user attribution (see Meeting.created_by_id for the contract).
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    updated_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -209,6 +261,8 @@ class ActionItem(Base):
         back_populates="raised_actions"
     )
     closed_in_meeting = relationship("Meeting", foreign_keys=[closed_in_meeting_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
 
 
 class Schedule(Base):
@@ -298,6 +352,11 @@ class Agenda(Base):
     decisions_json = Column(JSON)          # list[{decision, description, impact_if_not, required_by_iso, owner}]
     schedule_changes_json = Column(JSON)   # list[{project, task, previous_date, updated_date, change_description, reason_for_change, impact}]
 
+    # Optimistic concurrency token. See Meeting.version for the contract.
+    version = Column(Integer, nullable=False, default=1)
+    # Per-user attribution.
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    updated_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -306,6 +365,8 @@ class Agenda(Base):
         backref=backref("agendas", cascade="all, delete-orphan"),
     )
     source_meeting = relationship("Meeting", foreign_keys=[source_meeting_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
 
 
 class Note(Base):
@@ -328,6 +389,9 @@ class Note(Base):
     priority = Column(String(10), default="Medium")  # Low / Medium / High
     status = Column(String(20), default="open")  # open / closed
 
+    # Per-user attribution.
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    updated_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -335,6 +399,39 @@ class Note(Base):
         "Project",
         backref=backref("notes", cascade="all, delete-orphan"),
     )
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+
+class MeetingTemplate(Base):
+    """
+    A reusable boilerplate for recurring meetings — saves attendees, agenda
+    topics, default deliverables, and meeting duration so a PM running the
+    same weekly coordination meeting can clone it instead of retyping the
+    80% that never changes.
+
+    Scope is per-portfolio (project). Cloning hydrates the Capture page's
+    in-progress draft from these JSON blobs; the blobs intentionally mirror
+    the shapes the draft already uses so there's no translation layer.
+    """
+    __tablename__ = "meeting_templates"
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    name = Column(String(200), nullable=False)
+    # JSON blobs storing the same shapes as the in-progress draft uses.
+    attendees_json = Column(JSON)        # list[{full_name, initials, organization, email?}]
+    agenda_topics_json = Column(JSON)    # list[{text, discipline}]
+    default_duration_minutes = Column(Integer, default=60)
+    default_deliverables_json = Column(JSON)  # list[{project_segment, task, start_status}]
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship(
+        "Project",
+        backref=backref("meeting_templates", cascade="all, delete-orphan"),
+    )
+    created_by = relationship("User", foreign_keys=[created_by_id])
 
 
 class GeneratedDocument(Base):
@@ -348,3 +445,30 @@ class GeneratedDocument(Base):
     file_size_bytes = Column(Integer)
     is_draft = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class MeetingAttachment(Base):
+    """
+    A PM-uploaded supporting document hanging off a meeting — site photos,
+    vendor PDFs, sketch markups, contractor emails. Each attachment is owned
+    by exactly one meeting and physically lives in the configured storage
+    backend (LocalFSBackend in dev, SharePoint in prod). ``storage_path`` is
+    whatever ``get_storage().save(...)`` returned, so the same row works
+    regardless of backend.
+    """
+    __tablename__ = "meeting_attachments"
+    id = Column(Integer, primary_key=True)
+    meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False)
+    filename = Column(String(300), nullable=False)        # original upload name
+    content_type = Column(String(150))                    # MIME type
+    file_size_bytes = Column(Integer)
+    storage_path = Column(String(500), nullable=False)    # what get_storage().save() returned
+    description = Column(Text)                            # optional user-supplied caption
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    meeting = relationship(
+        "Meeting",
+        backref=backref("attachments", cascade="all, delete-orphan"),
+    )
+    created_by = relationship("User", foreign_keys=[created_by_id])

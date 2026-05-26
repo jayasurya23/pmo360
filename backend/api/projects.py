@@ -1,11 +1,21 @@
 """/api/projects — projects (portfolios) under a client."""
-from fastapi import APIRouter, Depends, HTTPException, Query
+from datetime import date, datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from core.deps import get_db
-from db.models import Project, Client
-from db.repository import list_projects, get_project, set_portfolio_sub_projects
-from schemas.common import ProjectOut, ProjectCreate, ProjectUpdate
+from db.models import (
+    Project, Client, Meeting, ActionItem, Deliverable, Agenda,
+)
+from db.repository import (
+    list_projects, get_project, set_portfolio_sub_projects, list_deliverables,
+)
+from schemas.common import (
+    ProjectOut, ProjectCreate, ProjectUpdate, DeliverableOut,
+    PortfolioMetricsOut, BurndownPoint,
+)
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -67,3 +77,179 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Project not found")
     db.delete(project)
     return None
+
+
+@router.get("/{project_id}/deliverables", response_model=list[DeliverableOut])
+def get_project_deliverables(project_id: int, db: Session = Depends(get_db)):
+    """All Deliverable rows for a project (used by Notes to auto-discover
+    sub-project names from `project_segment`)."""
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+    return list_deliverables(db, project_id)
+
+
+# ============================================================
+# Per-portfolio health metrics (PortfolioDashboard page)
+# ============================================================
+# Status buckets — repeated below so the SQL filters read clearly.
+_OPEN_STATUSES = ("open", "pending")
+_DONE_STATUSES = ("completed", "cancelled")
+_LIKELIHOOD_KEYS = ("Low", "Medium", "High", "Critical")
+
+
+def _iso_week_window(d: date) -> tuple[date, date]:
+    """Return (week_start_monday, week_end_sunday) for the ISO week of `d`."""
+    monday = d - timedelta(days=d.weekday())
+    sunday = monday + timedelta(days=6)
+    return monday, sunday
+
+
+@router.get("/{project_id}/metrics", response_model=PortfolioMetricsOut)
+def get_project_metrics(
+    project_id: int = Path(..., ge=1, description="Portfolio (project) id"),
+    db: Session = Depends(get_db),
+):
+    """Roll up health metrics for a single portfolio.
+
+    Backs the PortfolioDashboard page — top-row counts, 8-week burndown, and
+    the latest-agenda risk heatmap. The endpoint is intentionally chunky
+    (~6 queries) so the frontend only round-trips once.
+    """
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "Project not found")
+
+    today = date.today()
+
+    # ---- Meetings ----
+    meetings = (
+        db.query(Meeting)
+        .filter_by(project_id=project_id)
+        .order_by(desc(Meeting.meeting_date))
+        .all()
+    )
+    total_meetings = len(meetings)
+    last_meeting_date = meetings[0].meeting_date if meetings else None
+    days_since_last = (
+        (today - last_meeting_date).days if last_meeting_date else None
+    )
+
+    # ---- Actions ----
+    actions = (
+        db.query(ActionItem)
+        .filter_by(project_id=project_id)
+        .all()
+    )
+    total_actions = len(actions)
+    open_count = sum(1 for a in actions if a.status in _OPEN_STATUSES)
+    completed_count = sum(1 for a in actions if a.status == "completed")
+    cancelled_count = sum(1 for a in actions if a.status == "cancelled")
+    overdue_count = sum(
+        1 for a in actions
+        if a.status in _OPEN_STATUSES
+        and a.due_date is not None
+        and a.due_date < today
+    )
+    # close_rate over the project's lifetime: completed / total. Cancelled
+    # counts as "not closed cleanly" so it lives in the denominator only.
+    close_rate = (completed_count / total_actions) if total_actions else 0.0
+    avg_per_meeting = (
+        (total_actions / total_meetings) if total_meetings else 0.0
+    )
+
+    # ---- Deliverables ----
+    deliverables = (
+        db.query(Deliverable)
+        .filter_by(project_id=project_id)
+        .all()
+    )
+    deliverables_total = len(deliverables)
+    # "On time" proxy until we wire actual completion dates: count anything
+    # whose delivery_date hasn't slipped past today (or has no date at all).
+    deliverables_on_time = sum(
+        1 for d in deliverables
+        if d.delivery_date is None or d.delivery_date >= today
+    )
+    on_time_rate = (
+        (deliverables_on_time / deliverables_total)
+        if deliverables_total else 0.0
+    )
+
+    # ---- 8-week burndown ----
+    # Anchor on the Monday of this week, walk back 7 more weeks (8 total).
+    current_monday, _ = _iso_week_window(today)
+    burndown: list[BurndownPoint] = []
+    for i in range(7, -1, -1):
+        week_start = current_monday - timedelta(weeks=i)
+        week_end = week_start + timedelta(days=6)
+        # Make week_end a datetime end-of-day so created_at/last_status_change
+        # comparisons include events that happened that Sunday.
+        week_end_dt = datetime.combine(week_end, datetime.max.time())
+        week_start_dt = datetime.combine(week_start, datetime.min.time())
+
+        open_at_end = 0
+        completed_this_week = 0
+        for a in actions:
+            created = a.created_at
+            if created is None or created > week_end_dt:
+                continue
+            last_change = a.last_status_change or a.updated_at or created
+            is_done_now = a.status in _DONE_STATUSES
+            # Open at end-of-week if it wasn't yet done, OR it was done but
+            # the status change happened after this week ended.
+            if not is_done_now or (last_change > week_end_dt):
+                open_at_end += 1
+            if (
+                a.status == "completed"
+                and last_change is not None
+                and week_start_dt <= last_change <= week_end_dt
+            ):
+                completed_this_week += 1
+
+        burndown.append(BurndownPoint(
+            week_start=week_start,
+            open_at_end_of_week=open_at_end,
+            completed_this_week=completed_this_week,
+        ))
+
+    # ---- Risk heatmap — most recent agenda's risks_json ----
+    latest_agenda = (
+        db.query(Agenda)
+        .filter_by(project_id=project_id)
+        .order_by(desc(Agenda.upcoming_date), desc(Agenda.updated_at))
+        .first()
+    )
+    risks_by_likelihood: dict[str, int] = {k: 0 for k in _LIKELIHOOD_KEYS}
+    if latest_agenda and isinstance(latest_agenda.risks_json, list):
+        for r in latest_agenda.risks_json:
+            if not isinstance(r, dict):
+                continue
+            raw = (r.get("likelihood") or "").strip()
+            # Normalise casing so "high" / "HIGH" both bucket as "High".
+            for key in _LIKELIHOOD_KEYS:
+                if raw.lower() == key.lower():
+                    risks_by_likelihood[key] += 1
+                    break
+
+    client_name = project.client.name if project.client else None
+    return PortfolioMetricsOut(
+        project_id=project.id,
+        project_name=project.name,
+        client_name=client_name,
+        total_meetings=total_meetings,
+        total_actions=total_actions,
+        open_actions=open_count,
+        overdue_actions=overdue_count,
+        completed_actions=completed_count,
+        cancelled_actions=cancelled_count,
+        action_close_rate=close_rate,
+        avg_actions_per_meeting=avg_per_meeting,
+        deliverables_total=deliverables_total,
+        deliverables_on_time=deliverables_on_time,
+        on_time_rate=on_time_rate,
+        last_meeting_date=last_meeting_date,
+        days_since_last_meeting=days_since_last,
+        burndown=burndown,
+        risks_by_likelihood=risks_by_likelihood,
+    )

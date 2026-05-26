@@ -4,10 +4,21 @@ import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import DiscussionPointsEditor from "@/components/DiscussionPointsEditor";
 import AgendaEditor, { PreviewDisclosure } from "@/components/AgendaEditor";
-import { StatusPill } from "@/components/StatusPill";
+import { StatusPill, StatusSelect } from "@/components/StatusPill";
+import SaveStatus from "@/components/SaveStatus";
+import { SortableList } from "@/components/SortableList";
+import ScheduleItemPicker from "@/components/ScheduleItemPicker";
+import { SaveTemplateModal } from "@/components/TemplateModals";
+import AttachmentsSection from "@/components/AttachmentsSection";
 import { handleTextareaTab } from "@/lib/textareaTab";
 import { useApp } from "@/lib/state";
-import { saveMeeting } from "@/lib/api";
+import {
+  saveMeeting,
+  getMeeting,
+  regenerateMeetingSummary,
+  listSchedules,
+} from "@/lib/api";
+import { useAutoSave } from "@/lib/useAutoSave";
 import type {
   ParsedAttendee,
   ParsedAgendaItem,
@@ -15,8 +26,6 @@ import type {
   ParsedActionItem,
 } from "@/lib/types";
 import { format, parseISO } from "date-fns";
-
-const STATUS_OPTS = ["open", "pending", "completed", "cancelled"] as const;
 
 export default function Review() {
   const nav = useNavigate();
@@ -42,12 +51,53 @@ export default function Review() {
   const [closingRemarks, setClosingRemarks] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Tracks the optimistic-concurrency token of the meeting currently being
+  // edited. Bumped on every successful save; sent back with the next PUT.
+  const [currentVersion, setCurrentVersion] = useState<number | null>(null);
+
+  // AI-generated executive summary (internal-only — never on the PDF, but
+  // shown here as a card and used as the default email body on Send).
+  const [executiveSummary, setExecutiveSummary] = useState<string | null>(null);
+  const [regeneratingSummary, setRegeneratingSummary] = useState(false);
+
+  // Save-as-template modal — captures current attendees/agenda/deliverables
+  // into a reusable boilerplate for next week's recurring meeting.
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [templateToast, setTemplateToast] = useState<string | null>(null);
 
   // ---- Preview disclosure open-state (collapsed by default everywhere) ----
   const [showAttendeesPreview, setShowAttendeesPreview] = useState(false);
   const [showDeliverablesPreview, setShowDeliverablesPreview] = useState(false);
   const [showActionsPreview, setShowActionsPreview] = useState(false);
   const [showClosingPreview, setShowClosingPreview] = useState(false);
+
+  // ---- Schedule picker modal ----
+  // The button label shows a live count of available items in the most
+  // recent saved schedule. We fetch lazily once per portfolio so the
+  // header doesn't make the page wait on the picker's data.
+  const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
+  const [scheduleItemCount, setScheduleItemCount] = useState<number | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!currentProject) {
+      setScheduleItemCount(null);
+      return;
+    }
+    let cancelled = false;
+    listSchedules(currentProject.id)
+      .then((list) => {
+        if (cancelled) return;
+        const latest = list[0];
+        setScheduleItemCount(latest ? latest.items.length : 0);
+      })
+      .catch(() => {
+        if (!cancelled) setScheduleItemCount(0);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject?.id]);
 
   useEffect(() => {
     if (!parsed) return;
@@ -69,6 +119,35 @@ export default function Review() {
     setActionItems(parsed.action_items);
   }, [parsed]);
 
+  // Pull the persisted summary from the meeting detail once we have a
+  // draftMeetingId. Auto-generated on first save server-side.
+  useEffect(() => {
+    if (!draftMeetingId) {
+      setExecutiveSummary(null);
+      return;
+    }
+    let cancelled = false;
+    getMeeting(draftMeetingId)
+      .then((m) => {
+        if (!cancelled) setExecutiveSummary(m.executive_summary || null);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [draftMeetingId]);
+
+  async function handleRegenerateSummary() {
+    if (!draftMeetingId) return;
+    setRegeneratingSummary(true);
+    try {
+      const updated = await regenerateMeetingSummary(draftMeetingId);
+      setExecutiveSummary(updated.executive_summary || null);
+    } catch (e: any) {
+      setError(e?.message || "Couldn't regenerate summary");
+    } finally {
+      setRegeneratingSummary(false);
+    }
+  }
+
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
   if (!parsed)
@@ -84,39 +163,91 @@ export default function Review() {
       />
     );
 
-  const handleSave = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const meeting = await saveMeeting({
-        project_id: currentProject.id,
-        meeting_id: draftMeetingId,
-        meeting_date: meetingDate,
-        title: meetingTitle || null,
-        raw_notes: [rawNotes.minutes, rawNotes.agenda, rawNotes.actions]
-          .filter(Boolean)
-          .join("\n\n=== SECTION BREAK ===\n\n"),
-        closing_remarks: closingRemarks || null,
-        deliverables: selectedDeliverables.map((d) => ({
-          project_segment: d.project_segment,
-          task: d.task,
-          start_status: d.start_status,
-          delivery_date: d.delivery_date,
-        })),
-        parsed: {
-          attendees,
-          agenda_items: agendaItems,
-          discussion_points: discussion,
-          action_items: actionItems,
-        },
-      });
-      setDraftMeetingId(meeting.id);
-      setParsed({
+  /**
+   * Build the save payload from current local state. Used by both the
+   * explicit Save button and the auto-save hook so they stay in sync.
+   */
+  function buildPayload() {
+    if (!currentProject) throw new Error("No active portfolio");
+    return {
+      project_id: currentProject.id,
+      meeting_id: draftMeetingId,
+      // Only meaningful for updates — the backend ignores it on inserts.
+      expected_version: draftMeetingId ? currentVersion : null,
+      meeting_date: meetingDate,
+      title: meetingTitle || null,
+      raw_notes: [rawNotes.minutes, rawNotes.agenda, rawNotes.actions]
+        .filter(Boolean)
+        .join("\n\n=== SECTION BREAK ===\n\n"),
+      closing_remarks: closingRemarks || null,
+      deliverables: selectedDeliverables.map((d) => ({
+        project_segment: d.project_segment,
+        task: d.task,
+        start_status: d.start_status,
+        delivery_date: d.delivery_date,
+      })),
+      parsed: {
         attendees,
         agenda_items: agendaItems,
         discussion_points: discussion,
         action_items: actionItems,
-      });
+      },
+    };
+  }
+
+  /**
+   * Persist + update the local version token. Shared by save button + hook.
+   */
+  async function doSave() {
+    const meeting = await saveMeeting(buildPayload());
+    setDraftMeetingId(meeting.id);
+    setCurrentVersion(meeting.version);
+    setParsed({
+      attendees,
+      agenda_items: agendaItems,
+      discussion_points: discussion,
+      action_items: actionItems,
+    });
+    return meeting;
+  }
+
+  // ---- Debounced auto-save ----
+  // Only active once a draft exists (creating new drafts on every keystroke
+  // would be bad). The explicit "Save to database →" button below is the
+  // only path that creates the very first draft.
+  const autoSaveData = {
+    attendees, agendaItems, discussion, actionItems,
+    closingRemarks, selectedDeliverables, meetingTitle, meetingDate,
+  };
+  const autoSave = useAutoSave({
+    data: autoSaveData,
+    enabled: !!draftMeetingId,
+    save: async () => { await doSave(); },
+  });
+
+  // Reload-from-server handler when a 409 conflict arrives.
+  async function handleReloadFromServer() {
+    if (!draftMeetingId) return;
+    try {
+      const fresh = await getMeeting(draftMeetingId);
+      setCurrentVersion(fresh.version);
+      // We don't blow away the whole parsed object — only the canonical
+      // version token. The user keeps their in-flight edits and clicks
+      // Save again to retry. Conservative on purpose.
+      setError(
+        "Reloaded the latest version. Review your changes against it and " +
+        "click Save to push again.",
+      );
+    } catch (e: any) {
+      setError(`Reload failed: ${e.message}`);
+    }
+  }
+
+  const handleSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await doSave();
       nav("/preview");
     } catch (e: any) {
       setError(e.message || "Save failed");
@@ -141,13 +272,30 @@ export default function Review() {
         title="Review parsed meeting"
         subtitle="Edit each section before saving. Click + to add new rows; × to remove. Every section has a 👁️ Preview disclosure showing how it'll render in the PDF."
         actions={
-          <button
-            className="btn-primary"
-            onClick={handleSave}
-            disabled={saving}
-          >
-            {saving ? "Saving…" : "Save to database →"}
-          </button>
+          <div className="flex items-center gap-3">
+            {draftMeetingId && (
+              <SaveStatus
+                status={autoSave.status}
+                lastSavedAt={autoSave.lastSavedAt}
+                errorMessage={autoSave.errorMessage}
+                onReload={handleReloadFromServer}
+              />
+            )}
+            <button
+              className="btn-ghost"
+              onClick={() => setSaveTemplateOpen(true)}
+              title="Save attendees, agenda topics, deliverables, and duration as a reusable template"
+            >
+              💾 Save as template…
+            </button>
+            <button
+              className="btn-primary"
+              onClick={handleSave}
+              disabled={saving}
+            >
+              {saving ? "Saving…" : "Save to database →"}
+            </button>
+          </div>
         }
       />
 
@@ -157,58 +305,98 @@ export default function Review() {
         </div>
       )}
 
+      {/* ---------- AI Executive Summary (internal-only, NOT on the PDF) ---------- */}
+      {draftMeetingId && (
+        <section className="card p-5 space-y-2 border-l-4 border-l-brand-gold bg-amber-50/40">
+          <div className="flex items-center justify-between">
+            <h3 className="section-title">
+              ✨ AI executive summary
+              <span className="text-xs font-normal text-brand-gray ml-2">
+                · internal only — not on the client PDF
+              </span>
+            </h3>
+            <button
+              type="button"
+              className="btn-ghost text-xs"
+              onClick={handleRegenerateSummary}
+              disabled={regeneratingSummary}
+              title="Regenerate with the latest meeting content"
+            >
+              {regeneratingSummary ? "Regenerating…" : "↻ Regenerate"}
+            </button>
+          </div>
+          {executiveSummary ? (
+            <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">
+              {executiveSummary}
+            </p>
+          ) : (
+            <p className="text-sm text-brand-gray italic">
+              {regeneratingSummary
+                ? "Generating…"
+                : "No summary yet. Click Regenerate, or just save the meeting — the first save auto-generates one."}
+            </p>
+          )}
+        </section>
+      )}
+
       {/* ---------- Attendees ---------- */}
       <section className="card p-5 space-y-3">
         <h3 className="section-title">Attendees ({attendees.length})</h3>
         <div className="space-y-2">
-          {attendees.map((a, idx) => (
-            <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-              <input
-                className="input col-span-5"
-                value={a.full_name}
-                placeholder="Full name"
-                onChange={(e) =>
-                  setAttendees(
-                    attendees.map((x, i) =>
-                      i === idx ? { ...x, full_name: e.target.value } : x
+          <SortableList
+            items={attendees}
+            getId={(a, i) => `attendee-${i}-${a.full_name}-${a.initials}`}
+            onReorder={setAttendees}
+            renderItem={(a, idx, handle) => (
+              <div className="grid grid-cols-12 gap-2 items-center">
+                <div className="col-span-1 flex justify-center">{handle}</div>
+                <input
+                  className="input col-span-4"
+                  value={a.full_name}
+                  placeholder="Full name"
+                  onChange={(e) =>
+                    setAttendees(
+                      attendees.map((x, i) =>
+                        i === idx ? { ...x, full_name: e.target.value } : x
+                      )
                     )
-                  )
-                }
-              />
-              <input
-                className="input col-span-2"
-                value={a.initials}
-                placeholder="AR"
-                onChange={(e) =>
-                  setAttendees(
-                    attendees.map((x, i) =>
-                      i === idx ? { ...x, initials: e.target.value } : x
+                  }
+                />
+                <input
+                  className="input col-span-2"
+                  value={a.initials}
+                  placeholder="AR"
+                  onChange={(e) =>
+                    setAttendees(
+                      attendees.map((x, i) =>
+                        i === idx ? { ...x, initials: e.target.value } : x
+                      )
                     )
-                  )
-                }
-              />
-              <input
-                className="input col-span-4"
-                value={a.organization}
-                placeholder="Organization"
-                onChange={(e) =>
-                  setAttendees(
-                    attendees.map((x, i) =>
-                      i === idx ? { ...x, organization: e.target.value } : x
+                  }
+                />
+                <input
+                  className="input col-span-4"
+                  value={a.organization}
+                  placeholder="Organization"
+                  onChange={(e) =>
+                    setAttendees(
+                      attendees.map((x, i) =>
+                        i === idx ? { ...x, organization: e.target.value } : x
+                      )
                     )
-                  )
-                }
-              />
-              <button
-                className="btn-danger col-span-1"
-                onClick={() =>
-                  setAttendees(attendees.filter((_, i) => i !== idx))
-                }
-              >
-                ×
-              </button>
-            </div>
-          ))}
+                  }
+                />
+                <button
+                  className="btn-danger col-span-1"
+                  onClick={() =>
+                    setAttendees(attendees.filter((_, i) => i !== idx))
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          />
           <button
             className="btn-ghost"
             onClick={() =>
@@ -250,74 +438,96 @@ export default function Review() {
 
       {/* ---------- Deliverable Timelines ---------- */}
       <section className="card p-5 space-y-3">
-        <h3 className="section-title">
-          Deliverable Timelines ({selectedDeliverables.length})
-        </h3>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <h3 className="section-title">
+            Deliverable Timelines ({selectedDeliverables.length})
+          </h3>
+          <button
+            type="button"
+            className="btn-ghost text-sm"
+            onClick={() => setSchedulePickerOpen(true)}
+            disabled={!currentProject}
+            title={
+              scheduleItemCount === 0
+                ? "No schedule uploaded yet"
+                : "Bulk-add tasks from the latest project schedule"
+            }
+          >
+            📅 Pick from schedule
+            {scheduleItemCount !== null && ` (${scheduleItemCount} items)`}
+          </button>
+        </div>
         <div className="space-y-2">
-          {selectedDeliverables.map((d, idx) => (
-            <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-              <input
-                className="input col-span-3"
-                value={d.project_segment}
-                placeholder="Sub-project"
-                onChange={(e) =>
-                  setSelectedDeliverables(
-                    selectedDeliverables.map((x, i) =>
-                      i === idx ? { ...x, project_segment: e.target.value } : x
+          <SortableList
+            items={selectedDeliverables}
+            getId={(d, i) => `deliverable-${i}-${d.task}-${d.project_segment}`}
+            onReorder={setSelectedDeliverables}
+            renderItem={(d, idx, handle) => (
+              <div className="grid grid-cols-12 gap-2 items-center">
+                <div className="col-span-1 flex justify-center">{handle}</div>
+                <input
+                  className="input col-span-2"
+                  value={d.project_segment}
+                  placeholder="Sub-project"
+                  onChange={(e) =>
+                    setSelectedDeliverables(
+                      selectedDeliverables.map((x, i) =>
+                        i === idx ? { ...x, project_segment: e.target.value } : x
+                      )
                     )
-                  )
-                }
-              />
-              <input
-                className="input col-span-4"
-                value={d.task}
-                placeholder="Task"
-                onChange={(e) =>
-                  setSelectedDeliverables(
-                    selectedDeliverables.map((x, i) =>
-                      i === idx ? { ...x, task: e.target.value } : x
+                  }
+                />
+                <input
+                  className="input col-span-4"
+                  value={d.task}
+                  placeholder="Task"
+                  onChange={(e) =>
+                    setSelectedDeliverables(
+                      selectedDeliverables.map((x, i) =>
+                        i === idx ? { ...x, task: e.target.value } : x
+                      )
                     )
-                  )
-                }
-              />
-              <input
-                className="input col-span-2"
-                value={d.start_status}
-                placeholder="Status"
-                onChange={(e) =>
-                  setSelectedDeliverables(
-                    selectedDeliverables.map((x, i) =>
-                      i === idx ? { ...x, start_status: e.target.value } : x
+                  }
+                />
+                <input
+                  className="input col-span-2"
+                  value={d.start_status}
+                  placeholder="Status"
+                  onChange={(e) =>
+                    setSelectedDeliverables(
+                      selectedDeliverables.map((x, i) =>
+                        i === idx ? { ...x, start_status: e.target.value } : x
+                      )
                     )
-                  )
-                }
-              />
-              <input
-                type="date"
-                className="input col-span-2"
-                value={d.delivery_date || ""}
-                onChange={(e) =>
-                  setSelectedDeliverables(
-                    selectedDeliverables.map((x, i) =>
-                      i === idx
-                        ? { ...x, delivery_date: e.target.value || null }
-                        : x
+                  }
+                />
+                <input
+                  type="date"
+                  className="input col-span-2"
+                  value={d.delivery_date || ""}
+                  onChange={(e) =>
+                    setSelectedDeliverables(
+                      selectedDeliverables.map((x, i) =>
+                        i === idx
+                          ? { ...x, delivery_date: e.target.value || null }
+                          : x
+                      )
                     )
-                  )
-                }
-              />
-              <button
-                className="btn-danger col-span-1"
-                onClick={() =>
-                  setSelectedDeliverables(
-                    selectedDeliverables.filter((_, i) => i !== idx)
-                  )
-                }
-              >
-                ×
-              </button>
-            </div>
-          ))}
+                  }
+                />
+                <button
+                  className="btn-danger col-span-1"
+                  onClick={() =>
+                    setSelectedDeliverables(
+                      selectedDeliverables.filter((_, i) => i !== idx)
+                    )
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          />
           <button
             className="btn-ghost"
             onClick={() =>
@@ -375,74 +585,77 @@ export default function Review() {
       <section className="card p-5 space-y-3">
         <h3 className="section-title">Action Items ({actionItems.length})</h3>
         <div className="space-y-2">
-          {actionItems.map((a, idx) => (
-            <div key={idx} className="grid grid-cols-12 gap-2 items-start">
-              <textarea
-                className="textarea col-span-5"
-                rows={2}
-                value={a.text}
-                onChange={(e) =>
-                  setActionItems(
-                    actionItems.map((x, i) =>
-                      i === idx ? { ...x, text: e.target.value } : x
+          <SortableList
+            items={actionItems}
+            getId={(a, i) => `action-${i}-${a.text.slice(0, 40)}-${a.owner}`}
+            onReorder={setActionItems}
+            renderItem={(a, idx, handle) => (
+              <div className="grid grid-cols-12 gap-2 items-start">
+                <div className="col-span-1 flex justify-center pt-2">
+                  {handle}
+                </div>
+                <textarea
+                  className="textarea col-span-4"
+                  rows={2}
+                  value={a.text}
+                  onChange={(e) =>
+                    setActionItems(
+                      actionItems.map((x, i) =>
+                        i === idx ? { ...x, text: e.target.value } : x
+                      )
                     )
-                  )
-                }
-                onKeyDown={handleTextareaTab}
-              />
-              <input
-                className="input col-span-2"
-                value={a.owner}
-                placeholder="Owner"
-                onChange={(e) =>
-                  setActionItems(
-                    actionItems.map((x, i) =>
-                      i === idx ? { ...x, owner: e.target.value } : x
+                  }
+                  onKeyDown={handleTextareaTab}
+                />
+                <input
+                  className="input col-span-2"
+                  value={a.owner}
+                  placeholder="Owner"
+                  onChange={(e) =>
+                    setActionItems(
+                      actionItems.map((x, i) =>
+                        i === idx ? { ...x, owner: e.target.value } : x
+                      )
                     )
-                  )
-                }
-              />
-              <input
-                type="date"
-                className="input col-span-2"
-                value={a.due_date || ""}
-                onChange={(e) =>
-                  setActionItems(
-                    actionItems.map((x, i) =>
-                      i === idx
-                        ? { ...x, due_date: e.target.value || null }
-                        : x
+                  }
+                />
+                <input
+                  type="date"
+                  className="input col-span-2"
+                  value={a.due_date || ""}
+                  onChange={(e) =>
+                    setActionItems(
+                      actionItems.map((x, i) =>
+                        i === idx
+                          ? { ...x, due_date: e.target.value || null }
+                          : x
+                      )
                     )
-                  )
-                }
-              />
-              <select
-                className="select col-span-2"
-                value={a.status}
-                onChange={(e) =>
-                  setActionItems(
-                    actionItems.map((x, i) =>
-                      i === idx ? { ...x, status: e.target.value } : x
-                    )
-                  )
-                }
-              >
-                {STATUS_OPTS.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-              <button
-                className="btn-danger col-span-1"
-                onClick={() =>
-                  setActionItems(actionItems.filter((_, i) => i !== idx))
-                }
-              >
-                ×
-              </button>
-            </div>
-          ))}
+                  }
+                />
+                <div className="col-span-2">
+                  <StatusSelect
+                    value={a.status}
+                    onChange={(v) =>
+                      setActionItems(
+                        actionItems.map((x, i) =>
+                          i === idx ? { ...x, status: v } : x
+                        )
+                      )
+                    }
+                  />
+                </div>
+                <button
+                  className="btn-danger col-span-1"
+                  onClick={() =>
+                    setActionItems(actionItems.filter((_, i) => i !== idx))
+                  }
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          />
           <button
             className="btn-ghost"
             onClick={() =>
@@ -492,6 +705,56 @@ export default function Review() {
           </div>
         </PreviewDisclosure>
       </section>
+
+      {/* ---------- Attachments ----------
+          Purely additive — only shown once a draft has been saved so we
+          have a meeting_id to hang uploads off of. */}
+      {draftMeetingId && (
+        <AttachmentsSection meetingId={draftMeetingId} />
+      )}
+
+      <ScheduleItemPicker
+        open={schedulePickerOpen}
+        onClose={() => setSchedulePickerOpen(false)}
+        projectId={currentProject?.id ?? null}
+        existing={selectedDeliverables}
+        onAdd={(rows) =>
+          setSelectedDeliverables([...selectedDeliverables, ...rows])
+        }
+      />
+
+      {/* Save-as-template modal — collects a name and POSTs the current
+          draft state as a reusable recurring-meeting template. */}
+      <SaveTemplateModal
+        open={saveTemplateOpen}
+        onClose={() => setSaveTemplateOpen(false)}
+        projectId={currentProject.id}
+        attendees={attendees.map((a) => ({
+          full_name: a.full_name,
+          initials: a.initials,
+          organization: a.organization || "",
+        }))}
+        agendaTopics={agendaItems.map((a) => ({
+          text: a.text,
+          discipline: a.discipline || "General",
+        }))}
+        deliverables={selectedDeliverables.map((d) => ({
+          project_segment: d.project_segment || "",
+          task: d.task,
+          start_status: d.start_status || "In Progress",
+        }))}
+        defaultDurationMinutes={60}
+        onSaved={(t) => {
+          setTemplateToast(`Template saved: ${t.name}`);
+          setTimeout(() => setTemplateToast(null), 2500);
+        }}
+      />
+
+      {templateToast && (
+        <div className="fixed top-20 right-6 z-50 bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-2 rounded-lg shadow-sm text-sm">
+          {templateToast}
+        </div>
+      )}
     </div>
   );
 }

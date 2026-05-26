@@ -1,5 +1,12 @@
 // ===== Domain types — match backend Pydantic models =====
 
+/** Per-user attribution stub embedded in models (matches backend UserStub). */
+export interface UserStub {
+  id: number;
+  name?: string | null;
+  email?: string | null;
+}
+
 export interface Client {
   id: number;
   name: string;
@@ -80,6 +87,8 @@ export interface ActionItem {
   owner?: string | null;
   due_date?: string | null;
   status: string;
+  created_by?: UserStub | null;
+  updated_by?: UserStub | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -89,6 +98,7 @@ export interface MeetingAttendee {
   full_name: string;
   initials: string;
   organization?: string | null;
+  email?: string | null;
 }
 
 export interface Meeting {
@@ -98,18 +108,40 @@ export interface Meeting {
   title?: string | null;
   stage: string;
   schedule_version_at_meeting?: string | null;
+  /** Optimistic concurrency token — echo back on save, server returns 409 if stale. */
+  version: number;
+  created_by?: UserStub | null;
+  updated_by?: UserStub | null;
   created_at?: string;
   updated_at?: string;
+}
+
+/** One PM-uploaded supporting file (site photo, vendor PDF, etc.) tied
+ *  to a meeting. Mirrors backend's MeetingAttachmentOut. */
+export interface MeetingAttachmentSummary {
+  id: number;
+  meeting_id: number;
+  filename: string;
+  content_type?: string | null;
+  file_size_bytes?: number | null;
+  description?: string | null;
+  created_by?: UserStub | null;
+  created_at?: string;
 }
 
 export interface MeetingDetail extends Meeting {
   raw_notes?: string | null;
   closing_remarks?: string | null;
+  /** AI-generated executive summary, rendered at the top of the PDF. Null
+   *  until the first save with successful OpenAI response. */
+  executive_summary?: string | null;
   attendees: MeetingAttendee[];
   agenda_items: AgendaItem[];
   discussion_points: DiscussionPoint[];
   raised_actions: ActionItem[];
   meeting_deliverables: MeetingDeliverable[];
+  /** Newest-first; empty when no PM has uploaded supporting docs yet. */
+  attachments: MeetingAttachmentSummary[];
 }
 
 // Parsed LLM output
@@ -159,6 +191,8 @@ export interface DeliverableInput {
 export interface MeetingSaveRequest {
   project_id: number;
   meeting_id?: number | null;
+  /** Optimistic concurrency: send the version you read; server returns 409 if stale. */
+  expected_version?: number | null;
   meeting_date: string;
   title?: string | null;
   raw_notes?: string;
@@ -179,6 +213,8 @@ export interface Note {
   follow_up_date?: string | null;
   priority?: string | null;
   status?: string | null;
+  created_by?: UserStub | null;
+  updated_by?: UserStub | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -192,6 +228,10 @@ export interface Agenda {
   title?: string | null;
   meeting_duration_minutes?: number;
   schedule_version_override?: string | null;
+  /** Optimistic concurrency token — see Meeting.version. */
+  version: number;
+  created_by?: UserStub | null;
+  updated_by?: UserStub | null;
   disciplines_json?: string[] | null;
   dp_text_json?: Record<string, any> | null;
   recap_text_json?: Record<string, any> | null;
@@ -207,6 +247,8 @@ export interface Agenda {
 export interface AgendaSaveRequest {
   project_id: number;
   agenda_id?: number | null;
+  /** Optimistic concurrency: send the version you read; server returns 409 if stale. */
+  expected_version?: number | null;
   upcoming_date: string;
   source_meeting_id?: number | null;
   title?: string | null;
@@ -311,6 +353,47 @@ export interface DashboardResponse {
   open_actions: DashboardAction[];
   follow_up_notes: DashboardNote[];
   upcoming_agendas: DashboardAgenda[];
+}
+
+// Meeting templates — recurring-meeting boilerplate (attendees, agenda
+// topics, default deliverables, duration). Cloning hydrates the in-progress
+// draft directly; the JSON blobs use the same shapes the Capture/Review
+// pages already work with so there's no translation step.
+export interface TemplateAttendee {
+  full_name: string;
+  initials: string;
+  organization?: string;
+  email?: string;
+}
+export interface TemplateAgendaTopic {
+  text: string;
+  discipline?: string;
+}
+export interface TemplateDeliverable {
+  project_segment?: string;
+  task: string;
+  start_status?: string;
+}
+export interface MeetingTemplate {
+  id: number;
+  project_id: number;
+  name: string;
+  attendees_json?: TemplateAttendee[] | null;
+  agenda_topics_json?: TemplateAgendaTopic[] | null;
+  default_duration_minutes: number;
+  default_deliverables_json?: TemplateDeliverable[] | null;
+  created_by?: UserStub | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface MeetingTemplateInput {
+  project_id: number;
+  name: string;
+  attendees_json?: TemplateAttendee[];
+  agenda_topics_json?: TemplateAgendaTopic[];
+  default_duration_minutes?: number;
+  default_deliverables_json?: TemplateDeliverable[];
 }
 
 // Settings

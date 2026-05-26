@@ -105,3 +105,5 @@ async def parse_transcript(file: UploadFile = File(...)):
         "char_count": len(text),
         "text": text,
     }
+
+

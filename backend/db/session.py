@@ -1,7 +1,13 @@
 """
 SQLAlchemy session factory. Singleton engine for the app lifetime.
+
+Schema evolution is owned by Alembic (see backend/alembic/). `init_db()`
+runs `alembic upgrade head` programmatically so a fresh SQLite DB ends up
+fully migrated in one step. The previous `_bootstrap_migrations()` ALTER
+TABLE pattern was retired when Alembic was wired in.
 """
 from contextlib import contextmanager
+from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -43,55 +49,38 @@ CASTILLO_TEAM = [
 
 
 def init_db():
-    """Create all tables, apply lightweight in-place migrations, and seed the
-    company-wide global roster. Safe to call repeatedly."""
-    engine = get_engine()
-    Base.metadata.create_all(bind=engine)
-    _bootstrap_migrations(engine)
+    """Bring the database up to the head Alembic revision and seed the
+    Castillo global roster. Safe to call repeatedly.
+
+    On a brand-new SQLite file this creates every table at HEAD in one
+    pass. On an existing DB it applies any pending revisions. Either way,
+    Alembic is the only source of schema truth — no more inline ALTERs."""
+    _run_alembic_upgrade()
     _seed_global_roster()
 
 
-def _bootstrap_migrations(engine):
-    """Add columns the model expects but legacy DBs don't have yet.
-    SQLite `create_all()` doesn't ALTER existing tables, so this fills the gap.
-    Each migration is idempotent — checks the column exists first."""
-    from sqlalchemy import inspect, text
-    insp = inspect(engine)
-    if "discussion_points" in insp.get_table_names():
-        cols = {c["name"] for c in insp.get_columns("discussion_points")}
-        if "parent_id" not in cols:
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "ALTER TABLE discussion_points "
-                    "ADD COLUMN parent_id INTEGER REFERENCES discussion_points(id)"
-                ))
-    if "agendas" in insp.get_table_names():
-        cols = {c["name"] for c in insp.get_columns("agendas")}
-        if "meeting_duration_minutes" not in cols:
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "ALTER TABLE agendas "
-                    "ADD COLUMN meeting_duration_minutes INTEGER DEFAULT 30"
-                ))
-        if "schedule_changes_json" not in cols:
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "ALTER TABLE agendas "
-                    "ADD COLUMN schedule_changes_json JSON"
-                ))
-        if "schedule_version_override" not in cols:
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "ALTER TABLE agendas "
-                    "ADD COLUMN schedule_version_override VARCHAR(20)"
-                ))
-    if "projects" in insp.get_table_names():
-        cols = {c["name"] for c in insp.get_columns("projects")}
-        if "sub_projects_json" not in cols:
-            with engine.begin() as conn:
-                conn.execute(text(
-                    "ALTER TABLE projects ADD COLUMN sub_projects_json JSON"
-                ))
+def _run_alembic_upgrade():
+    """Programmatically run `alembic upgrade head`. We point Alembic at the
+    repo's alembic.ini so it works regardless of the caller's CWD."""
+    from alembic.config import Config
+    from alembic import command
+
+    backend_dir = Path(__file__).resolve().parent.parent
+    ini_path = backend_dir / "alembic.ini"
+    if not ini_path.exists():
+        # No Alembic configured (e.g. during a one-off test). Fall back to
+        # the legacy "just create the tables" path so we don't crash.
+        engine = get_engine()
+        Base.metadata.create_all(bind=engine)
+        return
+
+    cfg = Config(str(ini_path))
+    # `script_location` in alembic.ini is relative — make it absolute so it
+    # resolves correctly when called from outside backend/.
+    cfg.set_main_option("script_location", str(backend_dir / "alembic"))
+    # Use the live `.env`-resolved URL, not whatever alembic.ini has frozen.
+    cfg.set_main_option("sqlalchemy.url", database_url())
+    command.upgrade(cfg, "head")
 
 
 def _seed_global_roster():

@@ -56,7 +56,66 @@ class ParsedMeeting(BaseModel):
 # ============================================================
 # Provider interface
 # ============================================================
+class SuggestedAction(BaseModel):
+    """LLM proposal for turning a planner note into an actionable item."""
+    text: str = Field(..., description="What needs to happen, imperative-mood.")
+    owner: str = Field(default="", description="Best guess at the responsible person, full name if a roster is provided.")
+    due_date: Optional[str] = Field(default=None, description="ISO YYYY-MM-DD when stated; null otherwise.")
+    rationale: str = Field(default="", description="Why we extracted this action — shown to the PM for context.")
+
+
 class LLMProvider(ABC):
+    @abstractmethod
+    def summarize_meeting(
+        self,
+        parsed: ParsedMeeting,
+        project_context: str = "",
+        closing_remarks: str = "",
+    ) -> str:
+        """Generate a 2-4 sentence executive summary suitable for the top of
+        the meeting-minutes PDF and the opening of the client email. Should:
+          - Lead with overall progress + tone of the meeting
+          - Call out critical-path risks (action items with high-priority
+            language) by NAME
+          - End with what the next session focuses on
+
+        Never invent. If the parsed structure is empty, return a short
+        neutral line ("Meeting captured. No discussion content recorded.").
+        """
+
+    @abstractmethod
+    def suggest_action_from_note(
+        self,
+        note_text: str,
+        note_topic: str = "",
+        project_context: str = "",
+        attendees_roster: Optional[list[dict]] = None,
+    ) -> Optional[SuggestedAction]:
+        """Propose a single ActionItem extracted from a planner note. Returns
+        None when the note doesn't look actionable (purely informational,
+        observation-only, etc.) — caller surfaces a 'no clear action' hint."""
+
+    @abstractmethod
+    def briefing_for_user(self, user_name: str, facts: dict) -> str:
+        """Generate 2-3 sentence personalized Home briefing from the numeric
+        facts. Always 2nd person ('You have...'), never 1st person plural.
+
+        ``facts`` shape::
+
+            {
+              "new_actions": int,
+              "overdue_actions": int,
+              "new_meetings_touched": int,
+              "new_agendas_touched": int,
+              "new_follow_up_notes": int,
+              "days_since_last_seen": int | None,
+            }
+
+        Returns plain prose (not bullets). If everything is zero the prompt
+        instructs the model to return an "all clear" line so the card still
+        renders sensibly on quiet days.
+        """
+
     @abstractmethod
     def parse_meeting_notes(
         self,
@@ -225,6 +284,254 @@ class OpenAIProvider(LLMProvider):
             raise RuntimeError(f"OpenAI returned invalid JSON: {exc}\n---\n{content}")
 
         return ParsedMeeting(**data)
+
+
+    # ============================================================
+    # Suggest action from note
+    # ============================================================
+    NOTE_ACTION_SYSTEM_PROMPT = """\
+You read a planner note from a project manager at an electrical engineering \
+consulting firm and decide whether it implies a concrete action item.
+
+Return a JSON object with this exact shape:
+{
+  "text": "string — the action, imperative mood ('Reach out to utility…')",
+  "owner": "string — best guess at responsible person (full name if a roster is provided), or empty string",
+  "due_date": "YYYY-MM-DD or null when not stated/inferable",
+  "rationale": "string — one sentence on why this is an action, for the PM to confirm"
+}
+
+OR return exactly this when the note is purely informational and contains no \
+implied action:
+{"text": "", "owner": "", "due_date": null, "rationale": "Note is informational; no clear action."}
+
+Rules:
+- Be conservative. Don't invent actions where the note is just an observation.
+- Prefer the imperative ("Submit the package", "Confirm with vendor") not \
+  noun phrases ("Package submittal").
+- If a roster is provided, use FULL NAMES from it for `owner`.
+- Never write "TBD" or "TBC" for due_date — use null.
+- Don't repeat the note verbatim — extract the action.
+"""
+
+    def suggest_action_from_note(
+        self,
+        note_text: str,
+        note_topic: str = "",
+        project_context: str = "",
+        attendees_roster: Optional[list[dict]] = None,
+    ) -> Optional[SuggestedAction]:
+        body = (note_text or "").strip()
+        if not body:
+            return None
+
+        roster_lines = []
+        if attendees_roster:
+            for p in attendees_roster:
+                roster_lines.append(
+                    f"- {p.get('full_name','')} ({p.get('initials','')})"
+                )
+        roster_block = (
+            "\nRoster (use these full names for `owner`):\n" + "\n".join(roster_lines)
+            if roster_lines else ""
+        )
+
+        user_msg = (
+            f"Project context: {project_context or 'Solar PV engineering project'}\n"
+            f"Note topic: {note_topic or '(none)'}\n"
+            f"Note text:\n\"\"\"\n{body}\n\"\"\"\n"
+            f"{roster_block}\n\nReturn the JSON now."
+        )
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.NOTE_ACTION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_completion_tokens=300,
+        )
+        content = response.choices[0].message.content or "{}"
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+
+        text = (data.get("text") or "").strip()
+        if not text:
+            # The "informational only" signal — return a SuggestedAction with
+            # empty text + the rationale so the UI can show "no clear action"
+            # rather than just blanking out.
+            return SuggestedAction(
+                text="",
+                rationale=data.get("rationale") or "Note is informational; no clear action.",
+            )
+        return SuggestedAction(
+            text=text,
+            owner=(data.get("owner") or "").strip(),
+            due_date=data.get("due_date") or None,
+            rationale=(data.get("rationale") or "").strip(),
+        )
+
+
+    # ============================================================
+    # Executive summary
+    # ============================================================
+    SUMMARY_SYSTEM_PROMPT = """\
+You are an executive-summary writer for an electrical engineering consulting \
+firm (Castillo Engineering, solar PV). You receive a structured summary of a \
+project coordination meeting and produce a 2-4 sentence executive summary that \
+sits at the top of a client-facing PDF.
+
+Tone:
+- Confident, factual, plain English. No marketing language, no hedging.
+- Lead with overall progress/posture (forward progress / blockers / mixed).
+- Name 1-2 critical-path risks or decisions by their specifics (e.g. \
+  "utility recloser settings", "geotech soil values"), not generic terms.
+- End with the focus for the next session.
+
+Strict rules:
+- 2 to 4 sentences total. Not bullets. Not a list. Prose paragraph.
+- Never invent. If the input lacks a section, say less.
+- Don't repeat the meeting date or project name — those are already on the PDF.
+- Don't list attendees.
+- No first-person pronouns ("we", "our team"). Third-person neutral.
+"""
+
+    def summarize_meeting(
+        self,
+        parsed: ParsedMeeting,
+        project_context: str = "",
+        closing_remarks: str = "",
+    ) -> str:
+        # Short-circuit on empty input so we don't burn tokens on nothing.
+        if not parsed.discussion_points and not parsed.action_items:
+            return "Meeting captured. No discussion content recorded."
+
+        # Render a compact textual summary of the structured meeting that
+        # the LLM can reason over. Keep it tight — agenda titles, discussion
+        # labels + first sentence of content, and open/pending action text.
+        lines: list[str] = []
+        if project_context:
+            lines.append(f"Project: {project_context}")
+        if parsed.agenda_items:
+            lines.append("Agenda topics: " + "; ".join(
+                a.text for a in parsed.agenda_items[:8]
+            ))
+        if parsed.discussion_points:
+            lines.append("Discussion points:")
+            for dp in parsed.discussion_points[:8]:
+                label = (dp.label or "").strip()
+                content = (dp.content or "").strip()
+                # Trim long content to first ~140 chars so the prompt stays small
+                short = content if len(content) <= 140 else content[:140] + "…"
+                tag = f"[{dp.discipline}] " if dp.discipline else ""
+                lines.append(f"  - {tag}{label + ': ' if label else ''}{short}")
+        open_actions = [
+            a for a in parsed.action_items
+            if (a.status or "open").lower() in ("open", "pending")
+        ]
+        if open_actions:
+            lines.append("Open action items:")
+            for a in open_actions[:8]:
+                owner = f" ({a.owner})" if a.owner else ""
+                due = f" due {a.due_date}" if a.due_date else ""
+                lines.append(f"  - {a.text}{owner}{due}")
+        if closing_remarks:
+            lines.append("Closing remarks (PM-written): " + closing_remarks[:300])
+
+        user_msg = "\n".join(lines) + "\n\nWrite the executive summary."
+
+        # GPT-5-family models reject the legacy `max_tokens` parameter and
+        # require `max_completion_tokens` instead. We always send the new
+        # form — OpenAI's older models (gpt-4o, gpt-3.5-turbo) still accept
+        # it as an alias, so this is safe across the matrix.
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.3,
+            max_completion_tokens=400,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        # Sanity-bound: cap at 800 chars even if the model went long.
+        if len(text) > 800:
+            text = text[:797] + "…"
+        return text
+
+
+    # ============================================================
+    # Personalized Home briefing
+    # ============================================================
+    BRIEFING_SYSTEM_PROMPT = """\
+You write the personalized "since you were last here..." briefing card at the \
+top of the Home page for a PM at an electrical engineering consulting firm \
+(Castillo Engineering, solar PV projects). You receive a small JSON object of \
+numeric facts about what's changed since the PM last visited.
+
+Style:
+- Always 2nd person ("You have...", "You'll want to..."). Never "we" / "our".
+- 2 to 3 sentences. Plain prose paragraph. Not bullets. Not a list.
+- Lead with the most important number, in this priority order:
+    1. overdue actions > 0
+    2. new actions assigned to them > 0
+    3. meetings touched > 0
+    4. follow-up notes > 0
+    5. agendas touched > 0
+- If EVERY count is zero, return exactly:
+  "All clear — nothing requires your attention since you were last here."
+- Confident, factual, plain English. No marketing. No "let's".
+- Reference the days-since-last-seen casually when it's set and > 0 \
+  (e.g. "Since you were last here 3 days ago..."). Skip the time reference \
+  when days_since_last_seen is 0 or null.
+- Don't invent specifics. The PM gets the chip row of counts above the \
+  prose, so don't repeat every number — call out 1-2 priorities.
+"""
+
+    def briefing_for_user(self, user_name: str, facts: dict) -> str:
+        # Short-circuit on the "everything's quiet" case so we don't burn
+        # tokens on it. The chip row hides empty pills already; this just
+        # ensures the prose stays in sync.
+        counts = (
+            int(facts.get("new_actions", 0))
+            + int(facts.get("overdue_actions", 0))
+            + int(facts.get("new_meetings_touched", 0))
+            + int(facts.get("new_agendas_touched", 0))
+            + int(facts.get("new_follow_up_notes", 0))
+        )
+        if counts == 0:
+            return "All clear — nothing requires your attention since you were last here."
+
+        first_name = (user_name or "").strip().split()[0] if user_name else ""
+        ctx_lines = [
+            f"PM name: {first_name or '(unknown)'}",
+            f"Days since last seen: {facts.get('days_since_last_seen')}",
+            f"Overdue actions assigned to them: {facts.get('overdue_actions', 0)}",
+            f"New actions assigned to them: {facts.get('new_actions', 0)}",
+            f"Meetings touched since last visit: {facts.get('new_meetings_touched', 0)}",
+            f"Pre-meeting agendas touched: {facts.get('new_agendas_touched', 0)}",
+            f"Follow-up notes coming due: {facts.get('new_follow_up_notes', 0)}",
+        ]
+        user_msg = "\n".join(ctx_lines) + "\n\nWrite the briefing (2-3 sentences)."
+
+        # gpt-5 family rejects `max_tokens` — always use `max_completion_tokens`.
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.BRIEFING_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            max_completion_tokens=200,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        # Sanity-bound: cap at 600 chars even if the model went long.
+        if len(text) > 600:
+            text = text[:597] + "…"
+        return text
 
 
 # ============================================================

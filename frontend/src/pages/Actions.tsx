@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
-import { StatusSelect, StatusPill } from "@/components/StatusPill";
+import { StatusSelect } from "@/components/StatusPill";
+import { useConfirm } from "@/components/ConfirmDialog";
+import UpdatedByLine from "@/components/UpdatedByLine";
 import { useApp } from "@/lib/state";
 import {
   listActions,
+  actionsCsvUrl,
   updateAction,
   deleteAction,
   createAction,
@@ -22,12 +25,31 @@ const STATUS_FILTERS = [
   { value: "cancelled", label: "Cancelled only" },
 ] as const;
 
+/**
+ * Split a comma-separated owner string into trimmed, non-empty parts.
+ * "Roashaael Mary John, Dylan Wraga" -> ["Roashaael Mary John", "Dylan Wraga"]
+ */
+function splitOwners(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 export default function Actions() {
   const { currentProject } = useApp();
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [filter, setFilter] = useState<string>("open_pending");
+  const [ownerFilter, setOwnerFilter] = useState<string>("__all__");
   const [loading, setLoading] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkMode, setBulkMode] = useState<null | "owner" | "due">(null);
+  const [bulkOwnerValue, setBulkOwnerValue] = useState("");
+  const [bulkDueValue, setBulkDueValue] = useState("");
+  const confirm = useConfirm();
 
   const load = async () => {
     if (!currentProject) return;
@@ -45,15 +67,81 @@ export default function Actions() {
     void load();
   }, [currentProject?.id]);
 
+  // Reset selection + bulk panels whenever the project changes.
+  useEffect(() => {
+    setSelectedIds(new Set());
+    setBulkMode(null);
+    setOwnerFilter("__all__");
+  }, [currentProject?.id]);
+
+  // Build the deduped, case-insensitively-sorted owner list off all loaded
+  // actions (not just the visible ones — picking from a hidden owner is a
+  // legitimate use case).
+  const ownerOptions = useMemo(() => {
+    const seen = new Map<string, string>(); // lower -> display
+    for (const a of actions) {
+      for (const part of splitOwners(a.owner)) {
+        const key = part.toLowerCase();
+        if (!seen.has(key)) seen.set(key, part);
+      }
+    }
+    return Array.from(seen.values()).sort((x, y) =>
+      x.toLowerCase().localeCompare(y.toLowerCase())
+    );
+  }, [actions]);
+
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
 
   const filtered = actions.filter((a) => {
-    if (filter === "all") return true;
-    if (filter === "open_pending")
-      return a.status === "open" || a.status === "pending";
-    return a.status === filter;
+    // Status filter
+    if (filter === "open_pending") {
+      if (!(a.status === "open" || a.status === "pending")) return false;
+    } else if (filter !== "all") {
+      if (a.status !== filter) return false;
+    }
+    // Owner filter (case-insensitive substring on the comma-split parts)
+    if (ownerFilter !== "__all__") {
+      const needle = ownerFilter.toLowerCase();
+      const hit = splitOwners(a.owner).some((p) =>
+        p.toLowerCase().includes(needle)
+      );
+      if (!hit) return false;
+    }
+    return true;
   });
+
+  const visibleIds = filtered.map((a) => a.id);
+  const allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const someVisibleSelected =
+    visibleIds.some((id) => selectedIds.has(id)) && !allVisibleSelected;
+
+  const toggleOne = (id: number, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const toggleAllVisible = (checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        for (const id of visibleIds) next.add(id);
+      } else {
+        for (const id of visibleIds) next.delete(id);
+      }
+      return next;
+    });
+  };
+
+  const clearSelection = () => {
+    setSelectedIds(new Set());
+    setBulkMode(null);
+  };
 
   const handlePatch = async (id: number, patch: Partial<ActionItem>) => {
     // Optimistic update
@@ -66,10 +154,21 @@ export default function Actions() {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this action?")) return;
-    await deleteAction(id);
-    setActions(actions.filter((a) => a.id !== id));
+  const handleDelete = async (action: ActionItem) => {
+    const ok = await confirm({
+      title: "Delete this action?",
+      body: action.text,
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
+    await deleteAction(action.id);
+    setActions(actions.filter((a) => a.id !== action.id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(action.id);
+      return next;
+    });
   };
 
   const handleAdd = async () => {
@@ -86,6 +185,58 @@ export default function Actions() {
       status: "open",
     });
     setActions([newRow, ...actions]);
+  };
+
+  // ---------- Bulk operations ----------
+  // All four bulk handlers fan out via Promise.all so N updates hit the API
+  // in parallel rather than serial. After every bulk op we clear the
+  // selection and refetch to keep our view consistent with the server.
+
+  const runBulk = async (patch: Partial<ActionItem>) => {
+    const ids = Array.from(selectedIds);
+    if (!ids.length) return;
+    setBulkBusy(true);
+    try {
+      await Promise.all(ids.map((id) => updateAction(id, patch as any)));
+      await load();
+      clearSelection();
+    } catch (e: any) {
+      alert(e.message || "Bulk update failed");
+      void load();
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const bulkMarkCompleted = async () => {
+    const ok = await confirm({
+      title: `Mark ${selectedIds.size} action${selectedIds.size === 1 ? "" : "s"} as completed?`,
+      confirmLabel: "Mark completed",
+    });
+    if (!ok) return;
+    await runBulk({ status: "completed" });
+  };
+
+  const bulkMarkCancelled = async () => {
+    const ok = await confirm({
+      title: `Mark ${selectedIds.size} action${selectedIds.size === 1 ? "" : "s"} as cancelled?`,
+      body: "Cancelled actions are excluded from rolling reports.",
+      confirmLabel: "Mark cancelled",
+      destructive: true,
+    });
+    if (!ok) return;
+    await runBulk({ status: "cancelled" });
+  };
+
+  const bulkApplyOwner = async () => {
+    // Empty string is a legitimate value — it clears the owner.
+    await runBulk({ owner: bulkOwnerValue });
+    setBulkOwnerValue("");
+  };
+
+  const bulkApplyDue = async () => {
+    await runBulk({ due_date: bulkDueValue || null });
+    setBulkDueValue("");
   };
 
   const counts = {
@@ -106,6 +257,7 @@ export default function Actions() {
               className="select w-44"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
+              aria-label="Status filter"
             >
               {STATUS_FILTERS.map((f) => (
                 <option key={f.value} value={f.value}>
@@ -113,6 +265,35 @@ export default function Actions() {
                 </option>
               ))}
             </select>
+            <select
+              className="select w-48"
+              value={ownerFilter}
+              onChange={(e) => setOwnerFilter(e.target.value)}
+              aria-label="Owner filter"
+            >
+              <option value="__all__">All owners</option>
+              {ownerOptions.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+            <a
+              className="btn-ghost"
+              href={
+                currentProject
+                  ? actionsCsvUrl(
+                      currentProject.id,
+                      filter || "all",
+                      ownerFilter === "__all__" ? "" : ownerFilter,
+                    )
+                  : "#"
+              }
+              title="Download the currently-filtered actions as a CSV (Excel-friendly)"
+              aria-disabled={!currentProject}
+            >
+              📥 Export CSV
+            </a>
             <button className="btn-primary" onClick={handleAdd}>
               + Add action
             </button>
@@ -120,16 +301,143 @@ export default function Actions() {
         }
       />
 
+      {selectedIds.size > 0 && (
+        <div className="sticky top-2 z-20 bg-white border border-slate-200 rounded-lg shadow-sm flex flex-wrap gap-2 p-3 items-center">
+          <span className="text-sm font-semibold text-slate-700 mr-2">
+            {selectedIds.size} selected
+          </span>
+          <button
+            className="btn-ghost"
+            onClick={bulkMarkCompleted}
+            disabled={bulkBusy}
+          >
+            Mark Completed
+          </button>
+          <button
+            className="btn-danger"
+            onClick={bulkMarkCancelled}
+            disabled={bulkBusy}
+          >
+            Mark Cancelled
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={() => {
+              setBulkMode(bulkMode === "owner" ? null : "owner");
+              setBulkOwnerValue("");
+            }}
+            disabled={bulkBusy}
+          >
+            Change owner…
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={() => {
+              setBulkMode(bulkMode === "due" ? null : "due");
+              setBulkDueValue("");
+            }}
+            disabled={bulkBusy}
+          >
+            Change due date…
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={clearSelection}
+            disabled={bulkBusy}
+          >
+            Clear selection
+          </button>
+
+          {bulkMode === "owner" && (
+            <div className="w-full flex gap-2 items-center pt-2">
+              <input
+                className="input flex-1"
+                placeholder="New owner (comma-separate for multiple)"
+                value={bulkOwnerValue}
+                onChange={(e) => setBulkOwnerValue(e.target.value)}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void bulkApplyOwner();
+                  }
+                  if (e.key === "Escape") setBulkMode(null);
+                }}
+              />
+              <button
+                className="btn-primary"
+                onClick={bulkApplyOwner}
+                disabled={bulkBusy}
+              >
+                Apply
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={() => setBulkMode(null)}
+                disabled={bulkBusy}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {bulkMode === "due" && (
+            <div className="w-full flex gap-2 items-center pt-2">
+              <input
+                type="date"
+                className="input flex-1"
+                value={bulkDueValue}
+                onChange={(e) => setBulkDueValue(e.target.value)}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    void bulkApplyDue();
+                  }
+                  if (e.key === "Escape") setBulkMode(null);
+                }}
+              />
+              <button
+                className="btn-primary"
+                onClick={bulkApplyDue}
+                disabled={bulkBusy}
+              >
+                Apply
+              </button>
+              <button
+                className="btn-ghost"
+                onClick={() => setBulkMode(null)}
+                disabled={bulkBusy}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <div className="card p-5 text-sm text-brand-gray">Loading…</div>
       ) : filtered.length === 0 ? (
         <EmptyState
           title="No actions match this filter"
-          hint="Try a different status filter or add a new item."
+          hint="Try a different status or owner filter, or add a new item."
         />
       ) : (
         <div className="card divide-y divide-brand-lightgray/60 overflow-hidden">
-          <div className="grid grid-cols-[1fr_140px_140px_140px_60px] gap-3 px-5 py-2 text-xs uppercase tracking-wider text-brand-gray font-semibold bg-brand-nearwhite/70">
+          <div className="grid grid-cols-[32px_1fr_140px_140px_140px_60px] gap-3 px-5 py-2 text-xs uppercase tracking-wider text-brand-gray font-semibold bg-brand-nearwhite/70 items-center">
+            <div className="flex justify-center">
+              <input
+                type="checkbox"
+                aria-label="Select all visible"
+                tabIndex={-1}
+                checked={allVisibleSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = someVisibleSelected;
+                }}
+                onChange={(e) => toggleAllVisible(e.target.checked)}
+              />
+            </div>
             <div>Action</div>
             <div>Owner</div>
             <div>Due</div>
@@ -140,11 +448,21 @@ export default function Actions() {
             const raisedMeeting = meetings.find(
               (m) => m.id === a.originating_meeting_id
             );
+            const checked = selectedIds.has(a.id);
             return (
               <div
                 key={a.id}
-                className="grid grid-cols-[1fr_140px_140px_140px_60px] gap-3 px-5 py-3 items-start"
+                className="grid grid-cols-[32px_1fr_140px_140px_140px_60px] gap-3 px-5 py-3 items-start"
               >
+                <div className="flex justify-center pt-2">
+                  <input
+                    type="checkbox"
+                    aria-label={`Select action ${a.id}`}
+                    tabIndex={-1}
+                    checked={checked}
+                    onChange={(e) => toggleOne(a.id, e.target.checked)}
+                  />
+                </div>
                 <div className="space-y-1">
                   <textarea
                     className="textarea text-sm"
@@ -169,6 +487,11 @@ export default function Actions() {
                       ? format(parseISO(raisedMeeting.meeting_date), "MMM d, yyyy")
                       : "—"}
                   </div>
+                  <UpdatedByLine
+                    user={a.created_by}
+                    at={a.created_at}
+                    prefix="Created by"
+                  />
                 </div>
                 <input
                   className="input"
@@ -196,7 +519,7 @@ export default function Actions() {
                 />
                 <button
                   className="btn-danger"
-                  onClick={() => handleDelete(a.id)}
+                  onClick={() => handleDelete(a)}
                   title="Delete"
                 >
                   ×

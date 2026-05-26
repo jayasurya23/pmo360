@@ -9,10 +9,18 @@ RUN npm ci --no-audit --no-fund
 
 COPY . .
 
-# VITE_API_BASE controls where the React app sends API calls.
-# Defaults to /api (same origin) so a single reverse proxy works.
+# Vite inlines VITE_* env vars at build time. They have to be ARG-ed in
+# explicitly so docker compose `build.args` can pass them through.
+# All four are PUBLIC values — tenant + client IDs are not secrets in the
+# PKCE flow.
 ARG VITE_API_BASE=/api
-ENV VITE_API_BASE=$VITE_API_BASE
+ARG VITE_AZURE_TENANT_ID=
+ARG VITE_AZURE_CLIENT_ID=
+ARG VITE_AZURE_REDIRECT_URI=
+ENV VITE_API_BASE=$VITE_API_BASE \
+    VITE_AZURE_TENANT_ID=$VITE_AZURE_TENANT_ID \
+    VITE_AZURE_CLIENT_ID=$VITE_AZURE_CLIENT_ID \
+    VITE_AZURE_REDIRECT_URI=$VITE_AZURE_REDIRECT_URI
 RUN npm run build
 
 

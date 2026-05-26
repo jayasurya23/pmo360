@@ -124,6 +124,8 @@ NEAR_BLACK = HexColor(BrandColors.NEAR_BLACK)
 DARK_GRAY = HexColor(BrandColors.DARK_GRAY)
 LIGHT_GRAY = HexColor(BrandColors.LIGHT_GRAY)
 NEAR_WHITE = HexColor(BrandColors.NEAR_WHITE)
+GOLD = HexColor(BrandColors.GOLD)
+GOLD_TINT_BG = HexColor("#fdf6d4")        # soft gold for callout backgrounds
 
 # Status pill colors — pulled from the Castillo secondary palette.
 # Each entry is (background, text-color) so the cancelled pill (light gray)
@@ -482,6 +484,11 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
             f"<b>Scope:</b>&nbsp;&nbsp;&nbsp;&nbsp;{meeting.project.scope}",
             s["kv"],
         ))
+
+    # Note: the AI-generated executive summary (Meeting.executive_summary) is
+    # intentionally NOT rendered on the client-facing PDF — the summary stays
+    # internal to PMO 360 (visible in the app, usable as the email body) so
+    # we never deliver model-generated text to a client without PM review.
 
     # ---- Attendees ----
     story.append(Paragraph("Attendees", s["section"]))

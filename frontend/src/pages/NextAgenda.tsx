@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
@@ -10,10 +10,13 @@ import {
   deleteAgenda,
   listMeetings,
   getLatestMeeting,
+  getMeeting,
   listActions,
   generateAgendaDoc,
   listProjectRoster,
   listGlobalRoster,
+  agendaIcsUrl,
+  fetchMyPreferences,
 } from "@/lib/api";
 import type {
   Agenda,
@@ -24,7 +27,11 @@ import type {
 } from "@/lib/types";
 import { format, parseISO } from "date-fns";
 import AttendeeChips from "@/components/AttendeeChips";
+import { useConfirm } from "@/components/ConfirmDialog";
+import { StatusSelect } from "@/components/StatusPill";
 import { handleTextareaTab } from "@/lib/textareaTab";
+import { useAutoSave } from "@/lib/useAutoSave";
+import SaveStatus from "@/components/SaveStatus";
 
 const DEFAULT_DISCIPLINES = ["Civil", "Electrical", "Structural", "General"];
 
@@ -95,10 +102,48 @@ export default function NextAgenda() {
   const [globalRoster, setGlobalRoster] = useState<GlobalAttendee[]>([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  // Optimistic-concurrency token. Set from the loaded/saved Agenda; sent
+  // back on every PUT as `expected_version` so the server can 409 stale
+  // writes (e.g. another PM editing the same agenda).
+  const [currentVersion, setCurrentVersion] = useState<number | null>(null);
+  const confirm = useConfirm();
 
   const projectId = currentProject?.id;
 
+  // Tracks the last projectId for which we attempted an auto-load of the most
+  // recent agenda. Prevents re-fetching as the user edits, but allows a fresh
+  // auto-load when the user switches portfolios.
+  const autoLoadedForProject = useRef<number | null>(null);
+  // Set when the user clicks "+ New" — they've explicitly chosen a blank slate,
+  // so we skip auto-load until they navigate away and back to this portfolio.
+  const userChoseBlank = useRef<Set<number>>(new Set());
+
+  // Seed `meetingDuration` from the user's saved preference the first time
+  // the page mounts, BUT only if we're not about to hydrate an existing
+  // agenda (in which case the agenda's stored duration wins). Failures fall
+  // through to the hardcoded 30-min default.
+  const durationSeededRef = useRef(false);
+  useEffect(() => {
+    if (durationSeededRef.current) return;
+    if (agendaId) return; // existing agenda will hydrate its own duration
+    fetchMyPreferences()
+      .then((prefs) => {
+        if (durationSeededRef.current) return;
+        if (prefs?.default_meeting_duration) {
+          setMeetingDuration(prefs.default_meeting_duration);
+        }
+        durationSeededRef.current = true;
+      })
+      .catch(() => {
+        durationSeededRef.current = true;
+      });
+  }, [agendaId]);
+
   // -- Load saved agendas list + roster + meetings whenever project changes --
+  // Important: we intentionally do NOT call seedAttendeesFromLatest() here.
+  // Doing so silently clobbered a hand-curated attendee list whenever the user
+  // switched portfolios mid-edit. The auto-load effect below + handleNew +
+  // the explicit "↺ Reload from source" button now own attendee seeding.
   useEffect(() => {
     if (!projectId) return;
     listAgendas(projectId).then(setSavedAgendas);
@@ -118,7 +163,6 @@ export default function NextAgenda() {
         }))
       );
     });
-    void seedAttendeesFromLatest();
   }, [projectId]);
 
   // -- Load specific agenda if URL or local id changes --
@@ -126,6 +170,40 @@ export default function NextAgenda() {
     if (!agendaId) return;
     getAgenda(agendaId).then((a) => loadFromAgenda(a));
   }, [agendaId]);
+
+  // -- Auto-load most recent saved agenda on first visit to a portfolio --
+  // Mirrors the Streamlit behaviour: don't drop the user on a blank page if
+  // they already have a draft from last time. Skips when:
+  //   * a ?agenda=<id> deep-link is in the URL
+  //   * an agenda is already loaded
+  //   * we've already auto-loaded for this portfolio
+  //   * the user clicked "+ New" for this portfolio
+  useEffect(() => {
+    if (!projectId) return;
+    if (agendaIdParam) return;
+    if (agendaId) return;
+    if (autoLoadedForProject.current === projectId) return;
+    if (userChoseBlank.current.has(projectId)) return;
+    autoLoadedForProject.current = projectId;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await listAgendas(projectId);
+        if (cancelled) return;
+        if (!list.length) return; // No saved agendas yet — leave editor blank.
+        const latestId = list[0].id;
+        const agenda = await getAgenda(latestId);
+        if (cancelled) return;
+        loadFromAgenda(agenda);
+        setParams({ agenda: String(latestId) }, { replace: true });
+      } catch {
+        // Silent — keep the editor in its empty state on failure.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, agendaIdParam, agendaId]);
 
   const seedAttendeesFromLatest = async () => {
     if (!projectId) return;
@@ -141,8 +219,44 @@ export default function NextAgenda() {
     }
   };
 
+  /**
+   * Replace the attendees list with the roster from the currently-selected
+   * source meeting. Asks the user first if they've already curated
+   * attendees, so the existing list isn't silently overwritten.
+   */
+  async function handleReloadAttendeesFromSource() {
+    if (!sourceMeetingId) return;
+    if (attendees.length > 0) {
+      const ok = await confirm({
+        title: "Replace attendees with source meeting's roster?",
+        body:
+          `This will discard the ${attendees.length} attendee${
+            attendees.length === 1 ? "" : "s"
+          } currently in this agenda and replace them with the roster from ` +
+          "the source meeting. Sub-project, discussion points, etc. stay as-is.",
+        confirmLabel: "Replace attendees",
+        destructive: true,
+      });
+      if (!ok) return;
+    }
+    try {
+      const full = await getMeeting(sourceMeetingId);
+      setAttendees(
+        full.attendees.map((a) => ({
+          full_name: a.full_name,
+          initials: a.initials,
+          organization: a.organization || "",
+        }))
+      );
+      setMsg(`Loaded ${full.attendees.length} attendees from source meeting.`);
+    } catch (e: any) {
+      setMsg(`Couldn't reload attendees: ${e.message}`);
+    }
+  }
+
   const loadFromAgenda = (a: Agenda) => {
     setAgendaId(a.id);
+    setCurrentVersion(a.version ?? 1);
     setTitle(a.title || "");
     setUpcomingDate(a.upcoming_date);
     setMeetingDuration(a.meeting_duration_minutes || 30);
@@ -159,7 +273,9 @@ export default function NextAgenda() {
   };
 
   const handleNew = () => {
+    if (projectId) userChoseBlank.current.add(projectId);
     setAgendaId(null);
+    setCurrentVersion(null);
     setParams({});
     setTitle("");
     setUpcomingDate(new Date().toISOString().slice(0, 10));
@@ -173,30 +289,75 @@ export default function NextAgenda() {
     void seedAttendeesFromLatest();
   };
 
+  /**
+   * Build the save payload from current state. Shared by the explicit Save
+   * button and the auto-save hook so they stay in sync.
+   */
+  function buildAgendaPayload() {
+    return {
+      project_id: projectId!,
+      agenda_id: agendaId,
+      // Only meaningful for updates — the backend ignores it on inserts.
+      expected_version: agendaId ? currentVersion : null,
+      upcoming_date: upcomingDate,
+      source_meeting_id: sourceMeetingId,
+      title: title || null,
+      meeting_duration_minutes: meetingDuration,
+      schedule_version_override: scheduleVersionOverride || null,
+      disciplines,
+      dp_text: dpText,
+      recap_text: recapText,
+      attendees,
+      open_actions: openActions,
+      risks,
+      decisions,
+      schedule_changes: scheduleChanges,
+    };
+  }
+
+  async function doSaveAgenda() {
+    if (!projectId) return;
+    const saved = await saveAgenda(buildAgendaPayload());
+    setAgendaId(saved.id);
+    setCurrentVersion(saved.version);
+    setParams({ agenda: String(saved.id) }, { replace: true });
+    return saved;
+  }
+
+  // ---- Debounced auto-save (only for existing agendas) ----
+  // Creating new agendas via auto-save would explode in N drafts per
+  // keystroke; the explicit Save / Save draft button is the only path that
+  // creates the very first row.
+  const autoSaveData = {
+    title, upcomingDate, meetingDuration, scheduleVersionOverride,
+    disciplines, dpText, recapText, attendees, openActions,
+    risks, decisions, scheduleChanges, sourceMeetingId,
+  };
+  const autoSave = useAutoSave({
+    data: autoSaveData,
+    enabled: !!agendaId && !!projectId,
+    save: async () => { await doSaveAgenda(); },
+  });
+
+  async function handleReloadAgenda() {
+    if (!agendaId) return;
+    try {
+      const fresh = await getAgenda(agendaId);
+      loadFromAgenda(fresh);
+      setMsg(
+        "Reloaded the latest version. Review your changes, then save again.",
+      );
+    } catch (e: any) {
+      setMsg(`Reload failed: ${e.message}`);
+    }
+  }
+
   const handleSave = async () => {
     if (!projectId) return;
     setBusy(true);
     setMsg(null);
     try {
-      const saved = await saveAgenda({
-        project_id: projectId,
-        agenda_id: agendaId,
-        upcoming_date: upcomingDate,
-        source_meeting_id: sourceMeetingId,
-        title: title || null,
-        meeting_duration_minutes: meetingDuration,
-        schedule_version_override: scheduleVersionOverride || null,
-        disciplines,
-        dp_text: dpText,
-        recap_text: recapText,
-        attendees,
-        open_actions: openActions,
-        risks,
-        decisions,
-        schedule_changes: scheduleChanges,
-      });
-      setAgendaId(saved.id);
-      setParams({ agenda: String(saved.id) });
+      await doSaveAgenda();
       setSavedAgendas(await listAgendas(projectId));
       setMsg("Saved.");
     } catch (e: any) {
@@ -207,7 +368,14 @@ export default function NextAgenda() {
   };
 
   const handleDelete = async () => {
-    if (!agendaId || !confirm("Delete this saved agenda?")) return;
+    if (!agendaId) return;
+    const ok = await confirm({
+      title: "Delete this agenda?",
+      body: title || `Pre-meeting agenda — ${upcomingDate}`,
+      confirmLabel: "Delete agenda",
+      destructive: true,
+    });
+    if (!ok) return;
     await deleteAgenda(agendaId);
     handleNew();
     if (projectId) setSavedAgendas(await listAgendas(projectId));
@@ -276,6 +444,14 @@ export default function NextAgenda() {
         subtitle="Plan the next coordination meeting. Save your draft, then export a Castillo-branded PDF or DOCX."
         actions={
           <>
+            {agendaId && (
+              <SaveStatus
+                status={autoSave.status}
+                lastSavedAt={autoSave.lastSavedAt}
+                errorMessage={autoSave.errorMessage}
+                onReload={handleReloadAgenda}
+              />
+            )}
             <button className="btn-ghost" onClick={handleNew}>
               + New
             </button>
@@ -285,6 +461,15 @@ export default function NextAgenda() {
             <button className="btn-ghost" onClick={() => handleGenerate("pdf")} disabled={busy}>
               Export PDF
             </button>
+            {agendaId && (
+              <a
+                className="btn-ghost"
+                href={agendaIcsUrl(agendaId)}
+                title="Download an .ics file you can add to Outlook / Google Calendar"
+              >
+                📅 Add to calendar
+              </a>
+            )}
             <button className="btn-primary" onClick={handleSave} disabled={busy}>
               {busy ? "…" : agendaId ? "Save" : "Save draft"}
             </button>
@@ -371,21 +556,32 @@ export default function NextAgenda() {
         {meetings.length > 0 && (
           <div className="md:col-span-4">
             <label className="label">Source meeting (for carry-forward)</label>
-            <select
-              className="select"
-              value={sourceMeetingId || ""}
-              onChange={(e) =>
-                setSourceMeetingId(e.target.value ? Number(e.target.value) : null)
-              }
-            >
-              <option value="">(latest)</option>
-              {meetings.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {format(parseISO(m.meeting_date), "MMM d, yyyy")} —{" "}
-                  {m.title || "untitled"}
-                </option>
-              ))}
-            </select>
+            <div className="flex gap-2">
+              <select
+                className="select flex-1"
+                value={sourceMeetingId || ""}
+                onChange={(e) =>
+                  setSourceMeetingId(e.target.value ? Number(e.target.value) : null)
+                }
+              >
+                <option value="">(latest)</option>
+                {meetings.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {format(parseISO(m.meeting_date), "MMM d, yyyy")} —{" "}
+                    {m.title || "untitled"}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn-ghost shrink-0"
+                onClick={handleReloadAttendeesFromSource}
+                disabled={!sourceMeetingId}
+                title="Replace the attendees list with the roster from this source meeting"
+              >
+                ↺ Reload attendees
+              </button>
+            </div>
           </div>
         )}
       </section>
@@ -457,8 +653,7 @@ export default function NextAgenda() {
           {
             key: "status",
             label: "Status",
-            type: "select",
-            options: ["open", "pending", "completed", "cancelled"],
+            type: "status",
             colSpan: 2,
           },
         ]}
@@ -585,7 +780,7 @@ interface Col<T> {
   key: keyof T;
   label: string;
   colSpan: number;
-  type?: "text" | "textarea" | "date" | "select";
+  type?: "text" | "textarea" | "date" | "select" | "status";
   options?: string[];
 }
 function InlineTable<T extends Record<string, any>>({
@@ -677,6 +872,16 @@ function InlineTable<T extends Record<string, any>>({
                         <option key={o}>{o}</option>
                       ))}
                     </select>
+                  );
+                }
+                if (c.type === "status") {
+                  return (
+                    <div key={String(c.key)} style={colStyle}>
+                      <StatusSelect
+                        value={String(v || "open")}
+                        onChange={(nv) => setCell(nv)}
+                      />
+                    </div>
                   );
                 }
                 return (

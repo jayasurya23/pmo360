@@ -10,11 +10,14 @@ from sqlalchemy.orm import Session
 from db.models import (
     Meeting, MeetingAttendee, AgendaItem, DiscussionPoint, ActionItem,
     Project, ProjectAttendee, Deliverable, MeetingDeliverable,
+    GeneratedDocument,
 )
 from db.repository import (
     upsert_project_attendee, latest_meeting, open_actions, all_actions,
 )
 from llm.providers import get_provider, ParsedMeeting
+import logging
+_logger = logging.getLogger(__name__)
 from docgen import (
     generate_meeting_minutes_docx,
     generate_meeting_minutes_pdf,
@@ -49,7 +52,24 @@ def parse_notes_with_ai(
 
 def _write_meeting_children(session: Session, meeting: Meeting,
                             project: Project, parsed: ParsedMeeting,
-                            deliverables: Optional[list[dict]] = None) -> None:
+                            deliverables: Optional[list[dict]] = None,
+                            actor_id: Optional[int] = None) -> None:
+    # Build an email lookup keyed on (lower full_name, initials) so we can
+    # carry roster-stored emails through to MeetingAttendee.email without
+    # an extra round-trip per attendee.
+    from db.models import GlobalAttendee
+    proj_roster = (
+        session.query(ProjectAttendee)
+        .filter_by(project_id=project.id)
+        .all()
+    )
+    global_roster = session.query(GlobalAttendee).all()
+    email_lookup: dict[str, str] = {}
+    for r in (*proj_roster, *global_roster):
+        key = (r.full_name or "").strip().lower()
+        if r.email and key and key not in email_lookup:
+            email_lookup[key] = r.email
+
     for a in parsed.attendees:
         upsert_project_attendee(
             session, project_id=project.id,
@@ -57,10 +77,17 @@ def _write_meeting_children(session: Session, meeting: Meeting,
             initials=a.initials, organization=a.organization,
             first_seen_meeting_id=meeting.id,
         )
+        # An attendee dict from the LLM/parsed payload might or might not
+        # carry an email. Prefer what the client sent; fall back to the
+        # roster lookup.
+        attendee_email = getattr(a, "email", None) or email_lookup.get(
+            (a.full_name or "").strip().lower(), ""
+        )
         session.add(MeetingAttendee(
             meeting_id=meeting.id,
             full_name=a.full_name or a.initials,
             initials=a.initials, organization=a.organization,
+            email=attendee_email or None,
         ))
 
     for idx, d in enumerate(deliverables or []):
@@ -115,7 +142,22 @@ def _write_meeting_children(session: Session, meeting: Meeting,
             project_id=project.id,
             originating_meeting_id=meeting.id,
             text=a.text, owner=a.owner, due_date=due, status=a.status,
+            created_by_id=actor_id, updated_by_id=actor_id,
         ))
+
+
+def _try_generate_summary(parsed: ParsedMeeting, project: Project,
+                          closing_remarks: str = "") -> Optional[str]:
+    """Best-effort LLM summary generation. Returns None on any error so a
+    failed OpenAI call never blocks a meeting save. The PM can manually
+    regenerate from Review."""
+    try:
+        provider = get_provider()
+        context = f"{project.client.name if project.client else ''} / {project.name}"
+        return provider.summarize_meeting(parsed, context, closing_remarks)
+    except Exception as exc:
+        _logger.warning("Executive summary generation failed: %s", exc)
+        return None
 
 
 def save_parsed_meeting(
@@ -126,6 +168,7 @@ def save_parsed_meeting(
     raw_notes: str = "",
     title: str = "",
     deliverables: Optional[list[dict]] = None,
+    actor_id: Optional[int] = None,
 ) -> Meeting:
     meeting = Meeting(
         project_id=project.id,
@@ -134,11 +177,16 @@ def save_parsed_meeting(
         raw_notes=raw_notes,
         stage="draft",
         schedule_version_at_meeting=project.schedule_version,
+        created_by_id=actor_id,
+        updated_by_id=actor_id,
+        # Best-effort: generate the AI summary on first save. If OpenAI is
+        # slow/down, the column stays null and the PDF skips the block.
+        executive_summary=_try_generate_summary(parsed, project),
     )
     session.add(meeting)
     session.flush()
     _write_meeting_children(session, meeting, project, parsed,
-                            deliverables=deliverables)
+                            deliverables=deliverables, actor_id=actor_id)
     session.flush()
     return meeting
 
@@ -151,12 +199,15 @@ def update_parsed_meeting(
     raw_notes: str = "",
     title: str = "",
     deliverables: Optional[list[dict]] = None,
+    actor_id: Optional[int] = None,
 ) -> Meeting:
     meeting.meeting_date = meeting_date
     if title:
         meeting.title = title
     meeting.raw_notes = raw_notes
     meeting.updated_at = datetime.utcnow()
+    if actor_id is not None:
+        meeting.updated_by_id = actor_id
 
     for child in list(meeting.attendees):
         session.delete(child)
@@ -174,7 +225,7 @@ def update_parsed_meeting(
     session.flush()
 
     _write_meeting_children(session, meeting, meeting.project, parsed,
-                            deliverables=deliverables)
+                            deliverables=deliverables, actor_id=actor_id)
     session.flush()
     return meeting
 
@@ -240,33 +291,54 @@ def build_meeting_docs(session: Session, meeting: Meeting,
 
 
 def finalize_meeting(session: Session, meeting: Meeting) -> dict:
-    """Generate final client-ready documents and save to storage."""
+    """Generate final client-ready documents and save to storage.
+
+    Also writes a GeneratedDocument audit row per artifact so the team can
+    later see every PDF/docx/xlsx the app produced for this meeting — kind,
+    filename, storage path, file size, when, and whether it was a draft.
+    """
     storage = get_storage()
     project = meeting.project
     proj_slug = safe_filename_slug(project.name or "project")
 
     pdf_bytes = generate_meeting_minutes_pdf(meeting)
     pdf_bytes = add_status_form_fields(pdf_bytes, len(meeting.raised_actions))
-    pdf_path = storage.save(
-        f"{proj_slug}/{meeting_filename(meeting, 'Meeting_Minutes', 'pdf')}",
-        pdf_bytes,
-    )
+    pdf_filename = meeting_filename(meeting, "Meeting_Minutes", "pdf")
+    pdf_path = storage.save(f"{proj_slug}/{pdf_filename}", pdf_bytes)
 
     docx_bytes = generate_meeting_minutes_docx(meeting)
-    docx_path = storage.save(
-        f"{proj_slug}/{meeting_filename(meeting, 'Meeting_Minutes', 'docx')}",
-        docx_bytes,
-    )
+    docx_filename = meeting_filename(meeting, "Meeting_Minutes", "docx")
+    docx_path = storage.save(f"{proj_slug}/{docx_filename}", docx_bytes)
 
     actions = all_actions(session, project.id)
     xlsx_bytes = generate_action_items_xlsx(project, actions)
-    xlsx_path = storage.save(
-        f"{proj_slug}/Action_Items_Log_{safe_filename_slug(project.client.name) if project.client else 'project'}.xlsx",
-        xlsx_bytes,
+    xlsx_filename = (
+        f"Action_Items_Log_"
+        f"{safe_filename_slug(project.client.name) if project.client else 'project'}.xlsx"
     )
+    xlsx_path = storage.save(f"{proj_slug}/{xlsx_filename}", xlsx_bytes)
+
+    # ---- Audit-trail rows ----
+    # One GeneratedDocument per artifact. We log the FINAL versions only;
+    # the in-memory preview builds in `build_meeting_docs()` are intentionally
+    # not logged because they're transient.
+    for kind, filename, path, payload in (
+        ("minutes_pdf", pdf_filename, pdf_path, pdf_bytes),
+        ("minutes_docx", docx_filename, docx_path, docx_bytes),
+        ("actions_xlsx", xlsx_filename, xlsx_path, xlsx_bytes),
+    ):
+        session.add(GeneratedDocument(
+            meeting_id=meeting.id,
+            kind=kind,
+            filename=filename,
+            storage_path=path,
+            file_size_bytes=len(payload),
+            is_draft=False,
+        ))
 
     meeting.stage = "final"
     meeting.updated_at = datetime.utcnow()
+    session.flush()
 
     return {"pdf": pdf_path, "docx": docx_path, "xlsx": xlsx_path}
 

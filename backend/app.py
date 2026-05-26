@@ -25,7 +25,9 @@ from fastapi.staticfiles import StaticFiles
 from db import init_db
 from api import (
     clients, projects, meetings, actions, notes, agendas, schedules,
-    roster, dashboard, parse, documents, settings as settings_router,
+    roster, dashboard, parse, documents, search, me, users, templates,
+    attachments,
+    settings as settings_router,
 )
 
 
@@ -67,6 +69,11 @@ def create_app() -> FastAPI:
     app.include_router(agendas.router)
     app.include_router(schedules.router)
     app.include_router(settings_router.router)
+    app.include_router(search.router)
+    app.include_router(me.router)
+    app.include_router(users.router)
+    app.include_router(templates.router)
+    app.include_router(attachments.router)
 
     # ---- Logo + static assets (so the React app can pull the Castillo /
     # PMO 360 logos straight from the backend rather than duplicating them).

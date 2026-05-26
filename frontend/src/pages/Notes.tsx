@@ -1,36 +1,144 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
-import { listNotes, createNote, updateNote, deleteNote } from "@/lib/api";
-import type { Note } from "@/lib/types";
+import {
+  listNotes,
+  createNote,
+  updateNote,
+  deleteNote,
+  updateProject,
+  listProjectDeliverables,
+  suggestActionFromNote,
+  createAction,
+  getLatestMeeting,
+  type SuggestedAction,
+} from "@/lib/api";
+import type { Note, Deliverable, MeetingDetail } from "@/lib/types";
+import {
+  mergeSubProjects,
+  NEW_AREA_SENTINEL,
+  NEW_AREA_LABEL,
+} from "@/lib/subprojects";
 
 const PRIORITY_OPTS = ["Low", "Medium", "High"];
 const STATUS_OPTS = ["open", "closed"];
 
+// Special area-filter values. "" maps to "All", "__common__" matches notes
+// whose project_area is blank/null (no area set), and "__unspecified__" is
+// the same — kept separate so we can render a distinct label.
+const FILTER_ALL = "__all__";
+const FILTER_UNSPECIFIED = "__unspecified__";
+
 export default function NotesPage() {
-  const { currentProject } = useApp();
+  const { currentProject, refreshProjects } = useApp();
   const [notes, setNotes] = useState<Note[]>([]);
-  const [filter, setFilter] = useState<"all" | "open" | "closed">("open");
+  const [deliverables, setDeliverables] = useState<Deliverable[]>([]);
+  const [statusFilter, setStatusFilter] = useState<"all" | "open" | "closed">(
+    "open"
+  );
+  const [areaFilter, setAreaFilter] = useState<string>(FILTER_ALL);
   const [loading, setLoading] = useState(false);
+  const [showManage, setShowManage] = useState(false);
+  const confirm = useConfirm();
+
+  // Latest meeting on this portfolio — needed because ActionItem.originating_meeting_id
+  // is NOT NULL. We only enable the ✨ Suggest action button when there's a
+  // meeting to attribute the new action to.
+  const [latestMeeting, setLatestMeeting] = useState<MeetingDetail | null>(null);
+
+  // Suggestion modal state — driven at the page level so we can compose
+  // the createAction call here (with the latestMeeting we already fetched).
+  const [suggesting, setSuggesting] = useState<Note | null>(null);
+  const [suggestion, setSuggestion] = useState<SuggestedAction | null>(null);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
+  const [suggestionBusy, setSuggestionBusy] = useState(false);
 
   const load = async () => {
     if (!currentProject) return;
     setLoading(true);
-    const data = await listNotes(currentProject.id);
-    setNotes(data);
+    const [notesData, delivData, latestMtg] = await Promise.all([
+      listNotes(currentProject.id),
+      listProjectDeliverables(currentProject.id).catch(() => [] as Deliverable[]),
+      getLatestMeeting(currentProject.id).catch(() => null),
+    ]);
+    setNotes(notesData);
+    setDeliverables(delivData);
+    setLatestMeeting(latestMtg);
     setLoading(false);
+  };
+
+  // Open the suggestion modal for a note. Calls /suggest-action, stashes
+  // the response, lets the user accept/edit/dismiss.
+  const handleSuggest = async (note: Note) => {
+    setSuggesting(note);
+    setSuggestion(null);
+    setSuggestionError(null);
+    setSuggestionBusy(true);
+    try {
+      const s = await suggestActionFromNote(note.id);
+      setSuggestion(s);
+    } catch (e: any) {
+      setSuggestionError(e?.message || "Couldn't get a suggestion");
+    } finally {
+      setSuggestionBusy(false);
+    }
+  };
+
+  // Create the action from the accepted (possibly edited) suggestion.
+  const handleAcceptSuggestion = async (edited: SuggestedAction) => {
+    if (!currentProject || !latestMeeting) return;
+    setSuggestionBusy(true);
+    try {
+      await createAction({
+        project_id: currentProject.id,
+        originating_meeting_id: latestMeeting.id,
+        text: edited.text,
+        owner: edited.owner || "",
+        due_date: edited.due_date || null,
+        status: "open",
+      });
+      // Optionally: link back to the note via the source field, or mark the
+      // note as closed. Conservative: leave the note as-is so PMs can review
+      // both side-by-side. Just close the modal.
+      setSuggesting(null);
+      setSuggestion(null);
+    } catch (e: any) {
+      setSuggestionError(e?.message || "Couldn't create the action");
+    } finally {
+      setSuggestionBusy(false);
+    }
   };
   useEffect(() => {
     void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
+
+  // ---- Merged sub-project list ----
+  // Source priority:
+  //   1. Curated `Project.sub_projects_json`
+  //   2. Discovered `Deliverable.project_segment`
+  //   3. Existing `Note.project_area` (so a free-typed value sticks around)
+  const subProjects = useMemo(() => {
+    return mergeSubProjects(
+      currentProject?.sub_projects_json || [],
+      deliverables.map((d) => d.project_segment || ""),
+      notes.map((n) => n.project_area || "")
+    );
+  }, [currentProject?.sub_projects_json, deliverables, notes]);
 
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
 
-  const filtered = notes.filter(
-    (n) => filter === "all" || (n.status || "open") === filter
-  );
+  const filtered = notes.filter((n) => {
+    if (statusFilter !== "all" && (n.status || "open") !== statusFilter)
+      return false;
+    if (areaFilter === FILTER_ALL) return true;
+    const area = (n.project_area || "").trim();
+    if (areaFilter === FILTER_UNSPECIFIED) return !area;
+    return area.toLowerCase() === areaFilter.toLowerCase();
+  });
 
   const handleAdd = async () => {
     const n = await createNote({
@@ -48,10 +156,16 @@ export default function NotesPage() {
     await updateNote(id, patch);
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this note?")) return;
-    await deleteNote(id);
-    setNotes(notes.filter((n) => n.id !== id));
+  const handleDelete = async (note: Note) => {
+    const ok = await confirm({
+      title: "Delete this note?",
+      body: note.topic || note.action_needed || undefined,
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
+    await deleteNote(note.id);
+    setNotes(notes.filter((n) => n.id !== note.id));
   };
 
   return (
@@ -63,18 +177,44 @@ export default function NotesPage() {
           <>
             <select
               className="select w-32"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value as any)}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as any)}
+              title="Status filter"
             >
               <option value="open">Open</option>
               <option value="closed">Closed</option>
               <option value="all">All</option>
+            </select>
+            <select
+              className="select w-44"
+              value={areaFilter}
+              onChange={(e) => setAreaFilter(e.target.value)}
+              title="Project area filter"
+            >
+              <option value={FILTER_ALL}>All areas</option>
+              {subProjects.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+              <option value={FILTER_UNSPECIFIED}>Unspecified</option>
             </select>
             <button className="btn-primary" onClick={handleAdd}>
               + Add note
             </button>
           </>
         }
+      />
+
+      <ManageSubProjectsPanel
+        open={showManage}
+        onToggle={() => setShowManage((v) => !v)}
+        projectId={currentProject.id}
+        curated={currentProject.sub_projects_json || []}
+        deliverables={deliverables}
+        onSaved={async () => {
+          await refreshProjects();
+        }}
       />
 
       {loading ? (
@@ -87,27 +227,333 @@ export default function NotesPage() {
             <NoteCard
               key={n.id}
               note={n}
+              subProjects={subProjects}
               onPatch={(patch) => handlePatch(n.id, patch)}
-              onDelete={() => handleDelete(n.id)}
+              onDelete={() => handleDelete(n)}
+              onSuggest={() => handleSuggest(n)}
+              canSuggest={!!latestMeeting}
             />
           ))}
+        </div>
+      )}
+
+      <SuggestionModal
+        open={suggesting !== null}
+        note={suggesting}
+        suggestion={suggestion}
+        error={suggestionError}
+        busy={suggestionBusy}
+        canCreate={!!latestMeeting}
+        onClose={() => {
+          setSuggesting(null);
+          setSuggestion(null);
+          setSuggestionError(null);
+        }}
+        onAccept={handleAcceptSuggestion}
+      />
+    </div>
+  );
+}
+
+
+// ============================================================
+// Suggestion modal — review + edit before creating the action
+// ============================================================
+function SuggestionModal({
+  open,
+  note,
+  suggestion,
+  error,
+  busy,
+  canCreate,
+  onClose,
+  onAccept,
+}: {
+  open: boolean;
+  note: Note | null;
+  suggestion: SuggestedAction | null;
+  error: string | null;
+  busy: boolean;
+  canCreate: boolean;
+  onClose: () => void;
+  onAccept: (edited: SuggestedAction) => void;
+}) {
+  // Local editable copies so the PM can tweak the AI's proposal before
+  // accepting. Reseed whenever the upstream suggestion changes.
+  const [text, setText] = useState("");
+  const [owner, setOwner] = useState("");
+  const [dueDate, setDueDate] = useState<string>("");
+  useEffect(() => {
+    setText(suggestion?.text || "");
+    setOwner(suggestion?.owner || "");
+    setDueDate(suggestion?.due_date || "");
+  }, [suggestion?.text, suggestion?.owner, suggestion?.due_date]);
+
+  if (!open) return null;
+
+  const informational = !!suggestion && !suggestion.text.trim();
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="w-full max-w-lg card p-5 space-y-3 shadow-xl">
+        <div className="flex items-center justify-between">
+          <h3 className="section-title">✨ Suggested action</h3>
+          <button
+            type="button"
+            className="text-xs text-slate-400 hover:text-slate-600"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+        {note && (
+          <div className="text-xs text-brand-gray border-l-2 border-l-brand-lightgray pl-2 italic">
+            From note: <b>{note.topic || "(untitled)"}</b>
+            {note.action_needed && note.action_needed !== note.topic
+              ? ` — ${note.action_needed.slice(0, 120)}${note.action_needed.length > 120 ? "…" : ""}`
+              : ""}
+          </div>
+        )}
+
+        {busy && !suggestion && (
+          <div className="text-sm text-slate-500 py-4">Asking the model…</div>
+        )}
+
+        {error && (
+          <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+            {error}
+          </div>
+        )}
+
+        {suggestion && informational && (
+          <div className="text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+            {suggestion.rationale || "No clear action in this note."}
+          </div>
+        )}
+
+        {suggestion && !informational && (
+          <>
+            {suggestion.rationale && (
+              <div className="text-xs text-brand-gray italic">
+                Why: {suggestion.rationale}
+              </div>
+            )}
+            <div className="space-y-2">
+              <label className="block">
+                <span className="label">Action</span>
+                <textarea
+                  className="textarea"
+                  rows={2}
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="label">Owner</span>
+                  <input
+                    className="input"
+                    value={owner}
+                    onChange={(e) => setOwner(e.target.value)}
+                    placeholder="Roashaael Mary John"
+                  />
+                </label>
+                <label className="block">
+                  <span className="label">Due date</span>
+                  <input
+                    className="input"
+                    type="date"
+                    value={dueDate}
+                    onChange={(e) => setDueDate(e.target.value)}
+                  />
+                </label>
+              </div>
+              {!canCreate && (
+                <div className="text-xs text-amber-700">
+                  This portfolio doesn't have a meeting yet — actions are
+                  attributed to a meeting. Capture or save a meeting first,
+                  then come back to accept this suggestion.
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        <div className="flex justify-end gap-2 pt-2">
+          <button className="btn-ghost" onClick={onClose} disabled={busy}>
+            {informational ? "OK" : "Dismiss"}
+          </button>
+          {!informational && (
+            <button
+              className="btn-primary"
+              onClick={() =>
+                onAccept({
+                  text: text.trim(),
+                  owner: owner.trim(),
+                  due_date: dueDate || null,
+                  rationale: suggestion?.rationale || "",
+                })
+              }
+              disabled={busy || !text.trim() || !canCreate}
+            >
+              {busy ? "Creating…" : "Create action"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Manage sub-projects panel
+// ============================================================
+function ManageSubProjectsPanel({
+  open,
+  onToggle,
+  projectId,
+  curated,
+  deliverables,
+  onSaved,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  projectId: number;
+  curated: string[];
+  deliverables: Deliverable[];
+  onSaved: () => Promise<void> | void;
+}) {
+  // textarea text mirrors the curated list — one name per line.
+  const [text, setText] = useState(() => (curated || []).join("\n"));
+  const [saving, setSaving] = useState(false);
+
+  // Keep textarea in sync when the curated list changes externally (e.g. user
+  // switches portfolio).
+  useEffect(() => {
+    setText((curated || []).join("\n"));
+  }, [curated.join("|")]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const names = text
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      await updateProject(projectId, { sub_projects_json: names });
+      await onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePullFromDeliverables = () => {
+    const existing = text
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const discovered = deliverables.map((d) => d.project_segment || "");
+    const merged = mergeSubProjects(existing, discovered);
+    setText(merged.join("\n"));
+  };
+
+  return (
+    <div className="card">
+      <button
+        className="w-full text-left px-4 py-3 text-sm font-semibold flex items-center justify-between"
+        onClick={onToggle}
+      >
+        <span>Manage sub-projects</span>
+        <span className="text-xs text-brand-gray">{open ? "▾" : "▸"}</span>
+      </button>
+      {open && (
+        <div className="border-t border-slate-200 px-4 py-4 space-y-3">
+          <p className="text-xs text-brand-gray">
+            One sub-project name per line. These populate the area dropdown on
+            every note for this portfolio.
+          </p>
+          <textarea
+            className="textarea"
+            rows={Math.max(4, text.split("\n").length + 1)}
+            placeholder={"Snapdragon\nTwo Blues"}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+          />
+          <div className="flex gap-2">
+            <button
+              className="btn-primary"
+              onClick={handleSave}
+              disabled={saving}
+            >
+              {saving ? "Saving…" : "Save list"}
+            </button>
+            <button
+              className="btn-ghost"
+              onClick={handlePullFromDeliverables}
+              title="Add any unique project_segment values from this portfolio's deliverables"
+              disabled={deliverables.length === 0}
+            >
+              Pull from deliverables
+            </button>
+          </div>
+          {deliverables.length === 0 && (
+            <p className="text-xs text-brand-gray italic">
+              No deliverables on this portfolio yet — pull from deliverables is
+              disabled.
+            </p>
+          )}
         </div>
       )}
     </div>
   );
 }
 
+// ============================================================
+// Per-note card
+// ============================================================
 function NoteCard({
   note,
+  subProjects,
   onPatch,
   onDelete,
+  onSuggest,
+  canSuggest,
 }: {
   note: Note;
+  subProjects: string[];
   onPatch: (p: Partial<Note>) => void;
   onDelete: () => void;
+  onSuggest: () => void;
+  canSuggest: boolean;
 }) {
   const [draft, setDraft] = useState(note);
-  useEffect(() => setDraft(note), [note.id]);
+  // When `+ New area…` is picked, swap the select for a free-text input. We
+  // also enter this mode automatically if the existing value isn't in the
+  // merged list (legacy / freshly-typed value).
+  const [newAreaMode, setNewAreaMode] = useState(false);
+
+  useEffect(() => {
+    setDraft(note);
+    setNewAreaMode(false);
+  }, [note.id]);
+
+  // Detect a free-typed value not in the dropdown so we surface it as a text
+  // input rather than silently dropping the selection. Matches the merged
+  // list case-insensitively, like the dedupe helper.
+  const areaInList = useMemo(() => {
+    const v = (draft.project_area || "").trim().toLowerCase();
+    if (!v) return true; // empty is "no selection", not a missing value
+    return subProjects.some((s) => s.toLowerCase() === v);
+  }, [draft.project_area, subProjects]);
+
+  const showTextInput = newAreaMode || !areaInList;
+
   return (
     <div className="card p-4 space-y-2">
       <div className="grid grid-cols-12 gap-2">
@@ -125,15 +571,47 @@ function NoteCard({
           onChange={(e) => setDraft({ ...draft, source: e.target.value })}
           onBlur={() => onPatch({ source: draft.source })}
         />
-        <input
-          className="input col-span-2"
-          placeholder="Area"
-          value={draft.project_area || ""}
-          onChange={(e) =>
-            setDraft({ ...draft, project_area: e.target.value })
-          }
-          onBlur={() => onPatch({ project_area: draft.project_area })}
-        />
+        {showTextInput ? (
+          <input
+            className="input col-span-2"
+            placeholder="Area"
+            autoFocus={newAreaMode}
+            value={draft.project_area || ""}
+            onChange={(e) =>
+              setDraft({ ...draft, project_area: e.target.value })
+            }
+            onBlur={() => {
+              onPatch({ project_area: draft.project_area });
+              // If the value now matches a known sub-project, drop back to the
+              // dropdown on next render. The blur path takes care of saving.
+              setNewAreaMode(false);
+            }}
+          />
+        ) : (
+          <select
+            className="select col-span-2"
+            value={draft.project_area || ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === NEW_AREA_SENTINEL) {
+                setNewAreaMode(true);
+                setDraft({ ...draft, project_area: "" });
+                onPatch({ project_area: "" });
+                return;
+              }
+              setDraft({ ...draft, project_area: v });
+              onPatch({ project_area: v });
+            }}
+          >
+            <option value="">— Area —</option>
+            {subProjects.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+            <option value={NEW_AREA_SENTINEL}>{NEW_AREA_LABEL}</option>
+          </select>
+        )}
         <select
           className="select col-span-1"
           value={draft.priority || "Medium"}
@@ -170,6 +648,21 @@ function NoteCard({
         onChange={(e) => setDraft({ ...draft, action_needed: e.target.value })}
         onBlur={() => onPatch({ action_needed: draft.action_needed })}
       />
+      <div className="flex justify-end">
+        <button
+          type="button"
+          className="text-xs text-brand-gray hover:text-brand-red underline underline-offset-2"
+          onClick={onSuggest}
+          disabled={!draft.action_needed?.trim() && !draft.topic?.trim()}
+          title={
+            canSuggest
+              ? "Use AI to turn this note into an action item"
+              : "Capture a meeting on this portfolio first — actions are linked to a meeting."
+          }
+        >
+          ✨ Suggest action item
+        </button>
+      </div>
       <div className="grid grid-cols-2 gap-2 text-xs text-brand-gray">
         <label className="flex items-center gap-2">
           Note date

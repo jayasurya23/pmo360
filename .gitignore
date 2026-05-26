@@ -35,6 +35,7 @@ data/
 .idea/
 .DS_Store
 Thumbs.db
+.claude/
 
 # ===== Misc =====
 *.log

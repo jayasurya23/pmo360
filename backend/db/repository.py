@@ -299,6 +299,21 @@ def set_portfolio_sub_projects(
 # ============================================================
 # Deliverables
 # ============================================================
+def list_deliverables(session: Session, project_id: int) -> list[Deliverable]:
+    """All Deliverable rows attached to a portfolio (project).
+
+    Used by the Notes tab to auto-discover sub-projects (project_segment
+    values) — keep this distinct from `deliverables_to_carry_forward` which
+    is meeting-scoped.
+    """
+    return (
+        session.query(Deliverable)
+        .filter_by(project_id=project_id)
+        .order_by(Deliverable.project_segment.asc(), Deliverable.task.asc())
+        .all()
+    )
+
+
 def deliverables_to_carry_forward(session: Session, project_id: int) -> list[Deliverable]:
     """
     Deliverables tracked on the most recent meeting that haven't passed their

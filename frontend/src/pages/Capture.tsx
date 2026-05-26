@@ -1,16 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import EmptyState from "@/components/EmptyState";
+import { useConfirm } from "@/components/ConfirmDialog";
+import DirectoryBrowser from "@/components/DirectoryBrowser";
+import { ManageTemplatesModal } from "@/components/TemplateModals";
 import { handleTextareaTab } from "@/lib/textareaTab";
 import {
   listProjectRoster,
   listGlobalRoster,
+  listTemplates,
   parseNotes,
   parseTranscriptFile,
   addProjectRoster,
   addGlobalRoster,
+  removeProjectRoster,
+  removeGlobalRoster,
+  updateProjectRoster,
+  updateGlobalRoster,
+  fetchMyPreferences,
+  type UserPreferences,
 } from "@/lib/api";
-import type { Attendee, GlobalAttendee } from "@/lib/types";
+import type { Attendee, GlobalAttendee, MeetingTemplate } from "@/lib/types";
 import { useApp } from "@/lib/state";
 import clsx from "clsx";
 import { format } from "date-fns";
@@ -54,9 +64,12 @@ interface BulkPerson {
   full_name: string;
   initials: string;
   organization: string;
+  email?: string;
 }
 
-// Parse lines like `Org Name: Full Name (II), Full Name (II), ...`
+// Parse lines like `Org Name: Full Name (II) <email>, Full Name (II), ...`
+// The `<email>` segment is optional. Email tokens are matched first so they
+// don't get confused with the initials parentheses.
 function parseBulkAttendees(text: string): BulkPerson[] {
   const out: BulkPerson[] = [];
   for (const raw of text.split(/\r?\n/)) {
@@ -65,13 +78,28 @@ function parseBulkAttendees(text: string): BulkPerson[] {
     const [org, rest] = [line.slice(0, line.indexOf(":")), line.slice(line.indexOf(":") + 1)];
     const orgClean = org.trim();
     for (const chunk of rest.split(",")) {
-      const t = chunk.trim();
+      let t = chunk.trim();
       if (!t) continue;
-      // "Name (II)" or "Name"
+      // Pull optional <email> first.
+      let email = "";
+      const em = t.match(/<\s*([^>\s]+@[^>\s]+)\s*>/);
+      if (em) {
+        email = em[1].trim();
+        t = (t.slice(0, em.index) + t.slice((em.index || 0) + em[0].length)).trim();
+      }
+      // Then parse "Name (II)" or "Name"
       const m = t.match(/^(.*?)\s*\(([^)]*)\)\s*$/);
       const name = (m ? m[1] : t).trim();
       const init = (m ? m[2] : autoInitials(name)).trim().toUpperCase();
-      if (name) out.push({ full_name: name, initials: init, organization: orgClean });
+      if (name) {
+        const person: BulkPerson = {
+          full_name: name,
+          initials: init,
+          organization: orgClean,
+        };
+        if (email) person.email = email;
+        out.push(person);
+      }
     }
   }
   return out;
@@ -90,12 +118,14 @@ export default function Capture() {
     setMeetingDate,
     selectedAttendees,
     setSelectedAttendees,
+    setSelectedDeliverables,
     setParsed,
     draftMeetingId,
     resetDraft,
     settings,
   } = useApp();
 
+  const confirm = useConfirm();
   const [projectRoster, setProjectRoster] = useState<Attendee[]>([]);
   const [globalRoster, setGlobalRoster] = useState<GlobalAttendee[]>([]);
   const [parsing, setParsing] = useState(false);
@@ -109,10 +139,54 @@ export default function Capture() {
   const [npInit, setNpInit] = useState("");
   const [npOrg, setNpOrg] = useState("");
   const [npOrgNew, setNpOrgNew] = useState("");
+  const [npEmail, setNpEmail] = useState("");
   const [npSaveGlobal, setNpSaveGlobal] = useState(false);
   // bulk-import form
   const [bulkText, setBulkText] = useState("");
   const [bulkSaveGlobal, setBulkSaveGlobal] = useState(false);
+
+  // Directory browser modal — opens via the "🏢 Browse Castillo directory"
+  // button under the roster banners. Pulls user list from Graph and lets
+  // the PM bulk-add coworkers without typing.
+  const [directoryOpen, setDirectoryOpen] = useState(false);
+
+  // Recurring meeting templates — saved boilerplate (attendees + agenda
+  // topics + deliverables + duration) the PM can clone for each new
+  // meeting on this portfolio. Loaded once per portfolio change.
+  const [templates, setTemplates] = useState<MeetingTemplate[]>([]);
+  const [cloneOpen, setCloneOpen] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | "">("");
+  const [manageOpen, setManageOpen] = useState(false);
+
+  const refreshTemplates = async (projectId: number) => {
+    try {
+      const ts = await listTemplates(projectId);
+      setTemplates(ts);
+    } catch {
+      /* anonymous or transient — just keep last-good list */
+    }
+  };
+
+  useEffect(() => {
+    if (!currentProject) {
+      setTemplates([]);
+      return;
+    }
+    void refreshTemplates(currentProject.id);
+    setSelectedTemplateId("");
+  }, [currentProject?.id]);
+
+  // User preferences — used to seed default action due-date offset. Fetches
+  // silently in the background; failures (e.g. anonymous) fall back to the
+  // hardcoded 7-day default below.
+  const [userPrefs, setUserPrefs] = useState<UserPreferences | null>(null);
+  useEffect(() => {
+    fetchMyPreferences()
+      .then(setUserPrefs)
+      .catch(() => {
+        /* anonymous or transient — keep hardcoded defaults */
+      });
+  }, []);
 
   useEffect(() => {
     if (!currentProject) return;
@@ -178,6 +252,66 @@ export default function Capture() {
     setSelectedAttendees(selectedAttendees.filter((_, i) => i !== idx));
   };
 
+  const handleRemoveFromProjectRoster = async (person: Attendee) => {
+    if (!currentProject) return;
+    const ok = await confirm({
+      title: `Remove ${person.full_name} from the portfolio roster?`,
+      body: "This won't affect past meetings — only future ones won't have them in the picker.",
+      confirmLabel: "Remove",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await removeProjectRoster(person.id);
+      const pr = await listProjectRoster(currentProject.id);
+      setProjectRoster(pr);
+      flashToast(`Removed ${person.full_name} from the portfolio roster.`);
+    } catch (e: any) {
+      setError(e.message || "Could not remove from roster");
+    }
+  };
+
+  const handleSaveProjectEmail = async (person: Attendee, email: string) => {
+    if (!currentProject) return;
+    try {
+      await updateProjectRoster(person.id, { email });
+      const pr = await listProjectRoster(currentProject.id);
+      setProjectRoster(pr);
+      flashToast(`Saved email for ${person.full_name}.`);
+    } catch (e: any) {
+      setError(e.message || "Could not save email");
+    }
+  };
+
+  const handleSaveGlobalEmail = async (person: GlobalAttendee, email: string) => {
+    try {
+      await updateGlobalRoster(person.id, { email });
+      const gr = await listGlobalRoster();
+      setGlobalRoster(gr);
+      flashToast(`Saved email for ${person.full_name}.`);
+    } catch (e: any) {
+      setError(e.message || "Could not save email");
+    }
+  };
+
+  const handleRemoveFromGlobalRoster = async (person: GlobalAttendee) => {
+    const ok = await confirm({
+      title: `Remove ${person.full_name} from the global roster?`,
+      body: "This won't affect past meetings — only future ones won't have them in the picker.",
+      confirmLabel: "Remove",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await removeGlobalRoster(person.id);
+      const gr = await listGlobalRoster();
+      setGlobalRoster(gr);
+      flashToast(`Removed ${person.full_name} from the global roster.`);
+    } catch (e: any) {
+      setError(e.message || "Could not remove from roster");
+    }
+  };
+
   const flashToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2500);
@@ -194,15 +328,22 @@ export default function Capture() {
     const organization =
       (npOrg === "__new__" ? npOrgNew : npOrg).trim() || "";
     const initials = (npInit.trim() || autoInitials(name)).toUpperCase();
+    const email = npEmail.trim();
     try {
       await addProjectRoster(currentProject.id, {
         full_name: name,
         initials,
         organization,
+        ...(email ? { email } : {}),
       });
       if (npSaveGlobal) {
         try {
-          await addGlobalRoster({ full_name: name, initials, organization });
+          await addGlobalRoster({
+            full_name: name,
+            initials,
+            organization,
+            ...(email ? { email } : {}),
+          });
         } catch {
           /* already on global roster — ignore */
         }
@@ -223,6 +364,7 @@ export default function Capture() {
       setNpInit("");
       setNpOrg("");
       setNpOrgNew("");
+      setNpEmail("");
       setNpSaveGlobal(false);
       setNewPersonOpen(false);
       flashToast(`Added ${name} to the roster.`);
@@ -272,6 +414,44 @@ export default function Capture() {
     flashToast(`Imported ${people.length} people · ${added} added to this meeting.`);
   };
 
+  const handleCloneTemplate = () => {
+    if (!currentProject || selectedTemplateId === "") return;
+    const t = templates.find((x) => x.id === Number(selectedTemplateId));
+    if (!t) return;
+
+    // Attendees → selectedAttendees (drop email, fall back to "" for org).
+    const nextAttendees: SelectedAttendee[] = (t.attendees_json || []).map(
+      (a) => ({
+        full_name: a.full_name,
+        initials: a.initials,
+        organization: a.organization || "",
+      }),
+    );
+    setSelectedAttendees(nextAttendees);
+
+    // Agenda topics → newline-joined into the rawNotes.agenda textarea.
+    // The capture page's AI parser already treats each line as a topic, and
+    // even on the Skip-AI path the agenda section flows into the parsed
+    // meeting unchanged.
+    const agendaJoined = (t.agenda_topics_json || [])
+      .map((a) => a.text)
+      .filter((s) => s && s.trim())
+      .join("\n");
+    setRawNotes({ ...rawNotes, agenda: agendaJoined });
+
+    // Deliverables → selectedDeliverables (Review reads from this).
+    const nextDeliverables = (t.default_deliverables_json || []).map((d) => ({
+      project_segment: d.project_segment || "",
+      task: d.task,
+      start_status: d.start_status || "In Progress",
+      delivery_date: null as string | null,
+    }));
+    setSelectedDeliverables(nextDeliverables);
+
+    setCloneOpen(false);
+    flashToast(`Cloned template: ${t.name}`);
+  };
+
   const handleFile = async (file: File) => {
     try {
       const { text, char_count, filename } = await parseTranscriptFile(file);
@@ -281,6 +461,7 @@ export default function Capture() {
       setError(e.message || "Could not read file");
     }
   };
+
 
   const handleParse = async (skipAi: boolean) => {
     if (!currentProject) return;
@@ -326,9 +507,11 @@ export default function Capture() {
           return sLower === aLower || sLower.split(" ").some((p) => p === aLower);
         });
       });
-      // Default missing due dates to meeting_date + 7 days
+      // Default missing due dates to meeting_date + N days, where N comes
+      // from the user's saved preferences (falls back to 7 if no prefs).
       const baseDate = new Date(meetingDate);
-      const defaultDue = new Date(baseDate.getTime() + 7 * 86400000)
+      const offsetDays = userPrefs?.default_action_due_offset_days ?? 7;
+      const defaultDue = new Date(baseDate.getTime() + offsetDays * 86400000)
         .toISOString()
         .slice(0, 10);
       parsed.action_items = parsed.action_items.map((a) => ({
@@ -429,6 +612,12 @@ export default function Capture() {
               people={visibleGlobalRoster}
               selected={selectedAttendees}
               onToggle={toggleAttendee}
+              onRemove={(p) =>
+                handleRemoveFromGlobalRoster(p as GlobalAttendee)
+              }
+              onSaveEmail={(p, em) =>
+                handleSaveGlobalEmail(p as GlobalAttendee, em)
+              }
               keyPrefix="grost"
             />
           </>
@@ -450,10 +639,91 @@ export default function Capture() {
               people={projectRoster}
               selected={selectedAttendees}
               onToggle={toggleAttendee}
+              onRemove={(p) => handleRemoveFromProjectRoster(p as Attendee)}
+              onSaveEmail={(p, em) =>
+                handleSaveProjectEmail(p as Attendee, em)
+              }
               keyPrefix="prost"
             />
           </>
         )}
+
+        {/* Browse Castillo directory — pick from M365 directly */}
+        <div className="mt-3">
+          <button
+            type="button"
+            className="btn-ghost text-xs"
+            onClick={() => setDirectoryOpen(true)}
+            title="Browse everyone in Castillo's M365 directory and add them to the roster"
+          >
+            🏢 Browse Castillo directory
+          </button>
+        </div>
+
+        {/* Clone from template — pre-fill attendees + agenda + deliverables
+            from a saved recurring-meeting template. */}
+        <Expander
+          open={cloneOpen}
+          onToggle={() => setCloneOpen(!cloneOpen)}
+          label="📋 Clone from template"
+        >
+          <div className="pt-2 space-y-3">
+            {templates.length === 0 ? (
+              <p className="text-sm text-slate-600">
+                No templates yet — save one from the Review page after capturing a meeting.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-slate-500">
+                  Clone a saved recurring-meeting template to pre-fill attendees,
+                  agenda topics, and deliverables. Editing afterward is still up
+                  to you.
+                </p>
+                <div className="flex items-end gap-2 flex-wrap">
+                  <div className="flex-1 min-w-[220px]">
+                    <label className="label">Template</label>
+                    <select
+                      className="select"
+                      value={selectedTemplateId}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setSelectedTemplateId(v === "" ? "" : Number(v));
+                      }}
+                    >
+                      <option value="">— pick a template —</option>
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={handleCloneTemplate}
+                    disabled={selectedTemplateId === ""}
+                  >
+                    Clone
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost text-xs"
+                    onClick={() => setManageOpen(true)}
+                    title="Rename or delete saved templates"
+                  >
+                    Manage
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Cloning replaces the selected attendees, the agenda textarea,
+                  and the deliverables list. Meeting minutes and action items
+                  stay untouched.
+                </p>
+              </>
+            )}
+          </div>
+        </Expander>
 
         {/* + New person expander */}
         <Expander
@@ -520,6 +790,19 @@ export default function Capture() {
                 )}
               </div>
             </div>
+            <div>
+              <label className="label">Email (optional)</label>
+              <input
+                type="email"
+                className="input"
+                value={npEmail}
+                onChange={(e) => setNpEmail(e.target.value)}
+                placeholder="e.g. andrew@sunshare.com"
+              />
+              <p className="text-[11px] text-slate-500 mt-1">
+                Used to pre-fill recipient checklists when sending minutes.
+              </p>
+            </div>
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
@@ -537,21 +820,22 @@ export default function Capture() {
         <Expander
           open={bulkOpen}
           onToggle={() => setBulkOpen(!bulkOpen)}
-          label="📋 Bulk import attendees (paste 'Org: Name (Init), …')"
+          label="📋 Bulk import attendees (paste 'Org: Name (Init) <email>, …')"
         >
           <div className="space-y-3 pt-2">
             <p className="text-xs text-slate-500">
               Paste one line per organization. Format:{" "}
-              <code>Org Name: Full Name (II), Full Name (II), …</code>. Initials
-              are optional — auto-derived when missing.
+              <code>Org Name: Full Name (II) &lt;email@example.com&gt;, …</code>.
+              Initials and email are both optional — initials auto-derive from
+              the name when missing.
             </p>
             <textarea
               className="textarea min-h-[120px] font-mono text-xs"
               value={bulkText}
               onChange={(e) => setBulkText(e.target.value)}
               placeholder={
-                "E Light Electric Services, Inc: Blake Ely (BE), Ricky Dzabic (RD)\n" +
-                "Sunshare: Andrew Proctor (AP), Brian McKinney (BM)\n" +
+                "E Light Electric Services, Inc: Blake Ely (BE) <blake@elight.com>, Ricky Dzabic (RD)\n" +
+                "Sunshare: Andrew Proctor (AP) <andrew@sunshare.com>, Brian McKinney (BM)\n" +
                 "Ampacity: Dylan Wraga (DW)"
               }
             />
@@ -763,6 +1047,48 @@ export default function Capture() {
           </button>
         </div>
       </div>
+
+      <DirectoryBrowser
+        open={directoryOpen}
+        onClose={() => setDirectoryOpen(false)}
+        projectId={currentProject?.id ?? null}
+        existingNames={[
+          ...projectRoster.map((p) => p.full_name),
+          ...globalRoster.map((g) => g.full_name),
+        ]}
+        existingEmails={[
+          ...projectRoster.map((p) => p.email || ""),
+          ...globalRoster.map((g) => g.email || ""),
+        ].filter(Boolean)}
+        onAdded={async () => {
+          if (!currentProject) return;
+          const [pr, gr] = await Promise.all([
+            listProjectRoster(currentProject.id),
+            listGlobalRoster(),
+          ]);
+          setProjectRoster(pr);
+          setGlobalRoster(gr);
+          setToast("Added from Castillo directory.");
+        }}
+      />
+
+      <ManageTemplatesModal
+        open={manageOpen}
+        onClose={() => setManageOpen(false)}
+        templates={templates}
+        onChanged={async () => {
+          if (!currentProject) return;
+          await refreshTemplates(currentProject.id);
+          // If the currently selected template was deleted, clear the picker.
+          setSelectedTemplateId((curr) =>
+            curr === ""
+              ? curr
+              : templates.some((t) => t.id === Number(curr))
+                ? curr
+                : "",
+          );
+        }}
+      />
     </div>
   );
 }
@@ -833,15 +1159,27 @@ function Expander({
   );
 }
 
+type ChipPerson = {
+  id: number;
+  full_name: string;
+  initials: string;
+  organization?: string | null;
+  email?: string | null;
+};
+
 function ChipGrid({
   people,
   selected,
   onToggle,
+  onRemove,
+  onSaveEmail,
   keyPrefix,
 }: {
-  people: { id: number; full_name: string; initials: string; organization?: string | null }[];
+  people: ChipPerson[];
   selected: SelectedAttendee[];
   onToggle: (a: SelectedAttendee) => void;
+  onRemove?: (p: ChipPerson) => void;
+  onSaveEmail?: (p: ChipPerson, email: string) => void;
   keyPrefix: string;
 }) {
   const selectedSet = new Set(
@@ -849,31 +1187,150 @@ function ChipGrid({
   );
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 mb-2">
-      {people.map((p) => {
-        const active = selectedSet.has(`${p.full_name}|${p.initials}`);
-        return (
+      {people.map((p) => (
+        <Chip
+          key={`${keyPrefix}-${p.id}`}
+          person={p}
+          active={selectedSet.has(`${p.full_name}|${p.initials}`)}
+          onToggle={onToggle}
+          onRemove={onRemove}
+          onSaveEmail={onSaveEmail}
+        />
+      ))}
+    </div>
+  );
+}
+
+function Chip({
+  person: p,
+  active,
+  onToggle,
+  onRemove,
+  onSaveEmail,
+}: {
+  person: ChipPerson;
+  active: boolean;
+  onToggle: (a: SelectedAttendee) => void;
+  onRemove?: (p: ChipPerson) => void;
+  onSaveEmail?: (p: ChipPerson, email: string) => void;
+}) {
+  const [editingEmail, setEditingEmail] = useState(false);
+  const [emailDraft, setEmailDraft] = useState("");
+  const hasEmail = !!p.email;
+
+  const startEdit = () => {
+    setEmailDraft("");
+    setEditingEmail(true);
+  };
+
+  const save = () => {
+    const v = emailDraft.trim();
+    if (!v) {
+      setEditingEmail(false);
+      return;
+    }
+    onSaveEmail?.(p, v);
+    setEditingEmail(false);
+  };
+
+  return (
+    <div
+      className={clsx(
+        "group relative rounded-md border text-xs font-medium transition",
+        active
+          ? "bg-brand-red text-white border-brand-red"
+          : "bg-white text-slate-700 border-slate-200 hover:border-slate-300 hover:bg-slate-50"
+      )}
+    >
+      <button
+        type="button"
+        onClick={() =>
+          onToggle({
+            full_name: p.full_name,
+            initials: p.initials,
+            organization: p.organization || "",
+          })
+        }
+        className="w-full text-left px-3 py-2 pr-7 rounded-md"
+      >
+        <span className="mr-1">{active ? "✓" : "+"}</span>
+        {p.full_name} <span className="opacity-70">({p.initials})</span>
+      </button>
+      {!hasEmail && onSaveEmail && !editingEmail && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            startEdit();
+          }}
+          title="Add an email so this person shows up on the Send page"
+          className={clsx(
+            "absolute bottom-0.5 left-2 text-[10px] underline underline-offset-2",
+            "opacity-0 group-hover:opacity-100 transition-opacity",
+            active ? "text-white/80 hover:text-white" : "text-slate-500 hover:text-brand-red"
+          )}
+        >
+          ✉ Add email
+        </button>
+      )}
+      {editingEmail && (
+        <div
+          className="absolute z-10 top-full left-0 right-0 mt-1 p-2 bg-white border border-slate-300 rounded-md shadow-md flex items-center gap-1"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            type="email"
+            autoFocus
+            placeholder={`${p.full_name.split(" ")[0].toLowerCase()}@…`}
+            className="input flex-1 text-xs h-7"
+            value={emailDraft}
+            onChange={(e) => setEmailDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                save();
+              }
+              if (e.key === "Escape") setEditingEmail(false);
+            }}
+          />
           <button
-            key={`${keyPrefix}-${p.id}`}
             type="button"
-            onClick={() =>
-              onToggle({
-                full_name: p.full_name,
-                initials: p.initials,
-                organization: p.organization || "",
-              })
-            }
-            className={clsx(
-              "w-full text-left px-3 py-2 rounded-md border text-xs font-medium transition",
-              active
-                ? "bg-brand-red text-white border-brand-red"
-                : "bg-white text-slate-700 border-slate-200 hover:border-slate-300 hover:bg-slate-50"
-            )}
+            onClick={save}
+            className="text-xs px-2 py-0.5 rounded bg-brand-red text-white hover:bg-brand-darkred"
           >
-            <span className="mr-1">{active ? "✓" : "+"}</span>
-            {p.full_name} <span className="opacity-70">({p.initials})</span>
+            Save
           </button>
-        );
-      })}
+          <button
+            type="button"
+            onClick={() => setEditingEmail(false)}
+            className="text-xs px-1 py-0.5 text-slate-400 hover:text-slate-700"
+            aria-label="Cancel"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove(p);
+          }}
+          title={`Remove ${p.full_name} from roster`}
+          aria-label={`Remove ${p.full_name} from roster`}
+          className={clsx(
+            "absolute top-1 right-1 h-4 w-4 leading-none text-[11px]",
+            "flex items-center justify-center rounded-sm cursor-pointer",
+            "opacity-0 group-hover:opacity-100 transition-opacity",
+            active
+              ? "text-white/70 hover:text-white"
+              : "text-slate-400 hover:text-rose-600"
+          )}
+        >
+          ✕
+        </button>
+      )}
     </div>
   );
 }

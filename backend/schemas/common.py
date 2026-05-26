@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Optional, Any
+from typing import Optional, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -10,6 +10,37 @@ from pydantic import BaseModel, ConfigDict, Field
 class ORMModel(BaseModel):
     """Base class that lets routers serialize SQLAlchemy ORM objects directly."""
     model_config = ConfigDict(from_attributes=True)
+
+
+# ---------- Users ----------
+class UserOut(ORMModel):
+    """The validated identity surfaced to the frontend. Used both standalone
+    (on /api/me + /api/users/*) and embedded inline as `created_by` /
+    `updated_by` on every model that carries attribution."""
+    id: int
+    oid: str
+    email: Optional[str] = None
+    name: Optional[str] = None
+
+
+class UserStub(ORMModel):
+    """Trimmed user surface for inline embedding — no oid, just what the UI
+    actually shows on 'Saved by Arun · 2h ago' lines."""
+    id: int
+    name: Optional[str] = None
+    email: Optional[str] = None
+
+
+class UserPreferences(BaseModel):
+    """Per-user preferences persisted on User.preferences (JSON).
+
+    All fields have sensible defaults so the response works even when
+    the user has never saved their settings.
+    """
+    default_project_id: Optional[int] = None
+    default_meeting_duration: int = 30  # minutes, typically 30 or 60
+    default_action_due_offset_days: int = 7
+    email_signature: Optional[str] = None  # appended to outgoing Graph emails
 
 
 # ---------- Clients / Projects ----------
@@ -80,6 +111,7 @@ class MeetingAttendeeOut(ORMModel):
     full_name: str
     initials: str
     organization: Optional[str] = None
+    email: Optional[str] = None
 
 
 class AgendaItemOut(ORMModel):
@@ -128,8 +160,25 @@ class ActionItemOut(ORMModel):
     owner: Optional[str] = None
     due_date: Optional[date] = None
     status: str
+    created_by: Optional[UserStub] = None
+    updated_by: Optional[UserStub] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+
+# ---------- Attachments ----------
+class MeetingAttachmentOut(ORMModel):
+    """One PM-uploaded file attached to a meeting. The bytes themselves
+    are fetched via the dedicated download endpoint — this surface only
+    carries the metadata the UI renders in the attachment list."""
+    id: int
+    meeting_id: int
+    filename: str
+    content_type: Optional[str] = None
+    file_size_bytes: Optional[int] = None
+    description: Optional[str] = None
+    created_by: Optional[UserStub] = None
+    created_at: Optional[datetime] = None
 
 
 # ---------- Meetings ----------
@@ -140,6 +189,10 @@ class MeetingSummary(ORMModel):
     title: Optional[str] = None
     stage: str
     schedule_version_at_meeting: Optional[str] = None
+    # Optimistic concurrency token — see Meeting.version.
+    version: int = 1
+    created_by: Optional[UserStub] = None
+    updated_by: Optional[UserStub] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -147,11 +200,13 @@ class MeetingSummary(ORMModel):
 class MeetingDetail(MeetingSummary):
     raw_notes: Optional[str] = None
     closing_remarks: Optional[str] = None
+    executive_summary: Optional[str] = None
     attendees: list[MeetingAttendeeOut] = Field(default_factory=list)
     agenda_items: list[AgendaItemOut] = Field(default_factory=list)
     discussion_points: list[DiscussionPointOut] = Field(default_factory=list)
     raised_actions: list[ActionItemOut] = Field(default_factory=list)
     meeting_deliverables: list[MeetingDeliverableOut] = Field(default_factory=list)
+    attachments: list[MeetingAttachmentOut] = Field(default_factory=list)
 
 
 # ---------- Parsed-LLM output for the parse endpoint ----------
@@ -206,6 +261,9 @@ class DeliverableInput(BaseModel):
 class MeetingSaveRequest(BaseModel):
     project_id: int
     meeting_id: Optional[int] = None  # set to update existing
+    # Optimistic concurrency: clients echo back the version they read.
+    # Required when meeting_id is set; ignored on new-meeting creates.
+    expected_version: Optional[int] = None
     meeting_date: date
     title: Optional[str] = None
     raw_notes: Optional[str] = ""
@@ -244,6 +302,8 @@ class NoteOut(ORMModel):
     follow_up_date: Optional[date] = None
     priority: Optional[str] = None
     status: Optional[str] = None
+    created_by: Optional[UserStub] = None
+    updated_by: Optional[UserStub] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -280,6 +340,10 @@ class AgendaOut(ORMModel):
     title: Optional[str] = None
     meeting_duration_minutes: Optional[int] = 30
     schedule_version_override: Optional[str] = None
+    # Optimistic concurrency token — see Agenda.version.
+    version: int = 1
+    created_by: Optional[UserStub] = None
+    updated_by: Optional[UserStub] = None
     disciplines_json: Optional[list[str]] = None
     dp_text_json: Optional[dict[str, Any]] = None
     recap_text_json: Optional[dict[str, Any]] = None
@@ -295,6 +359,9 @@ class AgendaOut(ORMModel):
 class AgendaIn(BaseModel):
     project_id: int
     agenda_id: Optional[int] = None
+    # Optimistic concurrency: clients echo back the version they read.
+    # Required when agenda_id is set; ignored on new-agenda creates.
+    expected_version: Optional[int] = None
     upcoming_date: date
     source_meeting_id: Optional[int] = None
     title: Optional[str] = None
@@ -308,6 +375,42 @@ class AgendaIn(BaseModel):
     risks: list[dict[str, Any]] = Field(default_factory=list)
     decisions: list[dict[str, Any]] = Field(default_factory=list)
     schedule_changes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# ---------- Meeting templates ----------
+class MeetingTemplateOut(ORMModel):
+    """A saved recurring-meeting template. The JSON blobs mirror the shapes
+    used by the in-progress draft (selectedAttendees, parsed.agenda_items,
+    selectedDeliverables) so cloning is a direct hydrate."""
+    id: int
+    project_id: int
+    name: str
+    attendees_json: Optional[list[dict[str, Any]]] = None
+    agenda_topics_json: Optional[list[dict[str, Any]]] = None
+    default_duration_minutes: int = 60
+    default_deliverables_json: Optional[list[dict[str, Any]]] = None
+    created_by: Optional[UserStub] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class MeetingTemplateIn(BaseModel):
+    project_id: int
+    name: str
+    attendees_json: list[dict[str, Any]] = Field(default_factory=list)
+    agenda_topics_json: list[dict[str, Any]] = Field(default_factory=list)
+    default_duration_minutes: int = 60
+    default_deliverables_json: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class MeetingTemplateUpdate(BaseModel):
+    """Partial-update payload. Every field optional so rename can ship a
+    single-field PATCH and a full re-save can ship everything."""
+    name: Optional[str] = None
+    attendees_json: Optional[list[dict[str, Any]]] = None
+    agenda_topics_json: Optional[list[dict[str, Any]]] = None
+    default_duration_minutes: Optional[int] = None
+    default_deliverables_json: Optional[list[dict[str, Any]]] = None
 
 
 # ---------- Schedule ----------
@@ -405,6 +508,70 @@ class DashboardResponse(BaseModel):
     upcoming_agendas: list[DashboardAgendaOut] = Field(default_factory=list)
 
 
+# ---------- AI Home briefing ----------
+class BriefingResponse(BaseModel):
+    """Personalized "since you were last here…" summary for the Home page.
+
+    All counts are scoped to the signed-in user (matched on owner-string
+    substring for actions; created_by for notes/agendas). The ``briefing``
+    string is the LLM-written 2-3 sentence prose; on LLM failure it falls
+    back to a deterministic template built from the same numeric facts —
+    callers can render the response without worrying about partial data.
+    """
+    last_seen_at: Optional[datetime] = None
+    new_actions_assigned_to_me: int = 0
+    overdue_actions_assigned_to_me: int = 0
+    new_meetings_touched: int = 0
+    new_agendas_touched: int = 0
+    new_follow_up_notes: int = 0
+    briefing: str = ""
+
+
+# ---------- Per-portfolio metrics (PortfolioDashboard page) ----------
+class BurndownPoint(BaseModel):
+    """One ISO-week's snapshot of the project's action backlog.
+
+    See ``api/projects.py::get_project_metrics`` for the bucketing rules —
+    ``open_at_end_of_week`` is the count of actions still open as of the
+    Sunday of the week, and ``completed_this_week`` is the count of actions
+    that transitioned to completed within the week's window.
+    """
+    week_start: date
+    open_at_end_of_week: int
+    completed_this_week: int
+
+
+class PortfolioMetricsOut(BaseModel):
+    """Health snapshot for a single portfolio, surfaced by the
+    PortfolioDashboard page. All counts are project-lifetime totals unless the
+    field name says otherwise."""
+    project_id: int
+    project_name: str
+    client_name: Optional[str] = None
+    # Counts
+    total_meetings: int
+    total_actions: int
+    open_actions: int
+    overdue_actions: int          # open/pending with due_date < today
+    completed_actions: int
+    cancelled_actions: int
+    # Rate
+    action_close_rate: float      # completed / total_actions, 0-1
+    avg_actions_per_meeting: float
+    # On-time delivery
+    deliverables_total: int
+    deliverables_on_time: int     # delivery_date >= today (we don't track
+                                  # actual completion dates yet)
+    on_time_rate: float           # 0-1
+    # Last meeting
+    last_meeting_date: Optional[date] = None
+    days_since_last_meeting: Optional[int] = None
+    # 8-week action burndown
+    burndown: list[BurndownPoint] = Field(default_factory=list)
+    # Most recent agenda's risks bucketed by likelihood (always 4 keys).
+    risks_by_likelihood: dict[str, int] = Field(default_factory=dict)
+
+
 # ---------- Agenda doc generation ----------
 class AgendaDocRequest(BaseModel):
     project_id: int
@@ -421,6 +588,28 @@ class AgendaDocRequest(BaseModel):
     risks: list[dict[str, Any]] = Field(default_factory=list)
     decisions: list[dict[str, Any]] = Field(default_factory=list)
     schedule_changes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# ---------- Global search (Cmd+K palette) ----------
+class SearchResultOut(BaseModel):
+    """One row in the Cmd+K results list.
+
+    ``client_slug`` and ``portfolio_slug`` are precomputed server-side so the
+    frontend can route straight to ``/path?client=<slug>&portfolio=<slug>``
+    without an extra clients/projects fetch.
+    """
+    kind: Literal["client", "portfolio", "meeting", "agenda", "action"]
+    id: int
+    label: str
+    subtitle: Optional[str] = None
+    client_id: Optional[int] = None
+    project_id: Optional[int] = None
+    client_slug: Optional[str] = None
+    portfolio_slug: Optional[str] = None
+
+
+class SearchResponse(BaseModel):
+    results: list[SearchResultOut] = Field(default_factory=list)
 
 
 # Re-enable forward refs

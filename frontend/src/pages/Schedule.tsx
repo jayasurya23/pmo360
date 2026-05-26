@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
 import {
   listSchedules,
@@ -19,6 +20,7 @@ export default function SchedulePage() {
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const confirm = useConfirm();
 
   const load = async () => {
     if (!currentProject) return;
@@ -62,10 +64,16 @@ export default function SchedulePage() {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm("Delete this schedule version?")) return;
-    await deleteSchedule(id);
-    setSchedules(schedules.filter((s) => s.id !== id));
+  const handleDelete = async (schedule: Schedule) => {
+    const ok = await confirm({
+      title: `Delete schedule ${schedule.version}?`,
+      body: "This will remove the saved schedule and all its line items.",
+      confirmLabel: "Delete schedule",
+      destructive: true,
+    });
+    if (!ok) return;
+    await deleteSchedule(schedule.id);
+    setSchedules(schedules.filter((s) => s.id !== schedule.id));
   };
 
   return (
@@ -173,7 +181,7 @@ export default function SchedulePage() {
                   </div>
                   <button
                     className="btn-danger"
-                    onClick={() => handleDelete(s.id)}
+                    onClick={() => handleDelete(s)}
                   >
                     Delete
                   </button>
