@@ -59,6 +59,26 @@ interface ErrorDetail {
 interface EventRow {
   event: CalendarEvent;
   match: CalendarMatchOut;
+  /** True when every non-organizer attendee is on the Castillo domain —
+   *  signals an internal sync, which gets a softer "🏢 Internal" pill and
+   *  doesn't show a portfolio-match badge (matching internal syncs to
+   *  client portfolios is almost always wrong). PMs can still build an
+   *  agenda from one if they want; we just de-emphasise. */
+  isInternal: boolean;
+}
+
+/** Domain we treat as "Castillo internal" for the internal-event heuristic.
+ *  Hardcoded for now — extend to multiple domains if Castillo ever acquires
+ *  or rebrands. */
+const INTERNAL_EMAIL_DOMAIN = "@castillope.com";
+
+function classifyInternal(emails: string[]): boolean {
+  // No attendees at all → it's a personal block (focus time, OOO). Treat
+  // as internal so it gets the same de-emphasis.
+  if (emails.length === 0) return true;
+  return emails.every((e) =>
+    e.toLowerCase().trim().endsWith(INTERNAL_EMAIL_DOMAIN),
+  );
 }
 
 
@@ -128,6 +148,7 @@ export default function CalendarCard() {
                 match_reason: null,
                 is_manual: false,
               } satisfies CalendarMatchOut),
+            isInternal: classifyInternal(ev.attendeeEmails),
           })),
         );
         setPhase("loaded");
@@ -183,6 +204,10 @@ export default function CalendarCard() {
                     match_reason: "manual",
                     is_manual: true,
                   },
+                  // PM explicitly linked an internal-looking event to a
+                  // portfolio — un-flag the internal heuristic so the row
+                  // looks like a normal client meeting now.
+                  isInternal: false,
                 }
               : r,
           ),
@@ -264,11 +289,12 @@ export default function CalendarCard() {
                   {g.label}
                 </div>
                 <div className="card divide-y divide-brand-lightgray/60">
-                  {g.rows.map(({ event, match }) => (
+                  {g.rows.map(({ event, match, isInternal }) => (
                     <EventRowItem
                       key={event.id}
                       event={event}
                       match={match}
+                      isInternal={isInternal}
                       pickerOpen={pendingLinkFor === event.id}
                       onTogglePicker={async () => {
                         const next =
@@ -392,6 +418,7 @@ function SkeletonRow() {
 function EventRowItem({
   event,
   match,
+  isInternal,
   pickerOpen,
   onTogglePicker,
   portfolios,
@@ -401,6 +428,7 @@ function EventRowItem({
 }: {
   event: CalendarEvent;
   match: CalendarMatchOut;
+  isInternal: boolean;
   pickerOpen: boolean;
   onTogglePicker: () => void;
   portfolios: Project[];
@@ -471,6 +499,26 @@ function EventRowItem({
                     Remove link
                   </button>
                 )}
+              </>
+            ) : isInternal ? (
+              // Internal-only meeting: skip the "Unmatched" amber pill +
+              // "Pick a portfolio" prompt — almost always wrong to bind
+              // an internal sync to a client portfolio. PM can still click
+              // "Change" to override if this one really is portfolio-related.
+              <>
+                <span
+                  className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600"
+                  title="All attendees are on the Castillo domain — treated as an internal sync, not a client meeting."
+                >
+                  🏢 Internal
+                </span>
+                <button
+                  type="button"
+                  onClick={onTogglePicker}
+                  className="text-[11px] underline text-brand-gray hover:text-brand-black"
+                >
+                  {pickerOpen ? "Cancel" : "Link to portfolio"}
+                </button>
               </>
             ) : (
               <>

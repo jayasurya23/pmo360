@@ -402,6 +402,9 @@ class MeetingTemplateOut(ORMModel):
     created_by: Optional[UserStub] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Most recent clone time. Null when the template has never been cloned —
+    # the Capture page sorts those last in the "recently used" rail.
+    last_used_at: Optional[datetime] = None
 
 
 class MeetingTemplateIn(BaseModel):
@@ -516,6 +519,32 @@ class DashboardResponse(BaseModel):
     open_actions: list[DashboardActionOut] = Field(default_factory=list)
     follow_up_notes: list[DashboardNoteOut] = Field(default_factory=list)
     upcoming_agendas: list[DashboardAgendaOut] = Field(default_factory=list)
+
+
+class DashboardRiskOut(BaseModel):
+    """One open risk pulled from a portfolio's most-recent agenda for the
+    Home risk-rollup card. We don't have a dedicated Risk model — risks
+    live as free-form JSON inside ``Agenda.risks_json`` — so the fields
+    here mirror what NextAgenda's editor saves.
+
+    ``project_id`` + ``project_name`` + ``client_name`` are denormalised so
+    the card can route to the source portfolio with one click without
+    looking the names up again.
+    """
+    project_id: int
+    project_name: str
+    client_name: Optional[str] = None
+    agenda_id: int
+    upcoming_date: date
+    description: str
+    impact: Optional[str] = None
+    likelihood: Optional[str] = None
+    mitigation: Optional[str] = None
+    owner: Optional[str] = None
+
+
+class DashboardRisksResponse(BaseModel):
+    risks: list[DashboardRiskOut] = Field(default_factory=list)
 
 
 # ---------- AI Home briefing ----------

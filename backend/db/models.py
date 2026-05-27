@@ -457,6 +457,13 @@ class MeetingTemplate(Base):
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Bumped to ``utcnow()`` every time the template is cloned via the
+    # /clone endpoint. The Capture page surfaces the 3 most-recently-used
+    # templates as one-click cards so PMs don't have to scroll past their
+    # 12-template dropdown to pick the same weekly sync they always clone.
+    # Nullable so existing rows pre-dating this column still load — the
+    # frontend treats null as "never cloned" and sorts those last.
+    last_used_at = Column(DateTime)
 
     project = relationship(
         "Project",

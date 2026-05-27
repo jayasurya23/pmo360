@@ -9,6 +9,7 @@ import {
   listProjectRoster,
   listGlobalRoster,
   listTemplates,
+  touchTemplate,
   parseNotes,
   parseTranscriptFile,
   addProjectRoster,
@@ -414,9 +415,15 @@ export default function Capture() {
     flashToast(`Imported ${people.length} people · ${added} added to this meeting.`);
   };
 
-  const handleCloneTemplate = () => {
-    if (!currentProject || selectedTemplateId === "") return;
-    const t = templates.find((x) => x.id === Number(selectedTemplateId));
+  /** Clone a template into the current Capture draft. Pass an explicit
+   *  template to clone from the "recently used" tile; omit to use the
+   *  dropdown selection (existing behaviour). Bumps last_used_at on the
+   *  server so the recent-rail reorders for next time. */
+  const handleCloneTemplate = (override?: MeetingTemplate) => {
+    if (!currentProject) return;
+    const t =
+      override ||
+      templates.find((x) => x.id === Number(selectedTemplateId));
     if (!t) return;
 
     // Attendees → selectedAttendees (drop email, fall back to "" for org).
@@ -450,6 +457,19 @@ export default function Capture() {
 
     setCloneOpen(false);
     flashToast(`Cloned template: ${t.name}`);
+
+    // Fire-and-forget last_used_at bump + local re-sort so the next render
+    // shows this template at the top of the recent rail. We don't await —
+    // the user's already past it and a failed touch is silent.
+    void touchTemplate(t.id)
+      .then((updated) => {
+        setTemplates((prev) =>
+          prev.map((row) => (row.id === t.id ? updated : row)),
+        );
+      })
+      .catch(() => {
+        /* silent — non-critical */
+      });
   };
 
   const handleFile = async (file: File) => {
@@ -660,6 +680,14 @@ export default function Capture() {
           </button>
         </div>
 
+        {/* Recently-used templates — one-click clone cards. Surfaces the
+            PM's daily-driver templates so they don't have to open the
+            Expander dropdown for the same weekly sync template every time. */}
+        <RecentTemplatesRail
+          templates={templates}
+          onClone={(t) => handleCloneTemplate(t)}
+        />
+
         {/* Clone from template — pre-fill attendees + agenda + deliverables
             from a saved recurring-meeting template. */}
         <Expander
@@ -701,7 +729,7 @@ export default function Capture() {
                   <button
                     type="button"
                     className="btn-primary"
-                    onClick={handleCloneTemplate}
+                    onClick={() => handleCloneTemplate()}
                     disabled={selectedTemplateId === ""}
                   >
                     Clone
@@ -1333,4 +1361,93 @@ function Chip({
       )}
     </div>
   );
+}
+
+
+
+/**
+ * RecentTemplatesRail — the top 3 most-recently-used templates as
+ * one-click cards above the existing Clone Expander.
+ *
+ * Sorting:
+ *   - last_used_at DESC (most recent first)
+ *   - templates that have never been cloned (last_used_at == null) come
+ *     after, sorted by name. They still appear if there are < 3 used.
+ *
+ * Hidden entirely when the portfolio has no templates — Capture is busy
+ * enough without an empty rail taking up vertical space.
+ */
+function RecentTemplatesRail({
+  templates,
+  onClone,
+}: {
+  templates: MeetingTemplate[];
+  onClone: (t: MeetingTemplate) => void;
+}) {
+  const sorted = useMemo(() => {
+    const copy = templates.slice();
+    copy.sort((a, b) => {
+      const aT = a.last_used_at ? Date.parse(a.last_used_at) : 0;
+      const bT = b.last_used_at ? Date.parse(b.last_used_at) : 0;
+      if (aT !== bT) return bT - aT; // recent first
+      return a.name.localeCompare(b.name);
+    });
+    return copy.slice(0, 3);
+  }, [templates]);
+
+  if (sorted.length === 0) return null;
+
+  return (
+    <div className="space-y-1">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">
+        Recent templates
+      </div>
+      <div className="flex gap-2 flex-wrap">
+        {sorted.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => onClone(t)}
+            className="card px-3 py-2 text-left hover:border-brand-red hover:shadow-sm transition flex-1 min-w-[180px] max-w-xs"
+            title={
+              t.last_used_at
+                ? `Last cloned ${new Date(t.last_used_at).toLocaleDateString()}`
+                : "Never cloned yet"
+            }
+          >
+            <div className="text-sm font-medium text-brand-black truncate">
+              📋 {t.name}
+            </div>
+            <div className="text-[11px] text-brand-gray mt-0.5 truncate">
+              {(t.attendees_json?.length || 0)} attendee
+              {(t.attendees_json?.length || 0) === 1 ? "" : "s"} ·{" "}
+              {(t.agenda_topics_json?.length || 0)} topic
+              {(t.agenda_topics_json?.length || 0) === 1 ? "" : "s"}
+              {t.last_used_at && (
+                <>
+                  {" · "}
+                  used {timeAgo(t.last_used_at)}
+                </>
+              )}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+/** Tiny relative-time helper. Returns "today" / "Nd" / "Nw" / "DD/MM" —
+ *  good enough for an inline meta line on the recent-templates rail. */
+function timeAgo(iso: string): string {
+  const then = new Date(iso);
+  const now = new Date();
+  const ms = now.getTime() - then.getTime();
+  const days = Math.floor(ms / 86400000);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 7) return `${days}d ago`;
+  if (days < 30) return `${Math.floor(days / 7)}w ago`;
+  return then.toLocaleDateString();
 }

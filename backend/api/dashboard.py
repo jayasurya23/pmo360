@@ -1,12 +1,16 @@
 """/api/dashboard — home page rollup (overdue actions, follow-ups, agendas).
 
-Three endpoints:
+Endpoints:
   - GET /api/dashboard           → cross-portfolio "everyone's stuff" view
   - GET /api/dashboard/mine      → only the signed-in user's stuff. Same shape
                                     so the frontend can render one component
                                     in two contexts.
   - GET /api/dashboard/briefing  → AI-written personalized "since you were
                                     last here..." card for the top of Home.
+  - GET /api/dashboard/risks     → open risks aggregated from the most-recent
+                                    agenda of every portfolio the user can
+                                    see. Sorted by likelihood (Critical → Low)
+                                    then by portfolio name.
 """
 import logging
 from datetime import date, datetime, timedelta
@@ -16,15 +20,15 @@ from sqlalchemy.orm import Session
 
 from core.deps import get_db
 from auth import require_db_user
-from db.models import ActionItem, Meeting, Agenda, Note
+from db.models import ActionItem, Meeting, Agenda, Note, Project
 from db.repository import (
     all_open_actions_across_portfolios, all_notes_with_follow_up,
-    all_upcoming_agendas,
+    all_upcoming_agendas, list_my_project_ids,
 )
 from llm.providers import get_provider
 from schemas.common import (
     DashboardResponse, DashboardActionOut, DashboardNoteOut, DashboardAgendaOut,
-    BriefingResponse,
+    BriefingResponse, DashboardRisksResponse, DashboardRiskOut,
 )
 
 
@@ -321,3 +325,111 @@ def get_home_briefing(
         new_follow_up_notes=new_follow_up_notes,
         briefing=prose,
     )
+
+
+# ============================================================
+# Open risks rollup — Home card
+# ============================================================
+# Likelihood -> sort weight. Critical first, blank/unknown last.
+_LIKELIHOOD_WEIGHT = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+}
+
+
+@router.get("/risks", response_model=DashboardRisksResponse)
+def get_open_risks(
+    scope: str = "all",
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+):
+    """Open risks aggregated from the most-recent agenda of every portfolio
+    the signed-in user can see.
+
+    Scope semantics mirror the Mine/All toggle on Home:
+      - ``scope="mine"`` AND non-admin → only portfolios the user is a
+        member of.
+      - ``scope="all"`` OR admin → every portfolio.
+
+    Risks come from ``Agenda.risks_json`` — a JSON list of
+    ``{description, impact, likelihood, mitigation, owner}`` objects.
+    There's no dedicated Risk table because PMs treat risks as agenda
+    line items, not first-class entities. This rollup walks the latest
+    agenda per portfolio and flattens the JSON; it's O(portfolios), so
+    fast enough even at 100+ portfolios.
+
+    Sorted by likelihood (Critical → Low → blank), then by client/portfolio
+    name so risks for the same project cluster together.
+    """
+    # ---- Scope ----
+    if actor.is_admin or scope == "all":
+        project_ids: set[int] | None = None  # no filter
+    else:
+        project_ids = set(list_my_project_ids(db, actor.id))
+        if not project_ids:
+            return DashboardRisksResponse(risks=[])
+
+    # ---- Pick the most-recent agenda per project ----
+    # We use `upcoming_date DESC, updated_at DESC` as the "most recent"
+    # ordering — matches the per-portfolio dashboard's behaviour.
+    q = db.query(Agenda).order_by(Agenda.upcoming_date.desc(), Agenda.updated_at.desc())
+    if project_ids is not None:
+        q = q.filter(Agenda.project_id.in_(project_ids))
+    latest_per_project: dict[int, Agenda] = {}
+    for ag in q.all():
+        if ag.project_id in latest_per_project:
+            continue
+        latest_per_project[ag.project_id] = ag
+
+    # Project lookup for client name + display
+    if latest_per_project:
+        projects = {
+            p.id: p
+            for p in db.query(Project)
+            .filter(Project.id.in_(latest_per_project.keys()))
+            .all()
+        }
+    else:
+        projects = {}
+
+    # ---- Flatten ----
+    rows: list[DashboardRiskOut] = []
+    for project_id, agenda in latest_per_project.items():
+        project = projects.get(project_id)
+        if project is None:
+            continue
+        client_name = project.client.name if project.client else None
+        risks = agenda.risks_json or []
+        if not isinstance(risks, list):
+            continue
+        for r in risks:
+            if not isinstance(r, dict):
+                continue
+            description = (r.get("description") or "").strip()
+            # Drop blank rows — the inline editor leaves an empty trailing
+            # row when PMs delete entries.
+            if not description:
+                continue
+            rows.append(DashboardRiskOut(
+                project_id=project_id,
+                project_name=project.name,
+                client_name=client_name,
+                agenda_id=agenda.id,
+                upcoming_date=agenda.upcoming_date,
+                description=description,
+                impact=(r.get("impact") or "").strip() or None,
+                likelihood=(r.get("likelihood") or "").strip() or None,
+                mitigation=(r.get("mitigation") or "").strip() or None,
+                owner=(r.get("owner") or "").strip() or None,
+            ))
+
+    # ---- Sort ----
+    rows.sort(key=lambda r: (
+        _LIKELIHOOD_WEIGHT.get((r.likelihood or "").lower(), 99),
+        (r.client_name or "").lower(),
+        r.project_name.lower(),
+    ))
+
+    return DashboardRisksResponse(risks=rows)

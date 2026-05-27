@@ -405,12 +405,41 @@ export const updateTemplate = (
     .then((r) => r.data);
 export const deleteTemplate = (id: number) =>
   apiClient.delete(`/templates/${id}`);
+/** Bumps the template's last_used_at to now() — called by the Capture page
+ *  right after a PM clones a template. Drives the "recently used" rail. */
+export const touchTemplate = (id: number) =>
+  apiClient
+    .post<MeetingTemplate>(`/templates/${id}/touch`)
+    .then((r) => r.data);
 
 // ---------- dashboard + settings ----------
 export const fetchDashboard = () =>
   apiClient.get<DashboardResponse>("/dashboard").then((r) => r.data);
 export const fetchMyDashboard = () =>
   apiClient.get<DashboardResponse>("/dashboard/mine").then((r) => r.data);
+
+/** One open risk surfaced on the Home risk-rollup card. Matches
+ *  ``schemas.common.DashboardRiskOut`` on the backend. */
+export interface DashboardRisk {
+  project_id: number;
+  project_name: string;
+  client_name: string | null;
+  agenda_id: number;
+  upcoming_date: string;
+  description: string;
+  impact: string | null;
+  likelihood: string | null;
+  mitigation: string | null;
+  owner: string | null;
+}
+
+/** Open risks aggregated from the most-recent agenda of every portfolio
+ *  the user can see. ``scope="mine"`` honours the Mine/All toggle; admins
+ *  always see everything regardless. Pre-sorted by likelihood. */
+export const fetchOpenRisks = (scope: "mine" | "all" = "all") =>
+  apiClient
+    .get<{ risks: DashboardRisk[] }>("/dashboard/risks", { params: { scope } })
+    .then((r) => r.data.risks);
 export const fetchSettings = () =>
   apiClient.get<Settings>("/settings").then((r) => r.data);
 

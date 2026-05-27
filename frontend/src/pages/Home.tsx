@@ -4,6 +4,7 @@ import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import { StatusPill } from "@/components/StatusPill";
 import CalendarCard from "@/components/home/CalendarCard";
+import RisksCard from "@/components/home/RisksCard";
 import {
   fetchBriefing,
   fetchDashboard,
@@ -127,6 +128,9 @@ export default function Home() {
 
       {/* ----- Calendar v2: upcoming Outlook meetings with manual override ----- */}
       <CalendarCard />
+
+      {/* ----- Open risks rollup (signed-in only; auto-hides when empty) ----- */}
+      <RisksCard />
 
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

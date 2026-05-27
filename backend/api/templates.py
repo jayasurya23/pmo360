@@ -108,3 +108,19 @@ def delete_template(template_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "Template not found")
     db.delete(t)
     return None
+
+
+@router.post("/{template_id}/touch", response_model=MeetingTemplateOut)
+def touch_template(template_id: int, db: Session = Depends(get_db)):
+    """Bump ``last_used_at`` to now() — called by the Capture page after
+    cloning the template. Lets the next /api/templates fetch sort by
+    "most recently used" so the PM's daily-driver templates float to the
+    top of the picker. Idempotent and safe to fire-and-forget.
+    """
+    from datetime import datetime
+    t = db.get(MeetingTemplate, template_id)
+    if not t:
+        raise HTTPException(404, "Template not found")
+    t.last_used_at = datetime.utcnow()
+    db.flush()
+    return t

@@ -406,6 +406,9 @@ export interface MeetingTemplate {
   created_by?: UserStub | null;
   created_at?: string;
   updated_at?: string;
+  /** ISO timestamp of the most recent clone. Null when never cloned —
+   *  the Capture page sorts those last in the "recently used" rail. */
+  last_used_at?: string | null;
 }
 
 export interface MeetingTemplateInput {
