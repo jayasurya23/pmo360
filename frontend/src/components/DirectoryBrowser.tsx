@@ -15,19 +15,35 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/auth/useAuth";
 import { listOrgDirectory, type DirectoryUser } from "@/lib/graph";
-import { addProjectRoster, addGlobalRoster } from "@/lib/api";
+import {
+  addProjectRoster,
+  addGlobalRoster,
+  addProjectMember,
+} from "@/lib/api";
 import type { Attendee, GlobalAttendee } from "@/lib/types";
 
 interface Props {
   open: boolean;
   onClose: () => void;
-  /** Project id for "Add to portfolio roster" — required for that button. */
+  /** Project id for "Add to portfolio roster" / "Add as PM" — required for
+   *  those targets. */
   projectId: number | null;
-  /** Existing roster names + emails — used to dim already-added entries. */
+  /** Existing names + emails (roster OR member list, depending on mode) —
+   *  used to dim already-added entries. */
   existingNames: string[];
   existingEmails: string[];
+  /**
+   * Which destination the selected rows get pushed to.
+   *
+   * - "roster" (default, legacy Capture-page behaviour): adds to either
+   *   the portfolio's attendee roster or the company-wide global roster.
+   *   Surfaces two add buttons.
+   * - "members": adds as a portfolio PM via POST /projects/{id}/members.
+   *   Surfaces a single "Add as PM" button.
+   */
+  targetKind?: "roster" | "members";
   /** Fires after at least one person has been added, so the parent can
-   *  refetch its roster lists. */
+   *  refetch its roster / member list. */
   onAdded: (added: { full_name: string; email: string }[]) => void;
 }
 
@@ -37,6 +53,7 @@ export default function DirectoryBrowser({
   projectId,
   existingNames,
   existingEmails,
+  targetKind = "roster",
   onAdded,
 }: Props) {
   const { isAuthenticated, getDirectoryToken } = useAuth();
@@ -153,9 +170,13 @@ export default function DirectoryBrowser({
   }
 
   // ---- Add buttons ----
-  async function handleAdd(target: "portfolio" | "global") {
+  // `target` is one of:
+  //   - "portfolio" : addProjectRoster (attendee row on this portfolio)
+  //   - "global"    : addGlobalRoster  (company-wide attendee roster)
+  //   - "members"   : addProjectMember (PM membership on this portfolio)
+  async function handleAdd(target: "portfolio" | "global" | "members") {
     if (!users || selected.size === 0) return;
-    if (target === "portfolio" && !projectId) {
+    if ((target === "portfolio" || target === "members") && !projectId) {
       setError("Pick a portfolio first.");
       return;
     }
@@ -166,11 +187,20 @@ export default function DirectoryBrowser({
         .filter((u) => selected.has(u.id))
         .map(toAttendeePayload);
       const results = await Promise.allSettled(
-        payloads.map((p) =>
-          target === "portfolio"
-            ? addProjectRoster(projectId!, p) as Promise<Attendee | GlobalAttendee>
-            : addGlobalRoster(p) as Promise<Attendee | GlobalAttendee>,
-        ),
+        payloads.map((p) => {
+          if (target === "portfolio") {
+            return addProjectRoster(projectId!, p) as Promise<
+              Attendee | GlobalAttendee
+            >;
+          }
+          if (target === "global") {
+            return addGlobalRoster(p) as Promise<Attendee | GlobalAttendee>;
+          }
+          // "members" — backend looks up the User row by email. If the
+          // person has never signed in, this 404s; we count it as failed
+          // and surface a single aggregate message below.
+          return addProjectMember(projectId!, { email: p.email });
+        }),
       );
       const succeeded = payloads.filter((_, i) => results[i].status === "fulfilled");
       if (succeeded.length) {
@@ -180,7 +210,14 @@ export default function DirectoryBrowser({
       }
       const failed = results.filter((r) => r.status === "rejected").length;
       if (failed) {
-        setError(`${failed} of ${results.length} adds failed.`);
+        if (target === "members") {
+          setError(
+            `${failed} of ${results.length} could not be added — they ` +
+              "may not have signed into PMO 360 yet.",
+          );
+        } else {
+          setError(`${failed} of ${results.length} adds failed.`);
+        }
       }
       // Drop added rows from selection and close if everything went.
       setSelected(new Set());
@@ -203,7 +240,11 @@ export default function DirectoryBrowser({
     >
       <div className="w-full max-w-2xl card p-5 space-y-3 shadow-xl max-h-[85vh] flex flex-col">
         <div className="flex items-center justify-between">
-          <h3 className="section-title">🏢 Browse Castillo directory</h3>
+          <h3 className="section-title">
+            {targetKind === "members"
+              ? "🏢 Add PMs from Castillo directory"
+              : "🏢 Browse Castillo directory"}
+          </h3>
           <button
             type="button"
             className="text-xs text-slate-400 hover:text-slate-600"
@@ -330,28 +371,50 @@ export default function DirectoryBrowser({
                   : "Click rows to select"}
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="btn-ghost"
-                  onClick={() => handleAdd("global")}
-                  disabled={selected.size === 0 || adding}
-                  title="Add to the company-wide roster (visible on every portfolio)"
-                >
-                  + Add to company roster
-                </button>
-                <button
-                  type="button"
-                  className="btn-primary"
-                  onClick={() => handleAdd("portfolio")}
-                  disabled={selected.size === 0 || adding || !projectId}
-                  title={
-                    projectId
-                      ? "Add to this portfolio's roster"
-                      : "Pick a portfolio first"
-                  }
-                >
-                  {adding ? "Adding…" : `+ Add to portfolio (${selected.size})`}
-                </button>
+                {targetKind === "members" ? (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => handleAdd("members")}
+                    disabled={selected.size === 0 || adding || !projectId}
+                    title={
+                      projectId
+                        ? "Assign as a PM on this portfolio"
+                        : "Pick a portfolio first"
+                    }
+                  >
+                    {adding
+                      ? "Adding…"
+                      : `+ Add as PM (${selected.size})`}
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      onClick={() => handleAdd("global")}
+                      disabled={selected.size === 0 || adding}
+                      title="Add to the company-wide roster (visible on every portfolio)"
+                    >
+                      + Add to company roster
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={() => handleAdd("portfolio")}
+                      disabled={selected.size === 0 || adding || !projectId}
+                      title={
+                        projectId
+                          ? "Add to this portfolio's roster"
+                          : "Pick a portfolio first"
+                      }
+                    >
+                      {adding
+                        ? "Adding…"
+                        : `+ Add to portfolio (${selected.size})`}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </>

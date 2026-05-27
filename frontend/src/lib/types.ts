@@ -7,6 +7,27 @@ export interface UserStub {
   email?: string | null;
 }
 
+/** Shape returned by `GET /api/me` — the DB-backed UserOut. `is_admin`
+ * controls scope-toggle defaulting and the "all projects" bypass on
+ * the membership-aware list endpoints. */
+export interface MeResponse {
+  id: number;
+  oid: string;
+  email?: string | null;
+  name?: string | null;
+  is_admin: boolean;
+}
+
+/** Project membership row — one user assigned as a PM to a portfolio.
+ *  Returned from `GET /api/projects/{id}/members`. */
+export interface ProjectMember {
+  id: number;
+  project_id: number;
+  user_id: number;
+  user?: UserStub | null;
+  created_at?: string;
+}
+
 export interface Client {
   id: number;
   name: string;

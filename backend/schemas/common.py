@@ -21,6 +21,7 @@ class UserOut(ORMModel):
     oid: str
     email: Optional[str] = None
     name: Optional[str] = None
+    is_admin: bool = False
 
 
 class UserStub(ORMModel):
@@ -29,6 +30,15 @@ class UserStub(ORMModel):
     id: int
     name: Optional[str] = None
     email: Optional[str] = None
+
+
+# ---------- Project membership ----------
+class ProjectMemberOut(ORMModel):
+    id: int
+    project_id: int
+    user_id: int
+    user: Optional[UserStub] = None
+    created_at: Optional[datetime] = None
 
 
 class UserPreferences(BaseModel):

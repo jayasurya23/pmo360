@@ -1,5 +1,6 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -9,19 +10,42 @@ import {
 } from "react";
 import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import * as api from "./api";
-import type { Client, Project, Settings, ParsedMeeting } from "./types";
+import type {
+  Client,
+  Project,
+  Settings,
+  ParsedMeeting,
+  MeResponse,
+} from "./types";
 import { findBySlug, nameToSlug } from "./slugs";
+
+/** Persistence key for the dashboard/portfolio scope toggle. */
+const SCOPE_LS_KEY = "pmo360_scope";
+
+/** "mine" = membership-filtered (when signed-in + non-admin);
+ *  "all"  = everything. Admins and anonymous users always see everything
+ *  regardless of this flag — the toggle is a dashboard-scoping
+ *  preference, not an access-control rule. */
+export type Scope = "mine" | "all";
 
 interface AppState {
   // ---- reference data ----
   clients: Client[];
   projects: Project[];
   settings: Settings | null;
+  /** DB-backed signed-in user, or null when anonymous / /api/me 401d. */
+  me: MeResponse | null;
+  /** Refresh `me` from /api/me — call after a Bearer is attached so the
+   *  admin flag flips correctly on first sign-in. */
+  refreshMe: () => Promise<void>;
   // ---- selection ----
   selectedClientId: number | null;
   selectedProjectId: number | null;
   setSelectedClientId: (id: number | null) => void;
   setSelectedProjectId: (id: number | null) => void;
+  // ---- scope (My / All toggle) ----
+  scope: Scope;
+  setScope: (s: Scope) => void;
   // ---- draft meeting wizard state ----
   draftMeetingId: number | null;
   setDraftMeetingId: (id: number | null) => void;
@@ -72,8 +96,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [clients, setClients] = useState<Client[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [me, setMe] = useState<MeResponse | null>(null);
   const [selectedClientId, _setSelectedClientId] = useState<number | null>(null);
   const [selectedProjectId, _setSelectedProjectId] = useState<number | null>(null);
+
+  // ----- Scope toggle (My portfolios / All portfolios) -----
+  // Read the persisted choice on mount. Default depends on identity —
+  // admins land on "all" (their typical workflow), everyone else on "mine".
+  // We can't know admin status until /api/me resolves, so we start with
+  // the stored value (or "mine" as the safe default) and let the post-me
+  // effect promote anonymous/admin users to "all" only if no explicit
+  // user choice is stored yet.
+  const [scope, _setScope] = useState<Scope>(() => {
+    const stored = localStorage.getItem(SCOPE_LS_KEY);
+    if (stored === "mine" || stored === "all") return stored;
+    return "mine";
+  });
+  const setScope = useCallback((s: Scope) => {
+    _setScope(s);
+    localStorage.setItem(SCOPE_LS_KEY, s);
+  }, []);
 
   const [draftMeetingId, setDraftMeetingId] = useState<number | null>(null);
   const [parsed, setParsed] = useState<ParsedMeeting | null>(null);
@@ -190,15 +232,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ---- /api/me: resolve identity + admin flag once the Bearer is attached ----
+  // We poll briefly on mount because the MSAL interceptor may not have a token
+  // ready on the first try (silent acquire happens async). After 401 we treat
+  // the user as anonymous and never retry — they'll get re-fetched on the
+  // next manual `refreshMe()` call (e.g. after sign-in completes).
+  const refreshMe = useCallback(async () => {
+    try {
+      const m = await api.fetchMe();
+      setMe(m);
+      // Bootstrap scope on first identity resolution. If the user has
+      // never touched the toggle, admins land on "all" (their typical
+      // workflow), everyone else stays on the "mine" default.
+      if (!localStorage.getItem(SCOPE_LS_KEY)) {
+        const initial: Scope = m.is_admin ? "all" : "mine";
+        _setScope(initial);
+        localStorage.setItem(SCOPE_LS_KEY, initial);
+      }
+    } catch {
+      setMe(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Try once now (covers the case where MSAL already has a cached token)
+    // and again after 500ms (covers the cold-start race where the
+    // interceptor's acquireTokenSilent is still pending).
+    void refreshMe();
+    const t = setTimeout(() => {
+      if (me === null) void refreshMe();
+    }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ---- Projects load whenever client changes ----
+  // The picker dropdown ALWAYS shows every portfolio under the chosen
+  // client, regardless of the Mine/All scope toggle or membership. The
+  // dropdown is for *navigation* — restricting it would hide portfolios
+  // the PM is allowed to view (the backend already scopes data access at
+  // the row level), and silently break navigation when a non-member picks
+  // an unrelated client.
+  //
+  // The Mine/All scope toggle is honoured by the dashboard endpoints
+  // (Home, briefing) which call fetchMyDashboard / fetchDashboard
+  // explicitly — it doesn't need to filter the picker too.
   useEffect(() => {
     if (!selectedClientId) {
       setProjects([]);
       return;
     }
-    api
-      .listProjects(selectedClientId)
-      .then((ps) => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const ps = await api.listProjects(selectedClientId, false);
+        if (cancelled) return;
         setProjects(ps);
         // Same resolution priority as clients.
         const urlSlug = searchParams.get("portfolio");
@@ -209,8 +297,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         if (pick) _setSelectedProjectId(pick.id);
         else _setSelectedProjectId(null);
-      })
-      .catch(console.error);
+      } catch (err) {
+        console.error(err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClientId]);
 
@@ -258,7 +351,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
   const refreshProjects = async () => {
     if (!selectedClientId) return;
-    const ps = await api.listProjects(selectedClientId);
+    // Always unfiltered — picker is for navigation. The Mine/All scope
+    // toggle is honoured by the dashboard endpoints, not by the picker.
+    const ps = await api.listProjects(selectedClientId, false);
     setProjects(ps);
   };
 
@@ -292,10 +387,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     clients,
     projects,
     settings,
+    me,
+    refreshMe,
     selectedClientId,
     selectedProjectId,
     setSelectedClientId,
     setSelectedProjectId,
+    scope,
+    setScope,
     draftMeetingId,
     setDraftMeetingId,
     parsed,

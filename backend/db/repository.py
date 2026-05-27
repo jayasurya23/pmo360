@@ -10,7 +10,7 @@ from sqlalchemy import desc
 from db.models import (
     Client, Project, ProjectAttendee, Meeting, MeetingAttendee,
     AgendaItem, DiscussionPoint, Deliverable, MeetingDeliverable,
-    ActionItem, GeneratedDocument, Agenda, Note,
+    ActionItem, GeneratedDocument, Agenda, Note, ProjectMember, User,
 )
 
 
@@ -27,6 +27,86 @@ def list_projects(session: Session, client_id: int) -> list[Project]:
 
 def get_project(session: Session, project_id: int) -> Optional[Project]:
     return session.get(Project, project_id)
+
+
+# ============================================================
+# Project membership
+# ============================================================
+def list_project_member_ids(session: Session, project_id: int) -> list[int]:
+    """User IDs assigned to this portfolio. Cheap — used in access checks."""
+    rows = session.query(ProjectMember.user_id).filter_by(project_id=project_id).all()
+    return [r[0] for r in rows]
+
+
+def list_project_members(session: Session, project_id: int) -> list[ProjectMember]:
+    """ProjectMember rows for a portfolio, joined to User so callers can
+    render display names without a second query."""
+    return (
+        session.query(ProjectMember)
+        .filter_by(project_id=project_id)
+        .order_by(ProjectMember.created_at)
+        .all()
+    )
+
+
+def list_my_project_ids(session: Session, user_id: int) -> list[int]:
+    """Project IDs the given user is assigned to."""
+    rows = session.query(ProjectMember.project_id).filter_by(user_id=user_id).all()
+    return [r[0] for r in rows]
+
+
+def add_project_member(
+    session: Session,
+    project_id: int,
+    user_id: int,
+    created_by_id: Optional[int] = None,
+) -> ProjectMember:
+    """Idempotent add — returns the existing row if (project, user) is
+    already assigned. Caller commits via session_scope."""
+    existing = (
+        session.query(ProjectMember)
+        .filter_by(project_id=project_id, user_id=user_id)
+        .first()
+    )
+    if existing:
+        return existing
+    row = ProjectMember(
+        project_id=project_id, user_id=user_id, created_by_id=created_by_id,
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def remove_project_member(session: Session, member_id: int) -> None:
+    row = session.get(ProjectMember, member_id)
+    if row is not None:
+        session.delete(row)
+        session.flush()
+
+
+def user_can_access_project(
+    session: Session,
+    user_id: Optional[int],
+    project_id: int,
+) -> bool:
+    """True if the user is an admin, or is assigned as a member of the
+    project. None user (anonymous) returns True only when AUTH_REQUIRED
+    is false — that policy is enforced at the router level via the
+    optional vs strict auth dependency."""
+    if user_id is None:
+        return True  # router gates anonymous access separately
+    user = session.get(User, user_id)
+    if user is None:
+        return False
+    if user.is_admin:
+        return True
+    return (
+        session.query(ProjectMember)
+        .filter_by(project_id=project_id, user_id=user_id)
+        .first()
+        is not None
+    )
 
 
 # ============================================================

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import { StatusPill } from "@/components/StatusPill";
+import CalendarCard from "@/components/home/CalendarCard";
 import {
   fetchBriefing,
   fetchDashboard,
@@ -34,14 +35,22 @@ export default function Home() {
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [briefingLoading, setBriefingLoading] = useState(false);
   const nav = useNavigate();
-  const { settings, resetDraft } = useApp();
+  const { settings, resetDraft, scope, me } = useApp();
   const { isAuthenticated, user } = useAuth();
 
+  // When the user picks "My portfolios" AND they're signed in AND not an
+  // admin, the all-portfolios rollup uses /dashboard/mine instead of
+  // /dashboard so the top three cards scope to their stuff. Admins +
+  // anonymous + explicit "all" still hit /dashboard.
+  const useMyScope = scope === "mine" && me !== null && !me.is_admin;
+
   useEffect(() => {
-    fetchDashboard()
+    setLoading(true);
+    const fetcher = useMyScope ? fetchMyDashboard : fetchDashboard;
+    fetcher()
       .then(setData)
       .finally(() => setLoading(false));
-  }, []);
+  }, [useMyScope]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -115,6 +124,10 @@ export default function Home() {
           onRefresh={loadBriefing}
         />
       )}
+
+      {/* ----- Calendar v2: upcoming Outlook meetings with manual override ----- */}
+      <CalendarCard />
+
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <StatCard

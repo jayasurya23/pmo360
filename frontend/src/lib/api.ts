@@ -21,6 +21,8 @@ import type {
   Deliverable,
   MeetingTemplate,
   MeetingTemplateInput,
+  MeResponse,
+  ProjectMember,
 } from "./types";
 
 // Honor VITE_API_BASE at build-time so the same artefact can talk to
@@ -85,9 +87,26 @@ export const createClient = (payload: { name: string; email_domain?: string }) =
   apiClient.post<Client>("/clients", payload).then((r) => r.data);
 export const deleteClient = (id: number) => apiClient.delete(`/clients/${id}`);
 
-export const listProjects = (clientId: number) =>
+/**
+ * List projects under a client. When `myOnly=true` AND the user is signed
+ * in AND not an admin, the backend filters to projects the user is
+ * explicitly a member of. Anonymous + admin users see every project
+ * regardless of the flag.
+ */
+/** Fetch every portfolio the current user can see, across all clients.
+ *  Used by the calendar card's manual-override dropdown so PMs can pin an
+ *  Outlook event to any portfolio without first navigating to the right
+ *  client. Scoped server-side by membership when ``myOnly=true``. */
+export const listAllPortfolios = (myOnly = false) =>
   apiClient
-    .get<Project[]>("/projects", { params: { client_id: clientId } })
+    .get<Project[]>(`/projects${myOnly ? "?my_only=true" : ""}`)
+    .then((r) => r.data);
+
+export const listProjects = (clientId: number, myOnly = false) =>
+  apiClient
+    .get<Project[]>("/projects", {
+      params: { client_id: clientId, my_only: myOnly },
+    })
     .then((r) => r.data);
 export const getProject = (id: number) =>
   apiClient.get<Project>(`/projects/${id}`).then((r) => r.data);
@@ -394,6 +413,105 @@ export const fetchMyDashboard = () =>
   apiClient.get<DashboardResponse>("/dashboard/mine").then((r) => r.data);
 export const fetchSettings = () =>
   apiClient.get<Settings>("/settings").then((r) => r.data);
+
+// ---------- current user (/api/me) ----------
+/**
+ * Fetch the DB-backed identity for the signed-in user. 401s when the
+ * Bearer token isn't valid — callers should treat that as "anonymous"
+ * and skip the call. `is_admin` drives the "scope" toggle defaulting
+ * + the membership-aware list-projects bypass.
+ */
+export const fetchMe = () =>
+  apiClient.get<MeResponse>("/me").then((r) => r.data);
+
+// ---------- project members (PM membership) ----------
+/** List PMs assigned to a portfolio. Used by the Manage Team modal and
+ *  the ContextSwitcher's "👤 …" secondary line. */
+export const listProjectMembers = (projectId: number) =>
+  apiClient
+    .get<ProjectMember[]>(`/projects/${projectId}/members`)
+    .then((r) => r.data);
+
+/** Assign a user to a portfolio. Pass `user_id` for a known User row, or
+ *  `email` for a Castillo-directory lookup. Email triggers a 404 when no
+ *  matching User row exists — surface the message and ask the target to
+ *  sign in once before retrying. */
+export const addProjectMember = (
+  projectId: number,
+  payload: { user_id?: number; email?: string },
+) =>
+  apiClient
+    .post<ProjectMember>(`/projects/${projectId}/members`, payload)
+    .then((r) => r.data);
+
+/** Remove a PM from a portfolio. Uses the member row id, not the user id —
+ *  matches the backend's `/api/project-members/{member_id}` route. */
+export const removeProjectMember = (memberId: number) =>
+  apiClient.delete(`/project-members/${memberId}`);
+
+// ---------- calendar sync ----------
+/** Raw event-summary the calendar match endpoint accepts. ``key`` is whatever
+ *  identifier the caller wants echoed back in the response (we always pass
+ *  the Graph event id so the frontend can splice the project match back
+ *  onto the original event row). */
+export interface CalendarMatchEventIn {
+  key: string;
+  subject?: string;
+  attendee_emails?: string[];
+}
+
+/** One row of the match result. ``project_id === null`` means the event
+ *  didn't match any portfolio the user can see — the frontend still renders
+ *  the event but tags it as "unassigned" and offers a manual picker.
+ *  ``is_manual: true`` means the match came from a persisted
+ *  CalendarEventLink (PM-confirmed); we don't second-guess those. */
+export interface CalendarMatchOut {
+  key: string;
+  project_id: number | null;
+  project_name: string | null;
+  client_name: string | null;
+  match_reason: "manual" | "email" | "subject" | null;
+  is_manual: boolean;
+}
+
+/**
+ * Send a list of Outlook events to the backend and get back which PMO
+ * portfolio (if any) each one matches.
+ *
+ * Why the matching happens server-side: the per-portfolio attendee email
+ * index is private data — we don't want to dump every roster email to
+ * every browser session. The backend joins against ProjectAttendee +
+ * MeetingAttendee, layers in any persisted manual links, and falls back
+ * to a name-substring match on the event subject for portfolios that
+ * don't yet have any attendee emails on file.
+ */
+export const matchCalendarEvents = (events: CalendarMatchEventIn[]) =>
+  apiClient
+    .post<{ matches: CalendarMatchOut[] }>("/calendar/match", { events })
+    .then((r) => r.data.matches);
+
+/** Pin a Microsoft Graph event to a specific PMO portfolio. The link
+ *  persists across reloads and takes priority over auto-match. Idempotent. */
+export interface CalendarLinkOut {
+  graph_event_id: string;
+  project_id: number;
+  project_name: string | null;
+  client_name: string | null;
+  linked_at: string;
+}
+export const linkCalendarEvent = (
+  graph_event_id: string,
+  project_id: number,
+) =>
+  apiClient
+    .post<CalendarLinkOut>("/calendar/link", { graph_event_id, project_id })
+    .then((r) => r.data);
+
+/** Remove a manual link. After unlink the next /match call falls back to
+ *  the email/subject heuristics. Safe to call on a non-existent link
+ *  (backend returns 204 either way). */
+export const unlinkCalendarEvent = (graph_event_id: string) =>
+  apiClient.delete(`/calendar/link/${encodeURIComponent(graph_event_id)}`);
 
 // ---------- user preferences ----------
 export interface UserPreferences {

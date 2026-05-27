@@ -9,9 +9,13 @@ import { msalInstance } from "./auth/msalConfig";
 import "./styles/index.css";
 
 // MSAL.js v3 requires explicit initialization before any other API call.
-// We block render on it so child components that synchronously consume
-// MsalProvider can rely on the instance being ready.
-msalInstance.initialize().then(() => {
+// We try to initialise it first, but a failure here MUST NOT block render —
+// otherwise the whole app white-screens whenever MSAL can't reach Microsoft
+// or the configured redirect URI fails its origin checks (e.g. when
+// accessed from a LAN IP that isn't HTTPS, which Microsoft rejects for
+// SPAs). When init fails we still render the app; the Sign-in button just
+// stays inert until conditions allow it.
+function mount() {
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       <BrowserRouter>
@@ -25,4 +29,23 @@ msalInstance.initialize().then(() => {
       </BrowserRouter>
     </React.StrictMode>,
   );
-});
+}
+
+if (msalInstance) {
+  msalInstance
+    .initialize()
+    .then(mount)
+    .catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[msal] initialize() failed — rendering app without auth. " +
+          "Sign-in will be unavailable until the configured redirect URI is " +
+          "valid (HTTPS or http://localhost):",
+        err,
+      );
+      mount();
+    });
+} else {
+  // msalInstance construction failed (see msalConfig.ts). Render anyway.
+  mount();
+}

@@ -254,6 +254,134 @@ export async function listOrgDirectory(
 
 
 /* ============================================================
+ * /me/calendarview — upcoming meetings (Calendars.Read scope)
+ * ============================================================ */
+export interface CalendarEvent {
+  /** Graph event id — stable across pulls, suitable as a React key. */
+  id: string;
+  /** Subject line. Empty string when the meeting has no title (rare). */
+  subject: string;
+  /** ISO-8601 UTC start time (Graph returns `dateTime` + `timeZone`; we
+   *  normalise to UTC by appending `Z` since Graph always returns UTC in
+   *  the calendarview endpoint when `Prefer: outlook.timezone="UTC"` is
+   *  sent — but we just trust the string and let date-fns parse). */
+  startUtc: string;
+  endUtc: string;
+  /** Lowercased SMTP addresses of every required + optional attendee plus
+   *  the organizer. Used by our backend to match the event to a PMO
+   *  portfolio. The signed-in user is filtered out (they're always present
+   *  on their own calendar). */
+  attendeeEmails: string[];
+  /** Organizer name + email — surfaced in the UI so PMs can see "this is
+   *  a Heelstone-hosted meeting" at a glance. */
+  organizerName: string;
+  organizerEmail: string;
+  /** "online" if the event has a Teams/Skype/etc join URL, else null.
+   *  Drives a "🟦 Online" pill in the card. */
+  onlineProvider: string | null;
+  /** True if the event spans the full day (no start/end time). All-day
+   *  events are usually OOO blocks, not meetings — we de-emphasise them
+   *  visually but still surface them. */
+  isAllDay: boolean;
+}
+
+/**
+ * Pull the signed-in user's upcoming calendar events.
+ *
+ * Uses `/me/calendarview` rather than `/me/events` because the former
+ * automatically expands recurring meetings into individual occurrences —
+ * essential for the "weekly sync" portfolio matching to actually find each
+ * week's instance.
+ *
+ * - `daysAhead` (default 14): how far forward to look. Two weeks is enough
+ *   to cover the current week + next week's planning without flooding the
+ *   UI with month-out internal sync meetings.
+ * - `signedInEmail` (optional): lowercased SMTP of the signed-in user. We
+ *   strip them from each event's attendee list before matching so the
+ *   match doesn't trivially succeed via "user is on this event" — the PM
+ *   is on every event of theirs. Pass `useAuth().user?.email`.
+ * - `pageSize` (default 50, Graph caps at 1000): events per page. We don't
+ *   paginate yet — 50 events in two weeks is a heavy meeting load.
+ */
+export async function listUpcomingEvents(
+  token: string,
+  options: {
+    daysAhead?: number;
+    signedInEmail?: string;
+    pageSize?: number;
+  } = {},
+): Promise<CalendarEvent[]> {
+  const daysAhead = options.daysAhead ?? 14;
+  const pageSize = options.pageSize ?? 50;
+  const meEmail = (options.signedInEmail || "").toLowerCase().trim();
+
+  // calendarview requires startDateTime + endDateTime as URL params.
+  // Graph wants ISO-8601 in UTC, e.g. "2026-05-27T00:00:00Z".
+  const now = new Date();
+  const end = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
+  const startParam = encodeURIComponent(now.toISOString());
+  const endParam = encodeURIComponent(end.toISOString());
+  const select =
+    "id,subject,start,end,isAllDay,organizer,attendees,onlineMeetingProvider";
+  const orderby = encodeURIComponent("start/dateTime");
+  const path =
+    `/me/calendarview?startDateTime=${startParam}&endDateTime=${endParam}` +
+    `&$top=${pageSize}&$select=${select}&$orderby=${orderby}`;
+
+  const res = await graphFetch(path, token, {
+    // Asking Graph to normalise all dateTimes to UTC simplifies our parsing
+    // — without this, an event organised in PST and accepted in EST comes
+    // back stamped with the organizer's TZ.
+    headers: { Prefer: 'outlook.timezone="UTC"' },
+  });
+  const data = await res.json();
+
+  const out: CalendarEvent[] = [];
+  for (const ev of data.value || []) {
+    const startRaw: string = ev.start?.dateTime || "";
+    const endRaw: string = ev.end?.dateTime || "";
+    const attendees = Array.isArray(ev.attendees) ? ev.attendees : [];
+    const emails: string[] = [];
+    for (const a of attendees) {
+      const addr = (a?.emailAddress?.address || "").toLowerCase().trim();
+      if (!addr) continue;
+      if (meEmail && addr === meEmail) continue;
+      if (!emails.includes(addr)) emails.push(addr);
+    }
+    // Also include the organizer if they're not the signed-in user — for
+    // external meetings the organizer is the client PM, which is exactly
+    // the email we want to match against a project's roster.
+    const orgAddr = (
+      ev.organizer?.emailAddress?.address || ""
+    ).toLowerCase().trim();
+    if (orgAddr && orgAddr !== meEmail && !emails.includes(orgAddr)) {
+      emails.push(orgAddr);
+    }
+
+    const provider: string | null =
+      ev.onlineMeetingProvider && ev.onlineMeetingProvider !== "unknown"
+        ? ev.onlineMeetingProvider
+        : null;
+
+    out.push({
+      id: ev.id as string,
+      subject: (ev.subject || "") as string,
+      // Graph's `dateTime` is naive ("2026-05-27T14:00:00.0000000"); we
+      // tag it with Z since we forced UTC normalisation above.
+      startUtc: startRaw ? `${startRaw.replace(/\..+$/, "")}Z` : "",
+      endUtc: endRaw ? `${endRaw.replace(/\..+$/, "")}Z` : "",
+      attendeeEmails: emails,
+      organizerName: ev.organizer?.emailAddress?.name || "",
+      organizerEmail: orgAddr,
+      onlineProvider: provider,
+      isAllDay: !!ev.isAllDay,
+    });
+  }
+  return out;
+}
+
+
+/* ============================================================
  * Helpers
  * ============================================================ */
 

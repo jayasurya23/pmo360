@@ -6,6 +6,9 @@ import clsx from "clsx";
 import NewClientDialog from "@/components/admin/NewClientDialog";
 import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
 import DeletePortfolioDialog from "@/components/admin/DeletePortfolioDialog";
+import ManageTeamDialog from "@/components/admin/ManageTeamDialog";
+import { listProjectMembers } from "@/lib/api";
+import type { ProjectMember } from "@/lib/types";
 import CommandPalette from "./CommandPalette";
 
 interface NavItem {
@@ -32,15 +35,16 @@ const MEETING_FLOW: NavItem[] = [
 ];
 
 export default function Layout() {
-  const { settings } = useApp();
+  const { settings, currentProject } = useApp();
   const location = useLocation();
 
-  // ----- Admin dialog state (gear popover -> create/delete) -----
+  // ----- Admin dialog state (gear popover -> create/delete/team) -----
   // Lifted here so the modal portals are mounted once at the top of the tree
   // and remain available even when ContextBar re-renders.
   const [showNewClient, setShowNewClient] = useState(false);
   const [showNewPortfolio, setShowNewPortfolio] = useState(false);
   const [showDeletePortfolio, setShowDeletePortfolio] = useState(false);
+  const [showManageTeam, setShowManageTeam] = useState(false);
 
   useEffect(() => {
     if (settings)
@@ -54,6 +58,7 @@ export default function Layout() {
         onNewClient={() => setShowNewClient(true)}
         onNewPortfolio={() => setShowNewPortfolio(true)}
         onDeletePortfolio={() => setShowDeletePortfolio(true)}
+        onManageTeam={() => setShowManageTeam(true)}
       />
       <MeetingStepper currentPath={location.pathname} />
       <main className="flex-1 px-6 md:px-10 py-8 max-w-screen-2xl w-full mx-auto">
@@ -72,6 +77,11 @@ export default function Layout() {
       <DeletePortfolioDialog
         open={showDeletePortfolio}
         onClose={() => setShowDeletePortfolio(false)}
+      />
+      <ManageTeamDialog
+        open={showManageTeam}
+        onClose={() => setShowManageTeam(false)}
+        project={currentProject}
       />
 
       <CommandPalette />
@@ -122,11 +132,67 @@ function TopNav() {
         <div className="flex-1" />
 
         <CommandSearch />
+        <ScopeToggle />
         <UserMenu />
       </div>
 
       <MobileNav />
     </header>
+  );
+}
+
+/**
+ * Segmented "My portfolios / All portfolios" toggle.
+ *
+ * Hidden when the user isn't signed in (the choice has no meaning since
+ * the membership table is keyed on User rows). Always visible when
+ * signed-in — including for admins. For admins the toggle still
+ * affects dashboard scope (e.g. "show me my own to-dos vs. everyone's"),
+ * but never affects the underlying project visibility because the
+ * backend's membership filter is bypassed for them.
+ */
+function ScopeToggle() {
+  const { scope, setScope, me } = useApp();
+  const { isAuthenticated } = useAuth();
+  if (!isAuthenticated) return null;
+  return (
+    <div
+      role="group"
+      aria-label="Dashboard scope"
+      title={
+        me?.is_admin
+          ? "Admins see all portfolios regardless — this toggle controls dashboard scope only"
+          : "Filter to portfolios you're a member of"
+      }
+      className="hidden sm:inline-flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 text-xs font-semibold"
+    >
+      <button
+        type="button"
+        onClick={() => setScope("mine")}
+        aria-pressed={scope === "mine"}
+        className={clsx(
+          "px-3 py-1 rounded-full transition",
+          scope === "mine"
+            ? "bg-white text-brand-red shadow-sm"
+            : "text-slate-500 hover:text-slate-900",
+        )}
+      >
+        My portfolios
+      </button>
+      <button
+        type="button"
+        onClick={() => setScope("all")}
+        aria-pressed={scope === "all"}
+        className={clsx(
+          "px-3 py-1 rounded-full transition",
+          scope === "all"
+            ? "bg-white text-brand-red shadow-sm"
+            : "text-slate-500 hover:text-slate-900",
+        )}
+      >
+        All portfolios
+      </button>
+    </div>
   );
 }
 
@@ -160,12 +226,14 @@ interface ContextBarProps {
   onNewClient: () => void;
   onNewPortfolio: () => void;
   onDeletePortfolio: () => void;
+  onManageTeam: () => void;
 }
 
 function ContextBar({
   onNewClient,
   onNewPortfolio,
   onDeletePortfolio,
+  onManageTeam,
 }: ContextBarProps) {
   const { clients, projects, selectedClientId, selectedProjectId } = useApp();
   const client = clients.find((c) => c.id === selectedClientId);
@@ -180,6 +248,7 @@ function ContextBar({
           onNewClient={onNewClient}
           onNewPortfolio={onNewPortfolio}
           onDeletePortfolio={onDeletePortfolio}
+          onManageTeam={onManageTeam}
         />
         <div className="flex-1" />
         {project?.schedule_version && (
@@ -221,11 +290,13 @@ function ContextAdminGear({
   onNewClient,
   onNewPortfolio,
   onDeletePortfolio,
+  onManageTeam,
 }: {
   hasProject: boolean;
   onNewClient: () => void;
   onNewPortfolio: () => void;
   onDeletePortfolio: () => void;
+  onManageTeam: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
@@ -289,6 +360,25 @@ function ContextAdminGear({
           <div className="my-1 border-t border-slate-100" />
           <button
             type="button"
+            onClick={() => hasProject && fire(onManageTeam)}
+            disabled={!hasProject}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasProject
+                ? "text-slate-700 hover:bg-slate-50"
+                : "text-slate-400 cursor-not-allowed",
+            )}
+            title={
+              hasProject
+                ? "Add or remove PMs on this portfolio"
+                : "Pick a portfolio first to manage its team"
+            }
+          >
+            <span aria-hidden="true">👥</span> Manage team
+          </button>
+          <div className="my-1 border-t border-slate-100" />
+          <button
+            type="button"
             onClick={() => hasProject && fire(onDeletePortfolio)}
             disabled={!hasProject}
             className={clsx(
@@ -335,32 +425,75 @@ function ContextSwitcher() {
   const client = clients.find((c) => c.id === selectedClientId);
   const project = projects.find((p) => p.id === selectedProjectId);
 
+  // Members of the active portfolio — fetched only for the selected one
+  // (avoids N+1 hits against the dropdown). Cleared whenever the
+  // selection changes so the chip never shows stale names.
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setMembers([]);
+      return;
+    }
+    let cancelled = false;
+    listProjectMembers(selectedProjectId)
+      .then((rows) => {
+        if (!cancelled) setMembers(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setMembers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProjectId]);
+
+  const memberFirstNames = members
+    .map((m) => firstNameOf(m.user?.name || m.user?.email || ""))
+    .filter((s) => s.length > 0);
+  // Cap the inline list at three names; the popover/Manage Team modal
+  // is the place for the full roster. "+N more" handles the overflow.
+  const shownNames = memberFirstNames.slice(0, 3);
+  const moreCount = Math.max(0, memberFirstNames.length - shownNames.length);
+
   return (
     <div ref={wrap} className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:border-slate-300 transition text-sm"
+        className="flex flex-col items-start gap-0.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:border-slate-300 transition text-sm"
       >
-        <span className="h-2 w-2 rounded-full bg-brand-red" />
-        <span className="font-medium text-slate-900">
-          {project?.name || "No portfolio"}
-        </span>
-        <span className="text-slate-400">/</span>
-        <span className="text-slate-600">{client?.name || "No client"}</span>
-        <svg
-          className={clsx(
-            "h-4 w-4 text-slate-400 transition",
-            open && "rotate-180"
-          )}
-          viewBox="0 0 20 20"
-          fill="currentColor"
-        >
-          <path
-            fillRule="evenodd"
-            d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.24 4.5a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z"
-            clipRule="evenodd"
-          />
-        </svg>
+        <div className="flex items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-brand-red" />
+          <span className="font-medium text-slate-900">
+            {project?.name || "No portfolio"}
+          </span>
+          <span className="text-slate-400">/</span>
+          <span className="text-slate-600">{client?.name || "No client"}</span>
+          <svg
+            className={clsx(
+              "h-4 w-4 text-slate-400 transition",
+              open && "rotate-180",
+            )}
+            viewBox="0 0 20 20"
+            fill="currentColor"
+          >
+            <path
+              fillRule="evenodd"
+              d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.24 4.5a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z"
+              clipRule="evenodd"
+            />
+          </svg>
+        </div>
+        {project && shownNames.length > 0 && (
+          <div
+            className="text-[11px] text-slate-500 leading-none mt-0.5 max-w-[28rem] truncate"
+            title={memberFirstNames.join(", ")}
+          >
+            <span aria-hidden="true">👤</span> {shownNames.join(", ")}
+            {moreCount > 0 && (
+              <span className="text-slate-400"> · +{moreCount} more</span>
+            )}
+          </div>
+        )}
       </button>
 
       {open && (
@@ -574,6 +707,20 @@ function MeetingStepper({ currentPath }: { currentPath: string }) {
       </div>
     </div>
   );
+}
+
+/** Pull the first whitespace-delimited token out of a name string for the
+ *  inline member chip ("👤 Arun, Cheyne"). Falls back to the email's
+ *  local-part when the user has no display name yet. */
+function firstNameOf(value: string): string {
+  const v = (value || "").trim();
+  if (!v) return "";
+  // If it looks like an email, take the local-part before any '.'
+  if (v.includes("@")) {
+    const local = v.split("@")[0];
+    return local.split(/[._]/)[0].replace(/^\w/, (c) => c.toUpperCase());
+  }
+  return v.split(/\s+/)[0];
 }
 
 function Footer() {

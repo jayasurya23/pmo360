@@ -26,7 +26,7 @@ from db import init_db
 from api import (
     clients, projects, meetings, actions, notes, agendas, schedules,
     roster, dashboard, parse, documents, search, me, users, templates,
-    attachments,
+    attachments, members, calendar,
     settings as settings_router,
 )
 
@@ -74,6 +74,8 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(templates.router)
     app.include_router(attachments.router)
+    app.include_router(members.router)
+    app.include_router(calendar.router)
 
     # ---- Logo + static assets (so the React app can pull the Castillo /
     # PMO 360 logos straight from the backend rather than duplicating them).

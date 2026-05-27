@@ -171,6 +171,91 @@ export default function NextAgenda() {
     getAgenda(agendaId).then((a) => loadFromAgenda(a));
   }, [agendaId]);
 
+  // -- Pre-fill from a calendar event when arriving via ?source=calendar --
+  // The Home CalendarCard sends users here with these query params:
+  //   ?source=calendar&date=YYYY-MM-DD&title=<encoded>&attendees=<email,email,...>
+  // We seed the upcoming date, title, and (best-effort) attendees from the
+  // project roster keyed by email. We mark this portfolio as "user chose
+  // blank" so the auto-load doesn't immediately stomp the calendar context
+  // with a stale agenda from a prior week.
+  //
+  // Consumes the calendar query params after seeding so a tab refresh
+  // doesn't re-seed and discard whatever the PM has typed.
+  const calendarSeededRef = useRef(false);
+  useEffect(() => {
+    if (calendarSeededRef.current) return;
+    if (params.get("source") !== "calendar") return;
+    if (!projectId) return;
+    // Wait for the roster to load before seeding attendees (otherwise we'd
+    // seed an empty list and the PM would have to manually re-add everyone).
+    if (projectRoster.length === 0 && globalRoster.length === 0) return;
+    calendarSeededRef.current = true;
+    userChoseBlank.current.add(projectId);
+
+    const dateParam = params.get("date");
+    const titleParam = params.get("title");
+    const attendeesParam = params.get("attendees");
+    if (dateParam) setUpcomingDate(dateParam);
+    if (titleParam) setTitle(titleParam);
+
+    // Best-effort attendee carryover: split the comma-separated emails,
+    // look each up in the project roster (preferred) then global roster,
+    // skip anyone we don't recognise. PM can add the rest manually.
+    if (attendeesParam) {
+      const wanted = new Set(
+        attendeesParam
+          .split(",")
+          .map((e) => e.trim().toLowerCase())
+          .filter(Boolean),
+      );
+      const matched: AttendeeRow[] = [];
+      const seenIds = new Set<string>();
+      const candidates: Attendee[] = [...projectRoster, ...globalRoster];
+      for (const c of candidates) {
+        const email = (c.email || "").trim().toLowerCase();
+        if (!email || !wanted.has(email)) continue;
+        const dedup = `${email}::${c.full_name}`;
+        if (seenIds.has(dedup)) continue;
+        seenIds.add(dedup);
+        matched.push({
+          full_name: c.full_name,
+          initials: c.initials,
+          organization: c.organization || "",
+        });
+      }
+      if (matched.length > 0) {
+        setAttendees(matched);
+        setMsg(
+          `Pre-filled from Outlook — ${matched.length} attendee${
+            matched.length === 1 ? "" : "s"
+          } matched from rosters. Review and adjust before saving.`,
+        );
+      } else {
+        setMsg(
+          "Pre-filled from Outlook. No attendee emails matched your rosters — " +
+            "add them manually.",
+        );
+      }
+    } else {
+      setMsg("Pre-filled from your Outlook calendar event.");
+    }
+
+    // Strip the calendar query params so a refresh / share-link reload
+    // doesn't re-seed and discard edits.
+    setParams(
+      (sp) => {
+        const next = new URLSearchParams(sp);
+        next.delete("source");
+        next.delete("date");
+        next.delete("title");
+        next.delete("attendees");
+        return next;
+      },
+      { replace: true },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, params, projectRoster, globalRoster]);
+
   // -- Auto-load most recent saved agenda on first visit to a portfolio --
   // Mirrors the Streamlit behaviour: don't drop the user on a blank page if
   // they already have a draft from last time. Skips when:

@@ -44,6 +44,37 @@ class User(Base):
     # overwrites `last_seen_at`, so the briefing endpoint can safely read
     # `previous_last_seen_at` as the cutoff. NULL on a brand-new user row.
     previous_last_seen_at = Column(DateTime)
+    # When True, the user bypasses ProjectMember filtering — sees every
+    # portfolio + dashboard regardless of explicit membership. Set from
+    # the ADMIN_EMAILS env var on each authenticated request, so editing
+    # the env list takes effect within the next sign-in.
+    is_admin = Column(Boolean, default=False, nullable=False)
+
+
+class ProjectMember(Base):
+    """A user assigned to a portfolio. Multiple PMs per project allowed,
+    no role distinction — anyone listed here can fully edit the portfolio
+    and sees it on their dashboard by default.
+
+    Admins (User.is_admin) implicitly access every project regardless of
+    their membership rows, so the manager doesn't need to be added to
+    every portfolio individually."""
+    __tablename__ = "project_members"
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    # Who added this member (for audit). Null on the auto-add path that
+    # adds the creator when a project is first created via the API.
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    project = relationship(
+        "Project",
+        foreign_keys=[project_id],
+        backref=backref("members", cascade="all, delete-orphan"),
+    )
+    user = relationship("User", foreign_keys=[user_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
 
 
 class Client(Base):
@@ -472,3 +503,37 @@ class MeetingAttachment(Base):
         backref=backref("attachments", cascade="all, delete-orphan"),
     )
     created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+class CalendarEventLink(Base):
+    """
+    Persistent link between a Microsoft Graph calendar event and a PMO 360
+    portfolio. Lets a PM manually override (or confirm) the
+    "this Outlook meeting belongs to <portfolio>" decision once — every
+    subsequent /api/calendar/match call returns the saved link before the
+    attendee-email and subject-substring heuristics get a chance to second-
+    guess it.
+
+    ``graph_event_id`` is the Microsoft Graph event id (stable across pulls
+    via /me/calendarview). UNIQUE so each event has at most one link; a
+    re-link overwrites in place rather than stacking history rows. We don't
+    bother capturing recurrence-master vs occurrence ids — each occurrence
+    has its own event id and so gets its own link, which is the behaviour
+    PMs expect ("this week's sync is for Heelstone; next week's was
+    accidentally invited the wrong people, so it's TestCo").
+    """
+    __tablename__ = "calendar_event_links"
+    id = Column(Integer, primary_key=True)
+    graph_event_id = Column(String(300), nullable=False, unique=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    linked_by_id = Column(Integer, ForeignKey("users.id"))
+    linked_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
+    )
+
+    project = relationship(
+        "Project",
+        backref=backref("calendar_links", cascade="all, delete-orphan"),
+    )
+    linked_by = relationship("User", foreign_keys=[linked_by_id])

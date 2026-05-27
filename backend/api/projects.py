@@ -1,16 +1,19 @@
 """/api/projects — projects (portfolios) under a client."""
 from datetime import date, datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from core.deps import get_db
+from auth import get_current_db_user
 from db.models import (
     Project, Client, Meeting, ActionItem, Deliverable, Agenda,
 )
 from db.repository import (
     list_projects, get_project, set_portfolio_sub_projects, list_deliverables,
+    list_my_project_ids, add_project_member,
 )
 from schemas.common import (
     ProjectOut, ProjectCreate, ProjectUpdate, DeliverableOut,
@@ -22,10 +25,34 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 @router.get("", response_model=list[ProjectOut])
 def get_projects(
-    client_id: int = Query(..., description="Parent client id"),
+    client_id: Optional[int] = Query(
+        None,
+        description=(
+            "Parent client id. When omitted, returns every portfolio across "
+            "all clients — used by the calendar card's manual-override picker "
+            "so PMs can pin an event to any portfolio without first navigating "
+            "to its client."
+        ),
+    ),
+    my_only: bool = Query(
+        False,
+        description=(
+            "When true AND the user is signed in AND not an admin, return "
+            "only projects the user is a member of. Anonymous + admin users "
+            "see everything regardless."
+        ),
+    ),
     db: Session = Depends(get_db),
+    actor = Depends(get_current_db_user),
 ):
-    return list_projects(db, client_id)
+    if client_id is not None:
+        rows = list_projects(db, client_id)
+    else:
+        rows = db.query(Project).order_by(Project.name).all()
+    if my_only and actor is not None and not actor.is_admin:
+        allowed_ids = set(list_my_project_ids(db, actor.id))
+        rows = [p for p in rows if p.id in allowed_ids]
+    return rows
 
 
 @router.get("/{project_id}", response_model=ProjectOut)
@@ -37,7 +64,11 @@ def get_one(project_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("", response_model=ProjectOut, status_code=201)
-def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
+def create_project(
+    payload: ProjectCreate,
+    db: Session = Depends(get_db),
+    actor = Depends(get_current_db_user),
+):
     client = db.get(Client, payload.client_id)
     if not client:
         raise HTTPException(404, "Parent client not found")
@@ -50,6 +81,15 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)):
     )
     db.add(project)
     db.flush()
+    # Auto-assign the creator as a member so the portfolio shows up on
+    # their dashboard immediately. Admins still get auto-added — they'd
+    # see it via the admin bypass anyway, but the explicit row makes the
+    # Manage Team UI list them as the original owner.
+    if actor is not None:
+        add_project_member(
+            db, project_id=project.id, user_id=actor.id,
+            created_by_id=actor.id,
+        )
     return project
 
 

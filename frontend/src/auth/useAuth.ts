@@ -28,6 +28,7 @@ import {
   GRAPH_MAIL_SEND_REQUEST,
   GRAPH_FILES_REQUEST,
   GRAPH_DIRECTORY_REQUEST,
+  GRAPH_CALENDAR_REQUEST,
   LOGIN_REQUEST,
 } from "./msalConfig";
 
@@ -38,7 +39,19 @@ export interface AuthedUser {
 }
 
 export function useAuth() {
-  const { instance, accounts } = useMsal();
+  // useMsal() throws when no MsalProvider is mounted — which happens when
+  // PublicClientApplication construction failed (LAN-IP origin, missing
+  // env vars, etc.). In that case we return safe stubs so consumers don't
+  // crash and the Sign-in button stays inert.
+  let instance: ReturnType<typeof useMsal>["instance"] | null = null;
+  let accounts: ReturnType<typeof useMsal>["accounts"] = [];
+  try {
+    const msal = useMsal();
+    instance = msal.instance;
+    accounts = msal.accounts;
+  } catch {
+    /* no MsalProvider in tree — degrade gracefully */
+  }
   const account = accounts[0] ?? null;
 
   const user: AuthedUser | null = account
@@ -51,11 +64,18 @@ export function useAuth() {
     : null;
 
   const signIn = useCallback(async () => {
+    if (!instance) {
+      throw new Error(
+        "Sign-in unavailable: MSAL not initialised. " +
+          "This happens when the SPA is loaded from a non-HTTPS, non-localhost " +
+          "URL (Microsoft policy). Use http://localhost:5174 instead.",
+      );
+    }
     await instance.loginRedirect(LOGIN_REQUEST);
   }, [instance]);
 
   const signOut = useCallback(async () => {
-    if (!account) return;
+    if (!instance || !account) return;
     await instance.logoutRedirect({ account });
   }, [instance, account]);
 
@@ -66,7 +86,7 @@ export function useAuth() {
    */
   const acquireToken = useCallback(
     async (scopes: string[]): Promise<string> => {
-      if (!account) {
+      if (!instance || !account) {
         throw new Error("Not signed in");
       }
       const request: SilentRequest = { scopes, account };
@@ -116,5 +136,6 @@ export function useAuth() {
     getMailSendToken: () => getGraphToken(GRAPH_MAIL_SEND_REQUEST.scopes!),
     getFilesToken: () => getGraphToken(GRAPH_FILES_REQUEST.scopes!),
     getDirectoryToken: () => getGraphToken(GRAPH_DIRECTORY_REQUEST.scopes!),
+    getCalendarToken: () => getGraphToken(GRAPH_CALENDAR_REQUEST.scopes!),
   };
 }
