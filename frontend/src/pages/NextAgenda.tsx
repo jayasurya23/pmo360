@@ -32,6 +32,7 @@ import { StatusSelect } from "@/components/StatusPill";
 import { handleTextareaTab } from "@/lib/textareaTab";
 import { useAutoSave } from "@/lib/useAutoSave";
 import SaveStatus from "@/components/SaveStatus";
+import SendAgendaDialog from "@/components/agenda/SendAgendaDialog";
 
 const DEFAULT_DISCIPLINES = ["Civil", "Electrical", "Structural", "General"];
 
@@ -72,7 +73,8 @@ interface AttendeeRow {
 }
 
 export default function NextAgenda() {
-  const { currentProject } = useApp();
+  const { currentProject, currentClient } = useApp();
+  const [sendOpen, setSendOpen] = useState(false);
   const [params, setParams] = useSearchParams();
   const agendaIdParam = params.get("agenda");
 
@@ -555,6 +557,18 @@ export default function NextAgenda() {
                 📅 Add to calendar
               </a>
             )}
+            <button
+              className="btn-ghost"
+              onClick={() => setSendOpen(true)}
+              disabled={busy || !projectId || attendees.length === 0}
+              title={
+                attendees.length === 0
+                  ? "Add attendees to the agenda before emailing"
+                  : "Email this agenda's PDF to the attendees"
+              }
+            >
+              📧 Send to attendees
+            </button>
             <button className="btn-primary" onClick={handleSave} disabled={busy}>
               {busy ? "…" : agendaId ? "Save" : "Save draft"}
             </button>
@@ -807,6 +821,39 @@ export default function NextAgenda() {
           { key: "impact", label: "Impact", colSpan: 1 },
         ]}
       />
+
+      {/* ----- Send-to-attendees modal ----- */}
+      {projectId && (
+        <SendAgendaDialog
+          open={sendOpen}
+          onClose={() => setSendOpen(false)}
+          payload={{
+            docPayload: {
+              project_id: projectId,
+              upcoming_date: upcomingDate,
+              title,
+              source_meeting_id: sourceMeetingId,
+              meeting_duration_minutes: meetingDuration,
+              schedule_version_override: scheduleVersionOverride || null,
+              disciplines,
+              dp_by_discipline: dpByDiscipline,
+              recap_by_discipline: recapByDiscipline,
+              attendees,
+              open_actions: openActions,
+              risks,
+              decisions,
+              schedule_changes: scheduleChanges,
+            },
+            clientName: currentClient?.name || "",
+            projectName: currentProject?.name || "",
+            upcomingDate,
+            title,
+            attendees,
+            projectRoster,
+            globalRoster,
+          }}
+        />
+      )}
     </div>
   );
 }
