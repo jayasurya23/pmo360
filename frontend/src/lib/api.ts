@@ -304,6 +304,10 @@ export const updateAction = (
   payload: Partial<{
     text: string;
     owner: string;
+    /** Pass a user id to bind this action to a PMO 360 PM. Pass null to
+     *  explicitly clear the link (action reassigned to a vendor). Omit
+     *  to leave the existing link untouched. */
+    owner_user_id: number | null;
     due_date: string | null;
     status: string;
     closing_meeting_id: number;
@@ -314,6 +318,7 @@ export const createAction = (payload: {
   originating_meeting_id: number;
   text: string;
   owner?: string;
+  owner_user_id?: number | null;
   due_date?: string | null;
   status?: string;
 }) => apiClient.post<ActionItem>("/actions", payload).then((r) => r.data);
@@ -354,6 +359,32 @@ export const getAgenda = (id: number) =>
 export const saveAgenda = (payload: AgendaSaveRequest) =>
   apiClient.post<Agenda>("/agendas", payload).then((r) => r.data);
 export const deleteAgenda = (id: number) => apiClient.delete(`/agendas/${id}`);
+/** Server-assembled draft of an upcoming agenda — open actions, carried-
+ *  forward risks/decisions/schedule changes, last meeting's recap by
+ *  discipline. Read-only; nothing is persisted until the PM clicks Save. */
+export interface AgendaAutoDraft {
+  upcoming_date: string;
+  title: string | null;
+  source_meeting_id: number | null;
+  meeting_duration_minutes: number;
+  schedule_version_override: string | null;
+  disciplines: string[];
+  dp_text: Record<string, string>;
+  recap_text: Record<string, string>;
+  attendees: { full_name: string; initials: string; organization: string }[];
+  open_actions: { text: string; owner: string; due_date: string | null; status: string }[];
+  risks: Record<string, any>[];
+  decisions: Record<string, any>[];
+  schedule_changes: Record<string, any>[];
+  sources_summary: string;
+}
+export const autoDraftAgenda = (projectId: number, upcomingDate?: string) =>
+  apiClient
+    .post<AgendaAutoDraft>("/agendas/auto-draft", null, {
+      params: { project_id: projectId, upcoming_date: upcomingDate },
+    })
+    .then((r) => r.data);
+
 export const generateAgendaDoc = async (
   payload: AgendaDocRequest,
   fmt: "pdf" | "docx"
@@ -452,6 +483,19 @@ export const fetchSettings = () =>
  */
 export const fetchMe = () =>
   apiClient.get<MeResponse>("/me").then((r) => r.data);
+
+/** Lightweight user directory used by the action-owner typeahead. ``q``
+ *  is a case-insensitive substring filter on name/email; empty returns
+ *  everyone (fine at our team size). */
+export interface UserStub {
+  id: number;
+  name: string | null;
+  email: string | null;
+}
+export const listUsers = (q = "", limit = 20) =>
+  apiClient
+    .get<UserStub[]>("/users", { params: { q, limit } })
+    .then((r) => r.data);
 
 // ---------- project members (PM membership) ----------
 /** List PMs assigned to a portfolio. Used by the Manage Team modal and

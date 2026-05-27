@@ -17,6 +17,7 @@ import {
   listGlobalRoster,
   agendaIcsUrl,
   fetchMyPreferences,
+  autoDraftAgenda,
 } from "@/lib/api";
 import type {
   Agenda,
@@ -377,6 +378,48 @@ export default function NextAgenda() {
   };
 
   /**
+   * Hydrate the editor from the server-assembled auto-draft. Pulls open
+   * actions, carried-forward risks/decisions/schedule-changes, last
+   * meeting's recap by discipline, attendees from the last meeting.
+   *
+   * Marks the portfolio as "user chose blank" so the auto-load effect
+   * doesn't immediately stomp the freshly-drafted state with a stale saved
+   * agenda. PM saves manually after reviewing.
+   */
+  const handleAutoDraft = async () => {
+    if (!projectId) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const draft = await autoDraftAgenda(projectId);
+      userChoseBlank.current.add(projectId);
+      setAgendaId(null);
+      setCurrentVersion(null);
+      setParams({});
+      setUpcomingDate(draft.upcoming_date);
+      setTitle(draft.title || "");
+      setSourceMeetingId(draft.source_meeting_id);
+      setMeetingDuration(draft.meeting_duration_minutes);
+      setScheduleVersionOverride(draft.schedule_version_override || "");
+      setDisciplines(
+        draft.disciplines.length ? draft.disciplines : DEFAULT_DISCIPLINES,
+      );
+      setDpText(draft.dp_text);
+      setRecapText(draft.recap_text);
+      setAttendees(draft.attendees as AttendeeRow[]);
+      setOpenActions(draft.open_actions as OpenAction[]);
+      setRisks(draft.risks as Risk[]);
+      setDecisions(draft.decisions as Decision[]);
+      setScheduleChanges(draft.schedule_changes as ScheduleChange[]);
+      setMsg(draft.sources_summary + " — review and click Save to persist.");
+    } catch (e: any) {
+      setMsg(`Auto-draft failed: ${e?.message || e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
    * Build the save payload from current state. Shared by the explicit Save
    * button and the auto-save hook so they stay in sync.
    */
@@ -541,6 +584,14 @@ export default function NextAgenda() {
             )}
             <button className="btn-ghost" onClick={handleNew}>
               + New
+            </button>
+            <button
+              className="btn-ghost"
+              onClick={handleAutoDraft}
+              disabled={busy || !projectId}
+              title="Build a draft agenda from this portfolio's open actions, latest risks/decisions, and last meeting's recap. Nothing is saved until you click Save."
+            >
+              🤖 Auto-draft
             </button>
             <button className="btn-ghost" onClick={() => handleGenerate("docx")} disabled={busy}>
               Export DOCX

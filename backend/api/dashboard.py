@@ -114,10 +114,23 @@ def get_my_dashboard(
                 name_substr_targets.append(parts[-1])
 
     # ---- Open actions ----
+    # Priority order for "is this mine?":
+    #   1. owner_user_id == actor.id  (canonical — set via the typeahead picker)
+    #   2. owner substring matches the actor's display name (legacy fallback
+    #      for rows pre-dating owner_user_id + actions assigned to vendors by
+    #      name only)
+    #   3. actor authored the action (created_by_id) — covers the case where
+    #      the PM creates an action without naming an explicit owner
     actions = []
     for a in all_open_actions_across_portfolios(db):
-        owner_lower = (a.owner or "").lower()
-        owns = any(t in owner_lower for t in name_substr_targets) if name_substr_targets else False
+        if a.owner_user_id == actor.id:
+            owns = True
+        else:
+            owner_lower = (a.owner or "").lower()
+            owns = (
+                any(t in owner_lower for t in name_substr_targets)
+                if name_substr_targets else False
+            )
         authored = a.created_by_id == actor.id
         if not (owns or authored):
             continue
@@ -245,6 +258,9 @@ def get_home_briefing(
             .filter(ActionItem.created_at >= cutoff)
             .all()
         ):
+            if a.owner_user_id == actor.id:
+                new_actions += 1
+                continue
             owner = (a.owner or "").lower()
             if any(t in owner for t in targets):
                 new_actions += 1
@@ -259,6 +275,9 @@ def get_home_briefing(
             .filter(ActionItem.due_date < today)
             .all()
         ):
+            if a.owner_user_id == actor.id:
+                overdue_actions += 1
+                continue
             owner = (a.owner or "").lower()
             if any(t in owner for t in targets):
                 overdue_actions += 1

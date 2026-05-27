@@ -39,6 +39,7 @@ def create_action(
         originating_meeting_id=payload.originating_meeting_id,
         text=payload.text,
         owner=payload.owner or None,
+        owner_user_id=payload.owner_user_id,
         due_date=payload.due_date,
         status=payload.status or "open",
         created_by_id=actor.id if actor else None,
@@ -59,13 +60,20 @@ def patch_action(
     action = db.get(ActionItem, action_id)
     if not action:
         raise HTTPException(404, "Action not found")
-    if payload.text is not None:
+    # `model_fields_set` lets us distinguish "field not in the request"
+    # (leave alone) from "field explicitly set to null" (clear it). That
+    # distinction matters for owner_user_id — re-assigning an action from
+    # a PMO PM to an external vendor needs to NULL out the user link.
+    sent = payload.model_fields_set
+    if "text" in sent and payload.text is not None:
         action.text = payload.text
-    if payload.owner is not None:
+    if "owner" in sent:
         action.owner = payload.owner
-    if payload.due_date is not None:
+    if "owner_user_id" in sent:
+        action.owner_user_id = payload.owner_user_id
+    if "due_date" in sent:
         action.due_date = payload.due_date
-    if payload.status is not None:
+    if "status" in sent and payload.status is not None:
         if payload.status in ("completed", "cancelled") and payload.closing_meeting_id:
             update_action_status(db, action_id, payload.status, payload.closing_meeting_id)
         else:

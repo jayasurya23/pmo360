@@ -4,6 +4,7 @@ import EmptyState from "@/components/EmptyState";
 import { StatusSelect } from "@/components/StatusPill";
 import { useConfirm } from "@/components/ConfirmDialog";
 import UpdatedByLine from "@/components/UpdatedByLine";
+import OwnerPicker from "@/components/actions/OwnerPicker";
 import { useApp } from "@/lib/state";
 import {
   listActions,
@@ -425,7 +426,10 @@ export default function Actions() {
         />
       ) : (
         <div className="card divide-y divide-brand-lightgray/60 overflow-hidden">
-          <div className="grid grid-cols-[32px_1fr_140px_140px_140px_60px] gap-3 px-5 py-2 text-xs uppercase tracking-wider text-brand-gray font-semibold bg-brand-nearwhite/70 items-center">
+          {/* Desktop column headers — hidden on mobile because each row
+              renders its own inline labels below md (saves a header row
+              that would just steal vertical space on a phone). */}
+          <div className="hidden md:grid md:grid-cols-[32px_1fr_180px_140px_140px_60px] gap-3 px-5 py-2 text-xs uppercase tracking-wider text-brand-gray font-semibold bg-brand-nearwhite/70 items-center">
             <div className="flex justify-center">
               <input
                 type="checkbox"
@@ -444,6 +448,22 @@ export default function Actions() {
             <div>Status</div>
             <div></div>
           </div>
+          {/* Mobile-only Select-all bar — surfaces the bulk checkbox that
+              would otherwise be hidden in the desktop header. */}
+          <div className="md:hidden px-4 py-2 bg-brand-nearwhite/70 flex items-center gap-3 text-xs">
+            <input
+              type="checkbox"
+              aria-label="Select all visible"
+              checked={allVisibleSelected}
+              ref={(el) => {
+                if (el) el.indeterminate = someVisibleSelected;
+              }}
+              onChange={(e) => toggleAllVisible(e.target.checked)}
+            />
+            <span className="text-brand-gray">
+              Select all visible ({filtered.length})
+            </span>
+          </div>
           {filtered.map((a) => {
             const raisedMeeting = meetings.find(
               (m) => m.id === a.originating_meeting_id
@@ -452,9 +472,13 @@ export default function Actions() {
             return (
               <div
                 key={a.id}
-                className="grid grid-cols-[32px_1fr_140px_140px_140px_60px] gap-3 px-5 py-3 items-start"
+                // Mobile: stacked card layout with explicit labels.
+                // Desktop (md+): the original 6-col grid (180px owner col
+                // up from 140px to fit the new typeahead picker chip).
+                className="flex flex-col gap-2 px-4 py-3 md:grid md:grid-cols-[32px_1fr_180px_140px_140px_60px] md:gap-3 md:px-5 md:py-3 md:items-start"
               >
-                <div className="flex justify-center pt-2">
+                {/* Top row on mobile: select checkbox + delete, far ends */}
+                <div className="flex justify-between items-center md:flex md:justify-center md:items-start md:pt-2 md:block">
                   <input
                     type="checkbox"
                     aria-label={`Select action ${a.id}`}
@@ -462,8 +486,22 @@ export default function Actions() {
                     checked={checked}
                     onChange={(e) => toggleOne(a.id, e.target.checked)}
                   />
+                  {/* Delete button shown on mobile next to the checkbox; on
+                      desktop the dedicated delete cell at the end of the row
+                      handles it (this one stays hidden via md:hidden). */}
+                  <button
+                    className="btn-danger md:hidden"
+                    onClick={() => handleDelete(a)}
+                    title="Delete"
+                  >
+                    ×
+                  </button>
                 </div>
+
                 <div className="space-y-1">
+                  <span className="text-[10px] uppercase tracking-wider text-brand-gray font-semibold md:hidden">
+                    Action
+                  </span>
                   <textarea
                     className="textarea text-sm"
                     rows={2}
@@ -493,32 +531,54 @@ export default function Actions() {
                     prefix="Created by"
                   />
                 </div>
-                <input
-                  className="input"
-                  value={a.owner || ""}
-                  onChange={(e) =>
-                    setActions(
-                      actions.map((x) =>
-                        x.id === a.id ? { ...x, owner: e.target.value } : x
-                      )
-                    )
-                  }
-                  onBlur={(e) => handlePatch(a.id, { owner: e.target.value })}
-                />
-                <input
-                  type="date"
-                  className="input"
-                  value={a.due_date || ""}
-                  onChange={(e) =>
-                    handlePatch(a.id, { due_date: e.target.value || null })
-                  }
-                />
-                <StatusSelect
-                  value={a.status}
-                  onChange={(v) => handlePatch(a.id, { status: v })}
-                />
+
+                <div>
+                  <span className="text-[10px] uppercase tracking-wider text-brand-gray font-semibold md:hidden block mb-0.5">
+                    Owner
+                  </span>
+                  <OwnerPicker
+                    value={a.owner || ""}
+                    ownerUserId={a.owner_user_id ?? null}
+                    onChange={({ owner, owner_user_id }) => {
+                      setActions(
+                        actions.map((x) =>
+                          x.id === a.id
+                            ? { ...x, owner, owner_user_id }
+                            : x,
+                        ),
+                      );
+                      void handlePatch(a.id, { owner, owner_user_id });
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <span className="text-[10px] uppercase tracking-wider text-brand-gray font-semibold md:hidden block mb-0.5">
+                    Due
+                  </span>
+                  <input
+                    type="date"
+                    className="input"
+                    value={a.due_date || ""}
+                    onChange={(e) =>
+                      handlePatch(a.id, { due_date: e.target.value || null })
+                    }
+                  />
+                </div>
+
+                <div>
+                  <span className="text-[10px] uppercase tracking-wider text-brand-gray font-semibold md:hidden block mb-0.5">
+                    Status
+                  </span>
+                  <StatusSelect
+                    value={a.status}
+                    onChange={(v) => handlePatch(a.id, { status: v })}
+                  />
+                </div>
+
+                {/* Desktop-only delete button (mobile's is in the top row) */}
                 <button
-                  className="btn-danger"
+                  className="btn-danger hidden md:block"
                   onClick={() => handleDelete(a)}
                   title="Delete"
                 >

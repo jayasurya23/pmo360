@@ -276,7 +276,17 @@ class ActionItem(Base):
     originating_meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False)
     closed_in_meeting_id = Column(Integer, ForeignKey("meetings.id"))
     text = Column(Text, nullable=False)
+    # Free-form owner string — set even when ``owner_user_id`` is populated,
+    # so the action log + PDFs render a human name without having to JOIN.
+    # Required for owners outside PMO 360 (vendors, contractors, etc. who
+    # don't have a User row).
     owner = Column(String(100))              # may be initials or comma list e.g. "CK, KC"
+    # First-class link to the PM who owns this action. Nullable because:
+    #   1. Older rows pre-date this column (backfilled to NULL).
+    #   2. Some owners are external (vendor staff) and have no User row.
+    # When set, "actions assigned to me" filtering can join on this directly
+    # instead of the brittle substring-match-on-display-name fallback.
+    owner_user_id = Column(Integer, ForeignKey("users.id"))
     due_date = Column(Date)
     status = Column(String(20), default="open")  # open / pending / completed / cancelled
     last_status_change = Column(DateTime, default=datetime.utcnow)
@@ -294,6 +304,7 @@ class ActionItem(Base):
     closed_in_meeting = relationship("Meeting", foreign_keys=[closed_in_meeting_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
     updated_by = relationship("User", foreign_keys=[updated_by_id])
+    owner_user = relationship("User", foreign_keys=[owner_user_id])
 
 
 class Schedule(Base):

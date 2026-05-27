@@ -106,6 +106,10 @@ export interface ActionItem {
   closed_in_meeting_id?: number | null;
   text: string;
   owner?: string | null;
+  /** Canonical link when the owner is a PMO 360 PM. Coexists with the
+   *  freeform `owner` string so external owners (vendors) still render. */
+  owner_user_id?: number | null;
+  owner_user?: UserStub | null;
   due_date?: string | null;
   status: string;
   created_by?: UserStub | null;

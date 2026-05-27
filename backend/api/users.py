@@ -10,15 +10,51 @@ working without a sign-in.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from auth import require_db_user
+from auth import get_current_db_user, require_db_user
 from core.deps import get_db
-from schemas.common import UserPreferences
+from db.models import User as UserModel
+from schemas.common import UserPreferences, UserStub
 
 
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+@router.get("", response_model=list[UserStub])
+def list_users(
+    q: str = Query("", description=(
+        "Optional case-insensitive substring filter on name or email. "
+        "Empty returns all users — fine for our small team size."
+    )),
+    limit: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    _actor=Depends(get_current_db_user),
+) -> list[UserStub]:
+    """Lightweight directory of known PMO 360 users — drives the action-
+    owner typeahead picker on Actions + Review.
+
+    Scope: every signed-in PM can see the full team list. This is the same
+    visibility the existing Manage Team modal offers, so no new privacy
+    surface. Anonymous callers go through ``get_current_db_user`` and
+    get an empty list (the auth dep returns None silently, so we skip
+    the body).
+    """
+    if _actor is None:
+        return []
+    rows = db.query(UserModel)
+    needle = q.strip().lower()
+    if needle:
+        rows = rows.filter(
+            or_(
+                UserModel.name.ilike(f"%{needle}%"),
+                UserModel.email.ilike(f"%{needle}%"),
+            )
+        )
+    rows = rows.order_by(UserModel.name).limit(limit).all()
+    return [UserStub(id=r.id, name=r.name, email=r.email) for r in rows]
 
 
 def _coerce_prefs(raw) -> UserPreferences:

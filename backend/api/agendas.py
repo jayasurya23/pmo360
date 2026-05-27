@@ -1,14 +1,16 @@
 """/api/agendas — saved pre-meeting agendas + agenda doc generation."""
-from datetime import date
+from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 from core.deps import get_db
 from auth import get_current_db_user
 from db.models import Project, Schedule, ProjectAttendee, GlobalAttendee, Agenda
 from db.repository import (
     list_agendas, get_agenda, save_agenda, delete_agenda,
-    open_actions, deliverables_to_carry_forward,
+    open_actions, deliverables_to_carry_forward, latest_meeting,
 )
 from core.services import build_draft_meeting_view, safe_filename_slug
 from docgen import (
@@ -298,4 +300,208 @@ def export_agenda_ics(agenda_id: int, db: Session = Depends(get_db)):
         content=ics_bytes,
         media_type="text/calendar; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ============================================================
+# Auto-draft from history
+# ============================================================
+class AgendaAutoDraftResponse(BaseModel):
+    """Pre-filled payload returned by /auto-draft. The frontend hydrates the
+    NextAgenda editor from this — nothing is saved server-side here, so the
+    PM still has to click Save to persist (lets them review + tweak before
+    committing).
+
+    Sources:
+      - attendees       → last meeting's attendees (or last agenda's if no
+                          meetings exist yet)
+      - open_actions    → currently-open actions for the portfolio
+      - risks/decisions/schedule_changes → most-recent agenda's lists (the
+                          PM almost always carries these forward by default)
+      - recap_text      → discussion points from the last meeting, grouped
+                          by discipline (the "previous-week recap" rail)
+      - dp_text         → empty (PM fills in discussion topics for THIS
+                          upcoming meeting)
+      - disciplines     → most-recent agenda's discipline list, else
+                          DEFAULT_DISCIPLINES
+      - duration        → most-recent agenda's, else 30
+    """
+    upcoming_date: date
+    title: str | None = None
+    source_meeting_id: int | None = None
+    meeting_duration_minutes: int = 30
+    schedule_version_override: str | None = None
+    disciplines: list[str]
+    dp_text: dict[str, str]
+    recap_text: dict[str, str]
+    attendees: list[dict]
+    open_actions: list[dict]
+    risks: list[dict]
+    decisions: list[dict]
+    schedule_changes: list[dict]
+    # Human-readable breakdown of what was pulled from where, surfaced to
+    # the PM as a status message after auto-draft completes ("Pulled 4
+    # actions, 3 attendees, 2 risks from history.")
+    sources_summary: str
+
+
+_DEFAULT_DISCIPLINES = ["Civil", "Electrical", "Structural", "General"]
+
+
+def _summarise_dp_for_recap(meeting) -> dict[str, str]:
+    """Group last meeting's discussion points into recap textareas keyed
+    by discipline. Each line is `label: content`, joined with newlines
+    so the textarea round-trips cleanly through NextAgenda's existing
+    `buildDpFromText` parser."""
+    out: dict[str, list[str]] = {}
+    for dp in meeting.discussion_points:
+        # Only top-level points — sub-points get inlined into their parent
+        # for the recap (PMs care that something happened, not the indented
+        # nesting from the original notes).
+        if dp.parent_id is not None:
+            continue
+        disc = (dp.discipline or "General").strip() or "General"
+        out.setdefault(disc, [])
+        line = (
+            f"{dp.label}: {dp.content}"
+            if dp.label and dp.content else (dp.label or dp.content or "")
+        )
+        out[disc].append(line)
+    return {disc: "\n".join(lines) for disc, lines in out.items() if lines}
+
+
+@router.post("/auto-draft", response_model=AgendaAutoDraftResponse)
+def auto_draft_agenda(
+    project_id: int = Query(..., description="Portfolio to draft for"),
+    upcoming_date: date | None = Query(
+        None,
+        description=(
+            "Target meeting date. Defaults to one week from the latest "
+            "meeting (or today + 7 days if no meeting exists yet)."
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
+    """Assemble a NextAgenda draft from the portfolio's history.
+
+    Idempotent + read-only — nothing is persisted server-side. PM still
+    saves the result via the existing POST /api/agendas.
+    """
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+
+    last_meeting = latest_meeting(db, project_id)
+    last_agenda = (
+        db.query(Agenda)
+        .filter_by(project_id=project_id)
+        .order_by(desc(Agenda.upcoming_date), desc(Agenda.updated_at))
+        .first()
+    )
+
+    # ---- Upcoming date default ----
+    if upcoming_date is None:
+        anchor = last_meeting.meeting_date if last_meeting else date.today()
+        upcoming_date = anchor + timedelta(days=7)
+
+    # ---- Attendees: prefer last meeting (snapshot of who actually came),
+    # fall back to last agenda's saved attendee list, else empty. ----
+    if last_meeting and last_meeting.attendees:
+        attendees = [
+            {
+                "full_name": a.full_name,
+                "initials": a.initials,
+                "organization": a.organization or "",
+            }
+            for a in last_meeting.attendees
+        ]
+    elif last_agenda and isinstance(last_agenda.attendees_json, list):
+        attendees = list(last_agenda.attendees_json)
+    else:
+        attendees = []
+
+    # ---- Open actions ----
+    open_acts = open_actions(db, project_id)
+    open_actions_payload = [
+        {
+            "text": a.text,
+            "owner": a.owner or "",
+            "due_date": a.due_date.isoformat() if a.due_date else None,
+            "status": a.status,
+        }
+        for a in open_acts
+    ]
+
+    # ---- Carry-forward sections from the most recent agenda ----
+    risks = list(last_agenda.risks_json or []) if last_agenda else []
+    decisions = list(last_agenda.decisions_json or []) if last_agenda else []
+    schedule_changes = (
+        list(last_agenda.schedule_changes_json or []) if last_agenda else []
+    )
+
+    # ---- Recap text from last meeting ----
+    recap_text = _summarise_dp_for_recap(last_meeting) if last_meeting else {}
+
+    # ---- Disciplines + duration ----
+    disciplines = (
+        list(last_agenda.disciplines_json)
+        if last_agenda and last_agenda.disciplines_json
+        else _DEFAULT_DISCIPLINES
+    )
+    duration = (
+        last_agenda.meeting_duration_minutes
+        if last_agenda and last_agenda.meeting_duration_minutes
+        else 30
+    )
+
+    # ---- Title default ----
+    if last_meeting and last_meeting.title:
+        # "Heelstone weekly — May 21" → just "Heelstone weekly" for the
+        # carried-forward title; PMs almost always want a fresh date.
+        title = last_meeting.title.rsplit("—", 1)[0].strip()
+    else:
+        title = None
+
+    sources_bits = []
+    if attendees:
+        sources_bits.append(
+            f"{len(attendees)} attendee{'s' if len(attendees) != 1 else ''}"
+        )
+    if open_actions_payload:
+        sources_bits.append(
+            f"{len(open_actions_payload)} open action"
+            f"{'s' if len(open_actions_payload) != 1 else ''}"
+        )
+    if risks:
+        sources_bits.append(f"{len(risks)} risk{'s' if len(risks) != 1 else ''}")
+    if decisions:
+        sources_bits.append(
+            f"{len(decisions)} decision{'s' if len(decisions) != 1 else ''}"
+        )
+    if recap_text:
+        sources_bits.append(
+            f"recap from {last_meeting.meeting_date.isoformat()}"
+            if last_meeting else "recap"
+        )
+    sources_summary = (
+        "Auto-drafted: " + ", ".join(sources_bits)
+        if sources_bits else
+        "Auto-drafted from history — no prior data to carry forward."
+    )
+
+    return AgendaAutoDraftResponse(
+        upcoming_date=upcoming_date,
+        title=title,
+        source_meeting_id=last_meeting.id if last_meeting else None,
+        meeting_duration_minutes=duration,
+        schedule_version_override=None,
+        disciplines=disciplines,
+        dp_text={},  # PM fills in topics for THIS meeting
+        recap_text=recap_text,
+        attendees=attendees,
+        open_actions=open_actions_payload,
+        risks=risks,
+        decisions=decisions,
+        schedule_changes=schedule_changes,
+        sources_summary=sources_summary,
     )

@@ -168,6 +168,11 @@ class ActionItemOut(ORMModel):
     closed_in_meeting_id: Optional[int] = None
     text: str
     owner: Optional[str] = None
+    # First-class user link when the owner is on the PMO 360 team. Coexists
+    # with the freeform ``owner`` string so external owners (vendors) still
+    # render in the action log without a User row.
+    owner_user_id: Optional[int] = None
+    owner_user: Optional[UserStub] = None
     due_date: Optional[date] = None
     status: str
     created_by: Optional[UserStub] = None
@@ -286,6 +291,10 @@ class MeetingSaveRequest(BaseModel):
 class ActionItemUpdate(BaseModel):
     text: Optional[str] = None
     owner: Optional[str] = None
+    # Pass a user id to bind this action to a PMO 360 PM. Pass ``null`` to
+    # explicitly clear the user link (e.g. action reassigned to a vendor);
+    # omit the field entirely to leave the existing link untouched.
+    owner_user_id: Optional[int] = None
     due_date: Optional[date] = None
     status: Optional[str] = None
     closing_meeting_id: Optional[int] = None
@@ -296,6 +305,7 @@ class ActionItemCreate(BaseModel):
     originating_meeting_id: int
     text: str
     owner: Optional[str] = ""
+    owner_user_id: Optional[int] = None
     due_date: Optional[date] = None
     status: str = "open"
 
