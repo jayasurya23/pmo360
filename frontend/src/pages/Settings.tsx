@@ -26,6 +26,7 @@ const DEFAULT_PREFS: UserPreferences = {
   default_meeting_duration: 30,
   default_action_due_offset_days: 7,
   email_signature: "",
+  auto_send_minutes_on_finalize: false,
 };
 
 interface PortfolioOption {
@@ -278,6 +279,34 @@ export default function Settings() {
         <p className="text-xs text-slate-500">
           Appended to the body of every email you send via Graph.
         </p>
+      </section>
+
+      {/* ---------- Card 3: Automation ---------- */}
+      <section className="card p-6 space-y-3">
+        <h3 className="section-title">Automation</h3>
+        <label className="flex items-start gap-3 cursor-pointer">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={!!prefs.auto_send_minutes_on_finalize}
+            onChange={(e) =>
+              update("auto_send_minutes_on_finalize", e.target.checked)
+            }
+          />
+          <span>
+            <span className="text-sm font-medium text-brand-black">
+              Auto-send minutes when I finalize a meeting
+            </span>
+            <span className="block text-[11px] text-slate-500 mt-0.5">
+              Right after you finalize, PMO 360 emails the minutes PDF to the
+              meeting's attendees (those with an email on file) using your
+              Outlook account. The email still goes through your delegated
+              Mail.Send permission — it only fires when you're signed in and
+              have consented. You'll see exactly who it went to, and a
+              composer stays available for follow-ups.
+            </span>
+          </span>
+        </label>
       </section>
 
       {/* ---------- Save button ---------- */}

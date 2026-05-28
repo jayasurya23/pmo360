@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
@@ -332,10 +332,15 @@ function ComposeEmailSection({
    * then POSTs /me/sendMail. Email lands in the signed-in user's Sent
    * Items — same as if they'd sent from Outlook by hand.
    */
-  async function handleGraphSend() {
+  async function handleGraphSend(toOverride?: string, ccOverride?: string) {
     setSendError(null);
     setSendOk(false);
-    if (!composedTo.trim()) {
+    // Recipients can be passed explicitly (auto-send-on-finalize computes
+    // them directly from the attendee list, bypassing the checkbox state
+    // which hasn't propagated yet) or default to the composed checkboxes.
+    const to = (toOverride ?? composedTo).trim();
+    const cc = (ccOverride ?? composedCc).trim();
+    if (!to) {
       setSendError("Add at least one recipient before sending.");
       return;
     }
@@ -363,8 +368,8 @@ function ComposeEmailSection({
       // 4. Send.
       await sendMail(
         {
-          to: composedTo,
-          cc: composedCc || undefined,
+          to,
+          cc: cc || undefined,
           subject,
           body,
           attachments: [
@@ -382,12 +387,48 @@ function ComposeEmailSection({
     }
   }
 
+  // ---- Auto-send on finalize ----
+  // When the PM has opted in (Settings → Automation) AND finalize just
+  // produced a PDF AND we're signed in with at least one emailable
+  // attendee, fire the Graph send exactly once. We compute recipients
+  // directly from the attendee list (not the checkbox state, which hasn't
+  // settled yet) and gate on `subject` being seeded so the defaults effect
+  // has populated the body. Auto-checks the recipients in the UI so the PM
+  // sees who it went to.
+  const autoSentRef = useRef(false);
+  useEffect(() => {
+    if (autoSentRef.current) return;
+    if (!userPrefs?.auto_send_minutes_on_finalize) return;
+    if (!pdfPath) return; // finalize hasn't produced the file yet
+    if (!isAuthenticated) return;
+    if (!meeting) return; // need attendees + defaults
+    if (!subject.trim()) return; // wait until defaults seed the subject/body
+    const recipients = attendees.filter((a) => a.email);
+    if (recipients.length === 0) return;
+    autoSentRef.current = true;
+    setEdited(true); // lock defaults so they don't re-seed under us
+    setToIds(new Set(recipients.map((a) => a.id)));
+    const toStr = recipients
+      .map((a) => a.email!.trim())
+      .filter(Boolean)
+      .join(", ");
+    void handleGraphSend(toStr, "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userPrefs, pdfPath, isAuthenticated, meeting, subject, attendees]);
+
   const ready =
     subject.trim().length > 0 && composedTo.trim().length > 0;
 
   return (
     <section className="card p-6 space-y-3">
       <h3 className="section-title mb-1">Compose email</h3>
+      {userPrefs?.auto_send_minutes_on_finalize && !sendOk && (
+        <div className="text-xs rounded border border-sky-200 bg-sky-50 px-3 py-2 text-sky-900">
+          ⚡ Auto-send is on — once you finalize above, the minutes will be
+          emailed to all attendees with an address on file. Turn this off in
+          Settings → Automation.
+        </div>
+      )}
       <p className="text-sm text-brand-gray">
         Tick the attendees you want to send to (only those with an email on
         file are checkable — add missing emails on the Capture page). Use the
@@ -575,7 +616,7 @@ function ComposeEmailSection({
           <button
             type="button"
             className="btn-primary"
-            onClick={handleGraphSend}
+            onClick={() => void handleGraphSend()}
             disabled={!ready || sending || !isAuthenticated}
             title={
               isAuthenticated

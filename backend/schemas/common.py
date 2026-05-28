@@ -51,6 +51,14 @@ class UserPreferences(BaseModel):
     default_meeting_duration: int = 30  # minutes, typically 30 or 60
     default_action_due_offset_days: int = 7
     email_signature: Optional[str] = None  # appended to outgoing Graph emails
+    # When True, the Send page auto-fires the Graph email to meeting
+    # attendees (with the minutes PDF attached) immediately after the PM
+    # finalizes a meeting — no extra click. Off by default so the existing
+    # review-then-send flow stays the norm; PMs opt in from Settings.
+    # The send still happens client-side via the PM's delegated Mail.Send
+    # token (we never send server-side on their behalf), so it only fires
+    # when the PM is signed in and has consented to Mail.Send.
+    auto_send_minutes_on_finalize: bool = False
 
 
 # ---------- Clients / Projects ----------

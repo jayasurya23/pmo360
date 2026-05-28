@@ -592,6 +592,9 @@ export interface UserPreferences {
   default_meeting_duration: number;
   default_action_due_offset_days: number;
   email_signature?: string | null;
+  /** When true, the Send page auto-emails minutes to attendees right after
+   *  the PM finalizes a meeting (client-side Graph send). Off by default. */
+  auto_send_minutes_on_finalize?: boolean;
 }
 export const fetchMyPreferences = () =>
   apiClient.get<UserPreferences>("/users/me/preferences").then((r) => r.data);
