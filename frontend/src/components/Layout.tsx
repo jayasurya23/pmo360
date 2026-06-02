@@ -27,12 +27,20 @@ const PRIMARY_NAV: NavItem[] = [
   { to: "/schedule", label: "Schedule" },
 ];
 
+// The "this meeting" minutes flow — Capture → Review → Preview → Send.
 const MEETING_FLOW: NavItem[] = [
   { to: "/capture", label: "Capture" },
   { to: "/review", label: "Review" },
   { to: "/preview", label: "Preview" },
   { to: "/send", label: "Send" },
 ];
+
+// The pre-meeting agenda is the START of the NEXT weekly cycle. It hangs
+// off the end of the minutes stepper as a visually-distinct "plan ahead"
+// segment so PMs see the full loop: capture this week's minutes → plan
+// next week's agenda → (next week) capture again.
+const NEXT_CYCLE_STEP: NavItem = { to: "/next-agenda", label: "Next agenda" };
+const STEPPER_PATHS = [...MEETING_FLOW.map((s) => s.to), NEXT_CYCLE_STEP.to];
 
 export default function Layout() {
   const { settings, currentProject } = useApp();
@@ -664,16 +672,28 @@ function UserMenu() {
 }
 
 function MeetingStepper({ currentPath }: { currentPath: string }) {
-  const idx = MEETING_FLOW.findIndex((s) => s.to === currentPath);
   const nav = useNavigate();
-  if (idx === -1) return null;
+  if (!STEPPER_PATHS.includes(currentPath)) return null;
+
+  // Index across all 5 stepper paths (0-3 minutes, 4 = next agenda).
+  const idx = STEPPER_PATHS.indexOf(currentPath);
+  const onNextCycle = idx === 4;
+
+  // When the PM is on /next-agenda we treat the four minutes steps as
+  // neutral (not green-done) — they may have jumped straight here from the
+  // top nav without doing minutes, so claiming those are "done" would lie.
+  // Only show green ticks for genuinely-completed earlier steps within the
+  // minutes flow itself.
   return (
     <div className="bg-gradient-to-b from-white to-slate-50 border-b border-slate-200">
       <div className="max-w-screen-2xl mx-auto px-6 md:px-10 py-3">
-        <div className="flex items-center gap-3 overflow-x-auto">
+        <div className="flex items-center gap-2 overflow-x-auto">
+          <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold pr-1 shrink-0">
+            This meeting
+          </span>
           {MEETING_FLOW.map((s, i) => {
-            const isDone = i < idx;
-            const isActive = i === idx;
+            const isDone = !onNextCycle && i < idx;
+            const isActive = !onNextCycle && i === idx;
             return (
               <div key={s.to} className="flex items-center">
                 <button
@@ -681,8 +701,11 @@ function MeetingStepper({ currentPath }: { currentPath: string }) {
                   className={clsx(
                     "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold transition whitespace-nowrap",
                     isActive && "bg-brand-red text-white shadow-sm",
-                    isDone && "bg-emerald-50 text-emerald-700 border border-emerald-200",
-                    !isActive && !isDone && "text-slate-500 hover:text-slate-700"
+                    isDone &&
+                      "bg-emerald-50 text-emerald-700 border border-emerald-200",
+                    !isActive &&
+                      !isDone &&
+                      "text-slate-500 hover:text-slate-700",
                   )}
                 >
                   <span
@@ -690,7 +713,7 @@ function MeetingStepper({ currentPath }: { currentPath: string }) {
                       "h-5 w-5 rounded-full flex items-center justify-center text-[10px]",
                       isActive && "bg-white/20",
                       isDone && "bg-emerald-100 text-emerald-700",
-                      !isActive && !isDone && "bg-slate-100 text-slate-500"
+                      !isActive && !isDone && "bg-slate-100 text-slate-500",
                     )}
                   >
                     {isDone ? "✓" : i + 1}
@@ -698,11 +721,32 @@ function MeetingStepper({ currentPath }: { currentPath: string }) {
                   {s.label}
                 </button>
                 {i < MEETING_FLOW.length - 1 && (
-                  <div className="mx-2 h-px w-6 bg-slate-200" />
+                  <div className="mx-1.5 h-px w-5 bg-slate-200" />
                 )}
               </div>
             );
           })}
+
+          {/* Cycle divider → the next weekly cycle starts here. */}
+          <div className="flex items-center gap-2 pl-1 shrink-0">
+            <span className="text-slate-300 text-sm">→</span>
+            <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold shrink-0">
+              Plan ahead
+            </span>
+          </div>
+          <button
+            onClick={() => nav(NEXT_CYCLE_STEP.to)}
+            className={clsx(
+              "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold transition whitespace-nowrap",
+              onNextCycle
+                ? "bg-brand-red text-white shadow-sm"
+                : "text-[#185fa5] bg-sky-50 border border-sky-200 hover:bg-sky-100",
+            )}
+            title="Plan the next coordination meeting's agenda"
+          >
+            <span aria-hidden="true">📅</span>
+            {NEXT_CYCLE_STEP.label}
+          </button>
         </div>
       </div>
     </div>

@@ -243,12 +243,34 @@ export default function Review() {
     }
   }
 
+  // "Save & preview" — persist then advance to the Preview step. This is the
+  // primary forward action; the label now makes the navigation explicit
+  // (the old "Save to database →" implied a save-in-place but actually
+  // navigated, which confused PMs).
   const handleSave = async () => {
     setSaving(true);
     setError(null);
     try {
       await doSave();
       nav("/preview");
+    } catch (e: any) {
+      setError(e.message || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // "Save" — persist and STAY on the page. For PMs who want to checkpoint
+  // mid-edit without leaving Review. Surfaces a transient confirmation so
+  // the save is unmistakable (the autosave status pill is subtle).
+  const [savedToast, setSavedToast] = useState(false);
+  const handleSaveStay = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await doSave();
+      setSavedToast(true);
+      window.setTimeout(() => setSavedToast(false), 2500);
     } catch (e: any) {
       setError(e.message || "Save failed");
     } finally {
@@ -289,11 +311,20 @@ export default function Review() {
               💾 Save as template…
             </button>
             <button
+              className="btn-ghost"
+              onClick={handleSaveStay}
+              disabled={saving}
+              title="Save your edits and stay on this page"
+            >
+              {savedToast ? "✓ Saved" : saving ? "Saving…" : "Save"}
+            </button>
+            <button
               className="btn-primary"
               onClick={handleSave}
               disabled={saving}
+              title="Save your edits and continue to the Preview step"
             >
-              {saving ? "Saving…" : "Save to database →"}
+              {saving ? "Saving…" : "Save & preview →"}
             </button>
           </div>
         }

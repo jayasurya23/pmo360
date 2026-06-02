@@ -295,6 +295,16 @@ class MeetingSaveRequest(BaseModel):
     parsed: ParsedMeetingOut
 
 
+# ---------- Meeting metadata patch ----------
+class MeetingMetaUpdate(BaseModel):
+    """Lightweight patch for the History page — rename a meeting or change
+    its stage (draft/final/sent) without re-sending the whole parsed
+    payload. Both fields optional so a rename ships just ``title`` and a
+    status change ships just ``stage``."""
+    title: Optional[str] = None
+    stage: Optional[str] = None
+
+
 # ---------- Action items ----------
 class ActionItemUpdate(BaseModel):
     text: Optional[str] = None

@@ -16,7 +16,7 @@ from llm.providers import (
 )
 from schemas.common import (
     MeetingSummary, MeetingDetail, MeetingSaveRequest,
-    DiscussionPointOut, ParsedDiscussionPointOut,
+    DiscussionPointOut, ParsedDiscussionPointOut, MeetingMetaUpdate,
 )
 
 
@@ -181,6 +181,35 @@ def save_meeting(
 
     db.flush()
     return _serialize_meeting(meeting)
+
+
+@router.patch("/{meeting_id}", response_model=MeetingSummary)
+def patch_meeting_meta(
+    meeting_id: int,
+    payload: MeetingMetaUpdate,
+    db: Session = Depends(get_db),
+    actor=Depends(get_current_db_user),
+):
+    """Rename a meeting or change its stage from the History page.
+
+    Lightweight on purpose — does NOT touch attendees/discussion/actions
+    (use POST /save for content edits). Only ``model_fields_set`` keys are
+    applied so a rename doesn't clobber the stage and vice-versa.
+    """
+    m = db.get(Meeting, meeting_id)
+    if not m:
+        raise HTTPException(404, "Meeting not found")
+    sent = payload.model_fields_set
+    if "title" in sent:
+        m.title = payload.title
+    if "stage" in sent and payload.stage:
+        if payload.stage not in ("draft", "final", "sent"):
+            raise HTTPException(422, "stage must be draft / final / sent")
+        m.stage = payload.stage
+    if actor is not None:
+        m.updated_by_id = actor.id
+    db.flush()
+    return m
 
 
 @router.delete("/{meeting_id}", status_code=204)

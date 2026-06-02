@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
@@ -10,22 +10,36 @@ import {
   listAgendas,
   deleteMeeting,
   deleteAgenda,
+  updateMeetingMeta,
   meetingDocUrl,
   getMeeting,
 } from "@/lib/api";
 import type { Meeting, Agenda } from "@/lib/types";
 import { format, parseISO } from "date-fns";
+import clsx from "clsx";
 
 type Tab = "meetings" | "agendas";
+type StatusFilter = "all" | "draft" | "final" | "sent";
 
 export default function History() {
-  const { currentProject, setDraftMeetingId, setParsed, setMeetingDate, setMeetingTitle, setSelectedDeliverables } =
-    useApp();
+  const {
+    currentProject,
+    setDraftMeetingId,
+    setParsed,
+    setMeetingDate,
+    setMeetingTitle,
+    setSelectedDeliverables,
+    setSelectedAttendees,
+  } = useApp();
   const nav = useNavigate();
   const [tab, setTab] = useState<Tab>("meetings");
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [agendas, setAgendas] = useState<Agenda[]>([]);
   const [loading, setLoading] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  // Inline rename state — the row whose title is being edited + its draft.
+  const [renamingId, setRenamingId] = useState<number | null>(null);
+  const [renameValue, setRenameValue] = useState("");
   const confirm = useConfirm();
 
   useEffect(() => {
@@ -45,17 +59,26 @@ export default function History() {
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
 
-  const handleOpenMeeting = async (m: Meeting) => {
+  // Hydrate the in-progress draft from a saved meeting and open Review.
+  // `asDuplicate` clears the draft id so saving creates a NEW meeting
+  // (starting-point flow) instead of editing the original in place.
+  const hydrateMeeting = async (m: Meeting, asDuplicate: boolean) => {
     const detail = await getMeeting(m.id);
-    setDraftMeetingId(m.id);
-    setMeetingDate(m.meeting_date);
-    setMeetingTitle(m.title || "");
+    setDraftMeetingId(asDuplicate ? null : m.id);
+    setMeetingDate(
+      asDuplicate ? new Date().toISOString().slice(0, 10) : m.meeting_date,
+    );
+    setMeetingTitle(
+      asDuplicate ? `Copy of ${m.title || "meeting"}` : m.title || "",
+    );
+    const attendees = detail.attendees.map((a) => ({
+      full_name: a.full_name,
+      initials: a.initials,
+      organization: a.organization || "",
+    }));
+    setSelectedAttendees(attendees);
     setParsed({
-      attendees: detail.attendees.map((a) => ({
-        full_name: a.full_name,
-        initials: a.initials,
-        organization: a.organization || "",
-      })),
+      attendees,
       agenda_items: detail.agenda_items.map((a) => ({
         text: a.text,
         discipline: a.discipline || "General",
@@ -84,7 +107,7 @@ export default function History() {
         task: md.deliverable.task,
         start_status: md.deliverable.start_status || "In Progress",
         delivery_date: md.deliverable.delivery_date || null,
-      }))
+      })),
     );
     nav("/review");
   };
@@ -98,7 +121,7 @@ export default function History() {
     });
     if (!ok) return;
     await deleteMeeting(m.id);
-    setMeetings(meetings.filter((x) => x.id !== m.id));
+    setMeetings((prev) => prev.filter((x) => x.id !== m.id));
   };
 
   const handleDeleteAgenda = async (a: Agenda) => {
@@ -110,8 +133,68 @@ export default function History() {
     });
     if (!ok) return;
     await deleteAgenda(a.id);
-    setAgendas(agendas.filter((x) => x.id !== a.id));
+    setAgendas((prev) => prev.filter((x) => x.id !== a.id));
   };
+
+  // ---- Inline rename ----
+  const startRename = (m: Meeting) => {
+    setRenamingId(m.id);
+    setRenameValue(m.title || "");
+  };
+  const commitRename = async (m: Meeting) => {
+    const title = renameValue.trim();
+    setRenamingId(null);
+    if (title === (m.title || "")) return; // no-op
+    try {
+      const updated = await updateMeetingMeta(m.id, { title });
+      setMeetings((prev) =>
+        prev.map((x) => (x.id === m.id ? { ...x, title: updated.title } : x)),
+      );
+    } catch {
+      /* leave the old title on failure */
+    }
+  };
+
+  // ---- Stage change (badge dropdown) ----
+  const changeStage = async (m: Meeting, stage: "draft" | "final" | "sent") => {
+    try {
+      const updated = await updateMeetingMeta(m.id, { stage });
+      setMeetings((prev) =>
+        prev.map((x) => (x.id === m.id ? { ...x, stage: updated.stage } : x)),
+      );
+    } catch {
+      /* ignore */
+    }
+  };
+
+  // ---- Filter + month grouping ----
+  const filteredMeetings = useMemo(
+    () =>
+      statusFilter === "all"
+        ? meetings
+        : meetings.filter((m) => (m.stage || "draft") === statusFilter),
+    [meetings, statusFilter],
+  );
+
+  const meetingsByMonth = useMemo(() => {
+    const groups = new Map<string, Meeting[]>();
+    // listMeetings returns newest-first; preserve that within each month.
+    for (const m of filteredMeetings) {
+      const key = format(parseISO(m.meeting_date), "MMMM yyyy");
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(m);
+    }
+    return Array.from(groups.entries());
+  }, [filteredMeetings]);
+
+  const stageCounts = useMemo(() => {
+    const c = { draft: 0, final: 0, sent: 0 };
+    for (const m of meetings) {
+      const s = (m.stage || "draft") as keyof typeof c;
+      if (s in c) c[s] += 1;
+    }
+    return c;
+  }, [meetings]);
 
   return (
     <div className="space-y-6">
@@ -132,59 +215,157 @@ export default function History() {
       {loading ? (
         <div className="card p-5 text-sm">Loading…</div>
       ) : tab === "meetings" ? (
-        meetings.length === 0 ? (
-          <EmptyState title="No meetings yet" />
-        ) : (
-          <div className="card divide-y divide-brand-lightgray/60">
-            {meetings.map((m) => (
-              <div
-                key={m.id}
-                className="px-5 py-3 grid grid-cols-[1fr_auto] gap-4 items-center"
+        <>
+          {/* Status filter pills */}
+          {meetings.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <FilterPill
+                active={statusFilter === "all"}
+                onClick={() => setStatusFilter("all")}
               >
-                <div>
-                  <div className="text-sm font-medium text-brand-black">
-                    {m.title || "(no title)"}
+                All ({meetings.length})
+              </FilterPill>
+              <FilterPill
+                active={statusFilter === "draft"}
+                onClick={() => setStatusFilter("draft")}
+              >
+                Draft ({stageCounts.draft})
+              </FilterPill>
+              <FilterPill
+                active={statusFilter === "final"}
+                onClick={() => setStatusFilter("final")}
+              >
+                Final ({stageCounts.final})
+              </FilterPill>
+              <FilterPill
+                active={statusFilter === "sent"}
+                onClick={() => setStatusFilter("sent")}
+              >
+                Sent ({stageCounts.sent})
+              </FilterPill>
+            </div>
+          )}
+
+          {meetings.length === 0 ? (
+            <EmptyState
+              title="No meetings yet"
+              hint="Capture a meeting to start building this portfolio's history."
+              action={
+                <button
+                  className="btn-primary mt-2"
+                  onClick={() => nav("/capture")}
+                >
+                  + Capture a meeting
+                </button>
+              }
+            />
+          ) : filteredMeetings.length === 0 ? (
+            <EmptyState
+              title={`No ${statusFilter} meetings`}
+              hint="Try a different status filter."
+            />
+          ) : (
+            <div className="space-y-6">
+              {meetingsByMonth.map(([month, rows]) => (
+                <div key={month}>
+                  <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold mb-2">
+                    {month}
                   </div>
-                  <div className="text-xs text-brand-gray">
-                    {format(parseISO(m.meeting_date), "EEE, MMM d, yyyy")} ·{" "}
-                    Stage <span className="font-medium">{m.stage}</span>
+                  <div className="card divide-y divide-brand-lightgray/60">
+                    {rows.map((m) => (
+                      <div
+                        key={m.id}
+                        className="px-5 py-3 flex flex-col gap-2 md:grid md:grid-cols-[1fr_auto] md:gap-4 md:items-center"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            {renamingId === m.id ? (
+                              <input
+                                autoFocus
+                                className="input text-sm py-1"
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onBlur={() => commitRename(m)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") commitRename(m);
+                                  if (e.key === "Escape") setRenamingId(null);
+                                }}
+                              />
+                            ) : (
+                              <>
+                                <span className="text-sm font-medium text-brand-black truncate">
+                                  {m.title || "(no title)"}
+                                </span>
+                                <button
+                                  className="text-brand-gray hover:text-brand-black text-xs shrink-0"
+                                  onClick={() => startRename(m)}
+                                  title="Rename"
+                                  aria-label="Rename meeting"
+                                >
+                                  ✎
+                                </button>
+                              </>
+                            )}
+                          </div>
+                          <div className="text-xs text-brand-gray mt-1 flex items-center gap-2 flex-wrap">
+                            <span>
+                              {format(
+                                parseISO(m.meeting_date),
+                                "EEE, MMM d, yyyy",
+                              )}
+                            </span>
+                            <StageBadge
+                              stage={(m.stage || "draft") as Stage}
+                              onChange={(s) => changeStage(m, s)}
+                            />
+                          </div>
+                          <UpdatedByLine user={m.updated_by} at={m.updated_at} />
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            className="btn-ghost"
+                            onClick={() => hydrateMeeting(m, false)}
+                          >
+                            Open
+                          </button>
+                          <button
+                            className="btn-ghost"
+                            onClick={() => hydrateMeeting(m, true)}
+                            title="Open a copy as a fresh draft — handy for recurring meetings"
+                          >
+                            Duplicate
+                          </button>
+                          <a
+                            className="btn-ghost"
+                            href={meetingDocUrl(m.id, "pdf")}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            PDF
+                          </a>
+                          <a
+                            className="btn-ghost"
+                            href={meetingDocUrl(m.id, "docx")}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            DOCX
+                          </a>
+                          <button
+                            className="btn-danger"
+                            onClick={() => handleDeleteMeeting(m)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  <UpdatedByLine user={m.updated_by} at={m.updated_at} />
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    className="btn-ghost"
-                    onClick={() => handleOpenMeeting(m)}
-                  >
-                    Open
-                  </button>
-                  <a
-                    className="btn-ghost"
-                    href={meetingDocUrl(m.id, "pdf")}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    PDF
-                  </a>
-                  <a
-                    className="btn-ghost"
-                    href={meetingDocUrl(m.id, "docx")}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    DOCX
-                  </a>
-                  <button
-                    className="btn-danger"
-                    onClick={() => handleDeleteMeeting(m)}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )
+              ))}
+            </div>
+          )}
+        </>
       ) : agendas.length === 0 ? (
         <EmptyState title="No saved agendas yet" />
       ) : (
@@ -223,6 +404,86 @@ export default function History() {
         </div>
       )}
     </div>
+  );
+}
+
+type Stage = "draft" | "final" | "sent";
+
+/** Status badge that doubles as a quick stage-change dropdown. Click to
+ *  reveal the three stages; pick one to PATCH the meeting. */
+function StageBadge({
+  stage,
+  onChange,
+}: {
+  stage: Stage;
+  onChange: (s: Stage) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const cfg: Record<Stage, { label: string; bg: string; text: string }> = {
+    draft: { label: "Draft", bg: "#e6e7e8", text: "#4d4d4f" },
+    final: { label: "Final", bg: "#dbeaf7", text: "#185fa5" },
+    sent: { label: "Sent", bg: "#d6f0e0", text: "#278747" },
+  };
+  const c = cfg[stage];
+  return (
+    <span className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded inline-flex items-center gap-1"
+        style={{ background: c.bg, color: c.text }}
+        title="Change status"
+      >
+        {c.label}
+        <span className="opacity-60">▾</span>
+      </button>
+      {open && (
+        <span className="absolute left-0 top-full mt-1 z-20 bg-white border border-slate-200 rounded shadow-lg py-0.5 min-w-[90px] block">
+          {(Object.keys(cfg) as Stage[]).map((s) => (
+            <button
+              key={s}
+              type="button"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onChange(s);
+                setOpen(false);
+              }}
+              className={clsx(
+                "block w-full text-left px-2.5 py-1 text-xs hover:bg-brand-nearwhite/70",
+                s === stage && "font-semibold",
+              )}
+            >
+              {cfg[s].label}
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function FilterPill({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={clsx(
+        "px-3 py-1 rounded-full text-xs font-semibold border transition",
+        active
+          ? "bg-brand-red text-white border-brand-red"
+          : "bg-white text-brand-gray border-slate-200 hover:border-slate-300",
+      )}
+    >
+      {children}
+    </button>
   );
 }
 

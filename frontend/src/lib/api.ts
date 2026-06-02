@@ -237,6 +237,13 @@ export const getMeeting = (id: number) =>
 export const saveMeeting = (payload: MeetingSaveRequest) =>
   apiClient.post<MeetingDetail>("/meetings/save", payload).then((r) => r.data);
 export const deleteMeeting = (id: number) => apiClient.delete(`/meetings/${id}`);
+/** Lightweight rename / stage change from History. Send just the field
+ *  you're changing — omitted fields are left untouched server-side. */
+export const updateMeetingMeta = (
+  id: number,
+  payload: { title?: string; stage?: "draft" | "final" | "sent" },
+) =>
+  apiClient.patch<Meeting>(`/meetings/${id}`, payload).then((r) => r.data);
 export const regenerateMeetingSummary = (id: number) =>
   apiClient
     .post<MeetingDetail>(`/meetings/${id}/regenerate-summary`)

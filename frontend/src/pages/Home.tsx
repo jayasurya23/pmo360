@@ -5,6 +5,7 @@ import EmptyState from "@/components/EmptyState";
 import { StatusPill } from "@/components/StatusPill";
 import CalendarCard from "@/components/home/CalendarCard";
 import RisksCard from "@/components/home/RisksCard";
+import DraftResumeBanner from "@/components/DraftResumeBanner";
 import {
   fetchBriefing,
   fetchDashboard,
@@ -115,6 +116,9 @@ export default function Home() {
           </>
         }
       />
+
+      {/* ----- Resume in-progress meeting draft ----- */}
+      <DraftResumeBanner />
 
       {/* ----- AI briefing card (signed-in only) ----- */}
       {isAuthenticated && (

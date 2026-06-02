@@ -419,6 +419,28 @@ export default function NextAgenda() {
     }
   };
 
+  // -- Auto-run the draft when arriving from the Send page's "Plan next
+  //    agenda →" CTA (?autodraft=1). Fires once per project, after the
+  //    roster/meeting data has had a chance to load, then strips the param
+  //    so a refresh doesn't re-trigger it over the PM's edits.
+  const autoDraftFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoDraftFiredRef.current) return;
+    if (params.get("autodraft") !== "1") return;
+    if (!projectId) return;
+    autoDraftFiredRef.current = true;
+    setParams(
+      (sp) => {
+        const next = new URLSearchParams(sp);
+        next.delete("autodraft");
+        return next;
+      },
+      { replace: true },
+    );
+    void handleAutoDraft();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, params]);
+
   /**
    * Build the save payload from current state. Shared by the explicit Save
    * button and the auto-save hook so they stay in sync.

@@ -170,6 +170,31 @@ export default function Send() {
         pdfPath={paths?.pdf || null}
         meetingId={draftMeetingId}
       />
+
+      {/* -------- Bridge to the next cycle -------- */}
+      {/* The pre-meeting agenda for next week is the natural next step once
+          minutes are out. Auto-draft carries forward this portfolio's open
+          actions, latest risks/decisions, and this meeting's recap so the
+          PM starts 80% done instead of from a blank page. */}
+      <section className="card p-6 border-l-4 border-l-[#185fa5] bg-gradient-to-r from-sky-50/40 to-white">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h3 className="section-title mb-1">📅 Plan the next meeting</h3>
+            <p className="text-sm text-brand-gray max-w-xl">
+              Minutes are done. Start next week's pre-meeting agenda — we'll
+              auto-draft it from this portfolio's open actions, latest risks
+              and decisions, and this meeting's discussion recap. You review
+              and save.
+            </p>
+          </div>
+          <button
+            className="btn-primary whitespace-nowrap"
+            onClick={() => nav("/next-agenda?autodraft=1")}
+          >
+            Plan next agenda →
+          </button>
+        </div>
+      </section>
     </div>
   );
 }
