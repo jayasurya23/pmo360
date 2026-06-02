@@ -8,8 +8,10 @@
 backend/data
 backend/.env
 backend/.env.*
+# Exclude the LOCAL frontend env, but KEEP .env.production — it carries the
+# public build config (tenant/client id) the production SPA build needs.
 frontend/.env
-frontend/.env.*
+frontend/.env.local
 .git
 .github
 **/.DS_Store

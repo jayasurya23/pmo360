@@ -15,11 +15,11 @@ name: Deploy to Azure Container Apps
 #     AZURE_SUBSCRIPTION_ID
 #   Variables:
 #     AZURE_RESOURCE_GROUP    # e.g. rg-pmo360
-#     ACR_NAME                # e.g. pmo360acr  (without .azurecr.io)
+#     ACR_NAME                # e.g. castillopmo360acr  (without .azurecr.io)
 #     CONTAINER_APP_NAME      # e.g. pmo360
-#     VITE_AZURE_TENANT_ID    # public — inlined into the SPA at build time
-#     VITE_AZURE_CLIENT_ID    # public
-#     VITE_AZURE_REDIRECT_URI # e.g. https://pmo360.<hash>.<region>.azurecontainerapps.io
+#
+# The SPA's public build config (tenant/client id) lives in
+# frontend/.env.production — no build args or extra variables needed here.
 
 on:
   push:
@@ -58,15 +58,15 @@ jobs:
       - name: Build image in ACR
         # az acr build runs the Docker build inside Azure (no Docker needed on
         # the runner). Tags with both the immutable git SHA and :latest.
+        # No --build-arg: the SPA's public build config lives in
+        # frontend/.env.production (Vite reads it at build time). We avoid
+        # build args because some `az acr build` CLI versions mangle the
+        # inner docker build command when they're present.
         run: |
           az acr build \
             --registry "${{ vars.ACR_NAME }}" \
             --image "${IMAGE_REPO}:${{ github.sha }}" \
             --image "${IMAGE_REPO}:latest" \
-            --build-arg VITE_API_BASE=/api \
-            --build-arg VITE_AZURE_TENANT_ID="${{ vars.VITE_AZURE_TENANT_ID }}" \
-            --build-arg VITE_AZURE_CLIENT_ID="${{ vars.VITE_AZURE_CLIENT_ID }}" \
-            --build-arg VITE_AZURE_REDIRECT_URI="${{ vars.VITE_AZURE_REDIRECT_URI }}" \
             .
 
       - name: Deploy new revision

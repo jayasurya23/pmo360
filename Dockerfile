@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # =============================================================================
 # PMO 360 — single-container production image.
 #
@@ -18,7 +17,12 @@
 # =============================================================================
 
 # ---- Stage 1: build the SPA ----
-FROM node:20-slim AS frontend
+# Base images are pulled from Google's public Docker Hub mirror (mirror.gcr.io)
+# instead of docker.io directly — Docker Hub rate-limits anonymous pulls from
+# shared CI / cloud-build IPs, which breaks `az acr build`. mirror.gcr.io
+# caches the official library images and isn't subject to that limit, so both
+# this build and the GitHub Actions pipeline stay reliable.
+FROM mirror.gcr.io/library/node:20-slim AS frontend
 WORKDIR /app/frontend
 
 # Install deps first (layer-cached unless package*.json changes).
@@ -27,18 +31,13 @@ RUN npm ci
 
 COPY frontend/ ./
 
-# Vite inlines these at build time — they're PUBLIC values (tenant/client id
-# are not secrets), so passing them as build args is fine. Default API base
-# is /api since the SPA is served same-origin as the backend.
-ARG VITE_API_BASE=/api
-ARG VITE_AZURE_TENANT_ID=
-ARG VITE_AZURE_CLIENT_ID=
-ARG VITE_AZURE_REDIRECT_URI=
-ENV VITE_API_BASE=$VITE_API_BASE \
-    VITE_AZURE_TENANT_ID=$VITE_AZURE_TENANT_ID \
-    VITE_AZURE_CLIENT_ID=$VITE_AZURE_CLIENT_ID \
-    VITE_AZURE_REDIRECT_URI=$VITE_AZURE_REDIRECT_URI
-
+# Vite reads the public build config from frontend/.env.production at build
+# time (VITE_API_BASE, VITE_AZURE_TENANT_ID, VITE_AZURE_CLIENT_ID). Those are
+# PUBLIC values — already inlined into the shipped JS bundle, not secrets — so
+# they're committed there rather than passed as Docker --build-arg. (We avoid
+# --build-arg because some `az acr build` CLI versions mangle the inner
+# `docker build` command when build args are present.) The redirect URI is
+# resolved at runtime from window.location.origin, so it doesn't need baking.
 RUN npm run build
 
 # Drop the Castillo / PMO 360 logos into the SPA's assets dir so the single
@@ -48,7 +47,7 @@ COPY backend/assets/ ./dist/assets/
 
 
 # ---- Stage 2: python runtime ----
-FROM python:3.11-slim AS runtime
+FROM mirror.gcr.io/library/python:3.11-slim AS runtime
 
 # System deps: libpq for psycopg2, fonts for ReportLab PDF text, curl for the
 # healthcheck.
