@@ -19,7 +19,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from db import init_db
@@ -77,12 +77,6 @@ def create_app() -> FastAPI:
     app.include_router(members.router)
     app.include_router(calendar.router)
 
-    # ---- Logo + static assets (so the React app can pull the Castillo /
-    # PMO 360 logos straight from the backend rather than duplicating them).
-    assets_dir = Path(__file__).resolve().parent / "assets"
-    if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-
     # ---- Health check ----
     @app.get("/api/health", tags=["health"])
     def health():
@@ -98,7 +92,81 @@ def create_app() -> FastAPI:
     def _value_error(_, exc):
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
+    # ---- Static / SPA serving ----
+    # MUST be wired AFTER all /api routers + the health route so those win.
+    _mount_static(app)
+
     return app
+
+
+def _mount_static(app: FastAPI) -> None:
+    """Serve the built React SPA from the same origin as the API.
+
+    Production (single-container): the Docker build copies the Vite output
+    into ``PMO360_STATIC_DIR`` (default ``/app/static``) and also drops the
+    Castillo/PMO360 logos into ``<static>/assets/logo`` so one ``/assets``
+    mount covers both the JS/CSS bundles and the logos. We mount the static
+    dirs and add a catch-all that returns ``index.html`` for any non-API,
+    non-asset path so client-side routing (/actions, /review, …) works on a
+    hard refresh.
+
+    Dev (backend-only, SPA served by Vite on :5174): there's no built SPA
+    dir, so we fall back to serving just the backend ``assets/`` (logos) at
+    ``/assets`` — exactly the old behaviour.
+    """
+    backend_assets = Path(__file__).resolve().parent / "assets"
+
+    static_dir_env = os.getenv("PMO360_STATIC_DIR", "").strip()
+    candidates = []
+    if static_dir_env:
+        candidates.append(Path(static_dir_env))
+    candidates.append(Path(__file__).resolve().parent / "static")            # /app/static in container
+    candidates.append(Path(__file__).resolve().parents[1] / "frontend" / "dist")  # local dev verification
+
+    spa_dir = next(
+        (c for c in candidates if (c / "index.html").is_file()), None
+    )
+
+    if spa_dir is None:
+        # Dev fallback — no built SPA present; serve backend logos only.
+        if backend_assets.exists():
+            app.mount(
+                "/assets",
+                StaticFiles(directory=str(backend_assets)),
+                name="assets",
+            )
+        return
+
+    # Production single-origin serving.
+    if (spa_dir / "assets").is_dir():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(spa_dir / "assets")),
+            name="spa-assets",
+        )
+    if (spa_dir / "fonts").is_dir():
+        app.mount(
+            "/fonts",
+            StaticFiles(directory=str(spa_dir / "fonts")),
+            name="spa-fonts",
+        )
+
+    index_file = spa_dir / "index.html"
+
+    # Catch-all for client-side routes. Registered last so /api/*, /assets/*,
+    # /fonts/* (all wired above) take precedence. Unknown /api/* paths return
+    # a JSON 404 rather than the SPA shell.
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def spa_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+        candidate = (spa_dir / full_path)
+        # Serve real files that live at the root of the build (favicon,
+        # manifest, robots, etc.); everything else falls through to the SPA
+        # shell for client-side routing.
+        if full_path and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(index_file))
 
 
 app = create_app()

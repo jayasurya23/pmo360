@@ -1,0 +1,88 @@
+name: Deploy to Azure Container Apps
+
+# Push-to-deploy: merge to main → build the single-container image in Azure
+# Container Registry → roll out a new Container Apps revision. No SSH, no
+# local Docker, no manual migration step (the container's entrypoint runs
+# `alembic` on boot). Roll back by pointing the app at a previous image tag
+# (every build is tagged with its git SHA — see docs/DEPLOYMENT.md).
+#
+# Auth uses OIDC federated credentials (no long-lived secrets in the repo).
+# Required GitHub config (Settings → Secrets and variables → Actions):
+#
+#   Secrets:
+#     AZURE_CLIENT_ID         # the deploy app registration / managed identity
+#     AZURE_TENANT_ID
+#     AZURE_SUBSCRIPTION_ID
+#   Variables:
+#     AZURE_RESOURCE_GROUP    # e.g. rg-pmo360
+#     ACR_NAME                # e.g. pmo360acr  (without .azurecr.io)
+#     CONTAINER_APP_NAME      # e.g. pmo360
+#     VITE_AZURE_TENANT_ID    # public — inlined into the SPA at build time
+#     VITE_AZURE_CLIENT_ID    # public
+#     VITE_AZURE_REDIRECT_URI # e.g. https://pmo360.<hash>.<region>.azurecontainerapps.io
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "Dockerfile"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # required for azure/login OIDC
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false # never abort a deploy mid-rollout
+
+env:
+  IMAGE_REPO: pmo360
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image in ACR
+        # az acr build runs the Docker build inside Azure (no Docker needed on
+        # the runner). Tags with both the immutable git SHA and :latest.
+        run: |
+          az acr build \
+            --registry "${{ vars.ACR_NAME }}" \
+            --image "${IMAGE_REPO}:${{ github.sha }}" \
+            --image "${IMAGE_REPO}:latest" \
+            --build-arg VITE_API_BASE=/api \
+            --build-arg VITE_AZURE_TENANT_ID="${{ vars.VITE_AZURE_TENANT_ID }}" \
+            --build-arg VITE_AZURE_CLIENT_ID="${{ vars.VITE_AZURE_CLIENT_ID }}" \
+            --build-arg VITE_AZURE_REDIRECT_URI="${{ vars.VITE_AZURE_REDIRECT_URI }}" \
+            .
+
+      - name: Deploy new revision
+        # Pointing the app at the SHA-tagged image creates a new revision and
+        # rolls traffic to it. Migrations run automatically via the container
+        # entrypoint before the server accepts traffic.
+        run: |
+          az containerapp update \
+            --name "${{ vars.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "${{ vars.ACR_NAME }}.azurecr.io/${IMAGE_REPO}:${{ github.sha }}"
+
+      - name: Show rollout
+        run: |
+          az containerapp revision list \
+            --name "${{ vars.CONTAINER_APP_NAME }}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "[?properties.active].{revision:name,created:properties.createdTime,traffic:properties.trafficWeight}" \
+            -o table
