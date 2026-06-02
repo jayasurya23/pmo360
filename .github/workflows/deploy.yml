@@ -41,12 +41,16 @@ concurrency:
 
 env:
   IMAGE_REPO: pmo360
+  # Run JS-based actions on Node 24 — clears the Node 20 deprecation warning
+  # (GitHub sunsets Node 20 on the runners in 2026). Belt-and-suspenders with
+  # the @v5 action bumps below.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
