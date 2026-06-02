@@ -149,8 +149,12 @@ ACTION ITEMS section — and return a JSON object matching the provided schema. 
 Be faithful to the source: do NOT invent anything that isn't present.
 
 Section scoping (important):
-- Extract `attendees` and `discussion_points` ONLY from the MEETING MINUTES \
-  section.
+- Do NOT extract attendees. Attendees are managed manually by the user — \
+  always return an empty list for the `attendees` field. People named in \
+  the minutes are usually SUBJECTS of discussion (e.g. "Ryan's change \
+  order") or project names, NOT meeting participants, so inferring \
+  attendance is unreliable and unwanted.
+- Extract `discussion_points` ONLY from the MEETING MINUTES section.
 - Extract `agenda_items` from the AGENDA section when it has content. If the \
   AGENDA section is empty (or has fewer than 2 distinct lines), ALSO scan \
   the MEETING MINUTES section for agenda-style topic headers — short phrases \
@@ -185,12 +189,9 @@ ATTENDEE ROSTER MAPPING (important when an ATTENDEES list is provided below):
 - When discussion-point text mentions a person by first name, partial name, \
   or initials, normalize references in your output to use the full_name + \
   initials from the roster.
-- For the `attendees` output field: emit ONLY people who are mentioned in \
-  the MEETING MINUTES text but who are NOT already on the roster (matched \
-  by initials, exact full name, first name, OR last name). Do NOT re-list \
-  people who are already on the roster — the application already has them. \
-  If everyone mentioned is already on the roster, return an empty list for \
-  `attendees`.
+- The `attendees` output field MUST be an empty list — see section scoping \
+  above. Use the roster only for the name normalization + owner mapping \
+  described here, never to populate `attendees`.
 - For `action_items[*].owner`, ALWAYS emit FULL NAMES from the roster (not \
   initials). Multiple people on the roster can share initials, so initials \
   are ambiguous. Example outputs: "Roashaael Mary John", "Andrew Proctor", \

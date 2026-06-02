@@ -39,6 +39,16 @@ def parse_notes(payload: ParseRequest, db: Session = Depends(get_db)):
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
+    # Attendees are managed MANUALLY by the PM via the roster checkboxes on
+    # the Capture page — never auto-extracted from the notes. The LLM can't
+    # reliably tell "was in the room" from "was mentioned in discussion"
+    # (e.g. "Ryan's change order", project names like "Harper"), so letting
+    # it populate attendees pollutes the meeting + the saved portfolio
+    # roster. We hard-clear here so the contract holds regardless of what
+    # the model returns. The roster is still passed INTO the prompt for
+    # action-item owner normalization — we just don't take attendees OUT.
+    parsed.attendees = []
+
     return ParsedMeetingOut.model_validate(parsed.model_dump())
 
 

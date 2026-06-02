@@ -510,23 +510,14 @@ export default function Capture() {
         actions_text: actions,
         attendees_roster: selectedAttendees,
       });
-      // Drop parsed attendees that already match someone on the selected
-      // roster — matches the original Streamlit behavior.
-      const selectedKeys = new Set(
-        selectedAttendees.map(
-          (s) => `${s.full_name.toLowerCase()}|${s.initials.toLowerCase()}`
-        )
-      );
-      parsed.attendees = parsed.attendees.filter((a) => {
-        const key = `${a.full_name.toLowerCase()}|${a.initials.toLowerCase()}`;
-        if (selectedKeys.has(key)) return false;
-        // also check first/last name match
-        return !selectedAttendees.some((s) => {
-          const sLower = s.full_name.toLowerCase();
-          const aLower = a.full_name.toLowerCase();
-          return sLower === aLower || sLower.split(" ").some((p) => p === aLower);
-        });
-      });
+      // Attendees come ONLY from the roster checkboxes the PM ticked above —
+      // never from AI text extraction. People named in the minutes are
+      // usually subjects of discussion or project names, not participants,
+      // so auto-adding them pollutes both the meeting and the saved
+      // portfolio roster. The backend already hard-clears parsed.attendees;
+      // we belt-and-suspenders it here so the merge in Review only sees the
+      // manual selection.
+      parsed.attendees = [];
       // Default missing due dates to meeting_date + N days, where N comes
       // from the user's saved preferences (falls back to 7 if no prefs).
       const baseDate = new Date(meetingDate);
