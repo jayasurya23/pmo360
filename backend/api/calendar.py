@@ -53,12 +53,22 @@ router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 class CalendarEventIn(BaseModel):
     """One Outlook event as the frontend pulled it from Graph.
 
-    ``key`` is whatever stable identifier the frontend uses to map our
-    response back to its event list — typically the Graph event id, which
-    is also what the link endpoints expect."""
+    ``key`` is the occurrence's own Graph event id — echoed back so the
+    frontend can map our response onto the right row.
+
+    ``series_key`` is what a manual portfolio LINK is keyed on: the
+    recurring series' master id for occurrences of a recurring meeting, or
+    the event's own id for one-offs. Linking one occurrence of a weekly
+    meeting therefore matches every occurrence (they all share the master
+    id). Falls back to ``key`` when omitted (older clients)."""
     key: str
+    series_key: Optional[str] = None
     subject: str = ""
     attendee_emails: list[str] = Field(default_factory=list)
+
+    @property
+    def link_key(self) -> str:
+        return self.series_key or self.key
 
 
 class CalendarMatchRequest(BaseModel):
@@ -204,13 +214,15 @@ def match_calendar_events(
     name_index = _name_substring_list(db, allowed_ids)
     project_map = _project_lookup(db, allowed_ids)
 
-    # Bulk-load all manual links for the event ids in this request.
-    event_ids = [ev.key for ev in payload.events if ev.key]
+    # Bulk-load all manual links for the LINK keys in this request. A link
+    # key is the recurring series master id (so one link covers every
+    # occurrence) or the event id for one-offs.
+    link_keys = [ev.link_key for ev in payload.events if ev.link_key]
     link_map: dict[str, int] = {}
-    if event_ids:
+    if link_keys:
         for link in (
             db.query(CalendarEventLink)
-            .filter(CalendarEventLink.graph_event_id.in_(event_ids))
+            .filter(CalendarEventLink.graph_event_id.in_(link_keys))
             .all()
         ):
             # Only honour links that point at portfolios the user can see.
@@ -223,9 +235,10 @@ def match_calendar_events(
         reason: Optional[str] = None
         is_manual = False
 
-        # Priority 0: persistent manual link
-        if ev.key in link_map:
-            matched_id = link_map[ev.key]
+        # Priority 0: persistent manual link (keyed on the series/link key,
+        # so every occurrence of a linked recurring meeting matches).
+        if ev.link_key in link_map:
+            matched_id = link_map[ev.link_key]
             reason = "manual"
             is_manual = True
 

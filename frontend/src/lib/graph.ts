@@ -283,6 +283,20 @@ export interface CalendarEvent {
    *  events are usually OOO blocks, not meetings — we de-emphasise them
    *  visually but still surface them. */
   isAllDay: boolean;
+  /** Graph `type`: "singleInstance" | "occurrence" | "exception" |
+   *  "seriesMaster". calendarview expands recurring meetings into
+   *  "occurrence" rows, each with its own `id` but a shared
+   *  `seriesMasterId`. */
+  type: string;
+  /** The recurring series' master event id when this is an occurrence of a
+   *  recurring meeting; null for one-off events. */
+  seriesMasterId: string | null;
+  /** True when the event is part of a recurring series. */
+  isRecurring: boolean;
+  /** The key a portfolio LINK is stored against: the series master id for
+   *  recurring meetings (so one link covers every occurrence — past,
+   *  present, future) or the event's own id for one-offs. */
+  linkKey: string;
 }
 
 /**
@@ -322,7 +336,8 @@ export async function listUpcomingEvents(
   const startParam = encodeURIComponent(now.toISOString());
   const endParam = encodeURIComponent(end.toISOString());
   const select =
-    "id,subject,start,end,isAllDay,organizer,attendees,onlineMeetingProvider";
+    "id,subject,start,end,isAllDay,organizer,attendees,onlineMeetingProvider," +
+    "type,seriesMasterId";
   const orderby = encodeURIComponent("start/dateTime");
   const path =
     `/me/calendarview?startDateTime=${startParam}&endDateTime=${endParam}` +
@@ -363,8 +378,13 @@ export async function listUpcomingEvents(
         ? ev.onlineMeetingProvider
         : null;
 
+    const id = ev.id as string;
+    const seriesMasterId: string | null = ev.seriesMasterId || null;
+    const evType: string = ev.type || "singleInstance";
+    const isRecurring = evType !== "singleInstance" && !!seriesMasterId;
+
     out.push({
-      id: ev.id as string,
+      id,
       subject: (ev.subject || "") as string,
       // Graph's `dateTime` is naive ("2026-05-27T14:00:00.0000000"); we
       // tag it with Z since we forced UTC normalisation above.
@@ -375,6 +395,13 @@ export async function listUpcomingEvents(
       organizerEmail: orgAddr,
       onlineProvider: provider,
       isAllDay: !!ev.isAllDay,
+      type: evType,
+      seriesMasterId,
+      isRecurring,
+      // Recurring → link the whole series via the master id; one-off → its
+      // own id. Every occurrence of a series resolves to the same linkKey,
+      // so one stored link covers them all.
+      linkKey: seriesMasterId || id,
     });
   }
   return out;

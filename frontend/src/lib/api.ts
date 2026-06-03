@@ -535,7 +535,13 @@ export const removeProjectMember = (memberId: number) =>
  *  the Graph event id so the frontend can splice the project match back
  *  onto the original event row). */
 export interface CalendarMatchEventIn {
+  /** The occurrence's own Graph event id — echoed back so the frontend can
+   *  splice the match onto the right row. */
   key: string;
+  /** The link key — series master id for recurring meetings, else the event
+   *  id. Manual links are stored + looked up against this, so linking one
+   *  occurrence of a weekly meeting matches every occurrence. */
+  series_key?: string;
   subject?: string;
   attendee_emails?: string[];
 }

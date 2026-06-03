@@ -130,6 +130,7 @@ export default function CalendarCard() {
         const matches = await matchCalendarEvents(
           events.map((ev) => ({
             key: ev.id,
+            series_key: ev.linkKey, // series master id for recurring meetings
             subject: ev.subject,
             attendee_emails: ev.attendeeEmails,
           })),
@@ -185,19 +186,23 @@ export default function CalendarCard() {
     return ps;
   }, [portfolios]);
 
-  // Handlers for the per-row manual override flow
+  // Handlers for the per-row manual override flow. We operate on the
+  // event's LINK KEY (series master id for recurring meetings, else the
+  // event id) so linking one occurrence of a weekly meeting links the whole
+  // series — and we update every visible occurrence at once.
   const onPickPortfolio = useCallback(
-    async (graphEventId: string, projectId: number) => {
+    async (linkKey: string, projectId: number) => {
       try {
-        const link = await linkCalendarEvent(graphEventId, projectId);
-        // Splice the new match back onto the row in place — no full reload.
+        const link = await linkCalendarEvent(linkKey, projectId);
+        // Splice the new match onto EVERY row that shares this link key
+        // (all occurrences of the series), no full reload.
         setRows((rs) =>
           rs.map((r) =>
-            r.event.id === graphEventId
+            r.event.linkKey === linkKey
               ? {
                   ...r,
                   match: {
-                    key: graphEventId,
+                    key: r.event.id,
                     project_id: link.project_id,
                     project_name: link.project_name,
                     client_name: link.client_name,
@@ -221,13 +226,12 @@ export default function CalendarCard() {
     [],
   );
 
-  const onUnlink = useCallback(async (graphEventId: string) => {
+  const onUnlink = useCallback(async (linkKey: string) => {
     try {
-      await unlinkCalendarEvent(graphEventId);
-      // After unlink we don't know what the heuristic match would be
-      // without a fresh /match call; refresh just this row's row by
-      // re-running the whole load. Cheap enough since 14 days × ~50
-      // events stays small.
+      await unlinkCalendarEvent(linkKey);
+      // Unlinking clears the whole series. We don't know what the heuristic
+      // match would be for each occurrence without a fresh /match call, so
+      // re-run the whole load (cheap — 14 days × ~50 events).
       void load();
     } catch (err: any) {
       // eslint-disable-next-line no-alert
@@ -306,9 +310,9 @@ export default function CalendarCard() {
                       }}
                       portfolios={portfolios || []}
                       onPickPortfolio={(pid) =>
-                        onPickPortfolio(event.id, pid)
+                        onPickPortfolio(event.linkKey, pid)
                       }
-                      onUnlink={() => onUnlink(event.id)}
+                      onUnlink={() => onUnlink(event.linkKey)}
                       onBuildAgenda={() =>
                         nav(buildAgendaHref(event, match, clients))
                       }
@@ -470,6 +474,14 @@ function EventRowItem({
                 Online
               </span>
             )}
+            {event.isRecurring && (
+              <span
+                className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600"
+                title="Recurring meeting — linking/unlinking applies to the whole series"
+              >
+                🔁 Recurring
+              </span>
+            )}
           </div>
           <div className="text-xs text-brand-gray mt-0.5 truncate">
             {timeText}
@@ -494,9 +506,13 @@ function EventRowItem({
                     type="button"
                     onClick={onUnlink}
                     className="text-[11px] underline text-brand-gray hover:text-brand-black"
-                    title="Remove the manual link — falls back to auto-match"
+                    title={
+                      event.isRecurring
+                        ? "Remove the link from the whole recurring series — falls back to auto-match"
+                        : "Remove the manual link — falls back to auto-match"
+                    }
                   >
-                    Remove link
+                    {event.isRecurring ? "Remove series link" : "Remove link"}
                   </button>
                 )}
               </>
@@ -553,10 +569,18 @@ function EventRowItem({
       </div>
 
       {pickerOpen && (
-        <ManualPortfolioPicker
-          portfolios={portfolios}
-          onPick={onPickPortfolio}
-        />
+        <>
+          {event.isRecurring && (
+            <div className="mt-2 text-[11px] text-[#185fa5] bg-sky-50 border border-sky-200 rounded px-2 py-1">
+              🔁 This is a recurring meeting — your choice links{" "}
+              <strong>every occurrence</strong> in the series (and future ones).
+            </div>
+          )}
+          <ManualPortfolioPicker
+            portfolios={portfolios}
+            onPick={onPickPortfolio}
+          />
+        </>
       )}
     </div>
   );
