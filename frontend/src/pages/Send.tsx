@@ -4,7 +4,6 @@ import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import {
   finalizeMeeting,
-  finalizedFileUrl,
   meetingDocUrl,
   getMeeting,
   fetchMyPreferences,
@@ -121,7 +120,7 @@ export default function Send() {
                 </div>
                 <a
                   className="btn-ghost"
-                  href={finalizedFileUrl(p)}
+                  href={meetingDocUrl(draftMeetingId!, kind as "pdf" | "docx" | "xlsx")}
                   target="_blank"
                   rel="noreferrer"
                 >
@@ -337,11 +336,9 @@ function ComposeEmailSection({
     // the doc endpoint in a new tab — the browser will trigger the
     // Content-Disposition download. Then in the SAME click handler we
     // open the mailto: URL so the user's default mail client launches.
-    if (pdfPath) {
-      // finalized — use the saved file URL
-      window.open(finalizedFileUrl(pdfPath), "_blank");
-    } else if (meetingId) {
-      // not finalized yet — pull a fresh in-memory copy
+    // Always pull from the same-origin regenerate endpoint — the stored
+    // SharePoint webUrl isn't browser-fetchable in production.
+    if (meetingId) {
       window.open(meetingDocUrl(meetingId, "pdf"), "_blank");
     }
     // Slight delay so the download tab opens before the mail client steals
@@ -371,8 +368,13 @@ function ComposeEmailSection({
     }
     setSending(true);
     try {
-      // 1. Pull the PDF bytes.
-      const pdfUrl = pdfPath ? finalizedFileUrl(pdfPath) : meetingDocUrl(meetingId, "pdf");
+      // 1. Pull the PDF bytes. Always regenerate via the same-origin backend
+      //    endpoint rather than the stored file URL: in production the stored
+      //    "path" is a SharePoint webUrl, which the browser can't fetch
+      //    (cross-origin, not a direct download) — finalizedFileUrl would 404.
+      //    The regenerate endpoint streams identical bytes and works in every
+      //    storage mode.
+      const pdfUrl = meetingDocUrl(meetingId, "pdf");
       const pdfResp = await fetch(pdfUrl);
       if (!pdfResp.ok) throw new Error(`Couldn't fetch PDF: ${pdfResp.status}`);
       const pdfBlob = await pdfResp.blob();
