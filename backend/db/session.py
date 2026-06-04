@@ -37,14 +37,16 @@ def get_session_factory():
 
 
 # Castillo Engineering team — auto-seeded into the global roster on first run.
+# Emails are the real castillope.com mailboxes (pulled from the M365 directory)
+# so finalized minutes can be sent to them without hand-editing each address.
 CASTILLO_TEAM = [
-    ("Roashaael Mary John",   "RM", "Castillo Engineering"),
-    ("Rick Castillo",         "RC", "Castillo Engineering"),
-    ("Christopher Castillo",  "CC", "Castillo Engineering"),
-    ("Gary Joseph",           "GJ", "Castillo Engineering"),
-    ("Arun Ramadass",         "AR", "Castillo Engineering"),
-    ("Manjil Puri",           "MP", "Castillo Engineering"),
-    ("Brett Beattie",         "BB", "Castillo Engineering"),
+    ("Roashaael Mary John",   "RM", "Castillo Engineering", "rmaryjohn@castillope.com"),
+    ("Rick Castillo",         "RC", "Castillo Engineering", "rcastillo@castillope.com"),
+    ("Christopher Castillo",  "CC", "Castillo Engineering", "ccastillo@castillope.com"),
+    ("Gary Joseph",           "GJ", "Castillo Engineering", "gjoseph@castillope.com"),
+    ("Arun Ramadass",         "AR", "Castillo Engineering", "aramadass@castillope.com"),
+    ("Manjil Puri",           "MP", "Castillo Engineering", "mpuri@castillope.com"),
+    ("Brett Beattie",         "BB", "Castillo Engineering", "bbeattie@castillope.com"),
 ]
 
 
@@ -85,19 +87,26 @@ def _run_alembic_upgrade():
 
 def _seed_global_roster():
     """Ensure each member of CASTILLO_TEAM exists in `global_attendees`.
-    Skips members that are already present (matched on full_name)."""
+
+    Inserts members that aren't present yet (matched on full_name) and
+    backfills the email on any pre-existing row that's missing one — so an
+    older DB that was seeded before emails were added gets them on the next
+    boot, without clobbering an email a PM may have edited."""
     from db.models import GlobalAttendee
     SessionLocal = get_session_factory()
     with SessionLocal() as s:
-        existing_names = {r[0] for r in s.query(GlobalAttendee.full_name).all()}
-        for full_name, initials, org in CASTILLO_TEAM:
-            if full_name in existing_names:
-                continue
-            s.add(GlobalAttendee(
-                full_name=full_name,
-                initials=initials,
-                organization=org,
-            ))
+        existing = {r.full_name: r for r in s.query(GlobalAttendee).all()}
+        for full_name, initials, org, email in CASTILLO_TEAM:
+            row = existing.get(full_name)
+            if row is None:
+                s.add(GlobalAttendee(
+                    full_name=full_name,
+                    initials=initials,
+                    organization=org,
+                    email=email,
+                ))
+            elif not row.email and email:
+                row.email = email
         s.commit()
 
 
