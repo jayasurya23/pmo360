@@ -162,7 +162,6 @@ export default function Timeline() {
   // drag
   const dragRef = useRef<DragRef>(null);
   const [drag, setDrag] = useState<DragVis | null>(null);
-  const dragVisRef = useRef<DragVis | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -233,22 +232,26 @@ export default function Timeline() {
         setDrag({ row: true, dx: 0, hoverRes: hover });
       }
     }
-    async function up() {
+    async function up(e: PointerEvent) {
       const d = dragRef.current;
       dragRef.current = null;
-      const vis = dragVisRef.current;
       setDrag(null);
-      if (!d || !vis) return;
+      if (!d) return;
+      // Compute the delta + hovered row DIRECTLY from the pointer-up event so
+      // this works even when a (synthetic/fast) drag fires down→up before
+      // React commits the live-preview state.
+      const hover = d.rects.find((r) => e.clientY >= r.top && e.clientY <= r.bottom)?.id ?? null;
       try {
         if (d.kind === "bar") {
           const a = d.a;
+          const dx = Math.round((e.clientX - d.startX) / weekW);
           if (d.mode === "move") {
-            const shift = vis.dx * 7;
+            const shift = dx * 7;
             const newResource =
-              view === "engineer" && vis.hoverRes != null
-                ? vis.hoverRes === 0
+              view === "engineer" && hover != null
+                ? hover === 0
                   ? null
-                  : vis.hoverRes
+                  : hover
                 : a.resource_id ?? null;
             if (shift === 0 && newResource === (a.resource_id ?? null)) return;
             const patch = {
@@ -259,13 +262,13 @@ export default function Timeline() {
             patchLocal(a.id, patch);
             await patchTimelineAssignment(a.id, patch);
           } else if (d.mode === "l") {
-            let ns = shiftISO(a.start_date, vis.dx * 7);
+            let ns = shiftISO(a.start_date, dx * 7);
             if (parseISO(ns) > parseISO(a.end_date)) ns = a.end_date;
             if (ns === a.start_date) return;
             patchLocal(a.id, { start_date: ns });
             await patchTimelineAssignment(a.id, { start_date: ns });
           } else {
-            let ne = shiftISO(a.end_date, vis.dx * 7);
+            let ne = shiftISO(a.end_date, dx * 7);
             if (parseISO(ne) < parseISO(a.start_date)) ne = a.start_date;
             if (ne === a.end_date) return;
             patchLocal(a.id, { end_date: ne });
@@ -273,7 +276,7 @@ export default function Timeline() {
           }
         } else {
           // row reorder within the same discipline
-          const target = vis.hoverRes;
+          const target = hover;
           if (target == null || target === d.resource.id || !board) return;
           const group = board.resources
             .filter((r) => r.discipline === d.resource.discipline)
@@ -303,9 +306,6 @@ export default function Timeline() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weekW, view, board]);
-
-  // keep latest vis for the up handler (avoids stale closure)
-  dragVisRef.current = drag;
 
   function jumpToToday() {
     if (scrollRef.current && todayCol >= 0)
