@@ -33,6 +33,7 @@ import clsx from "clsx";
 // ---------------- constants ----------------
 const LABEL_W = 230;
 const ROW_H = 30;
+const LANE_H = 26; // height of one stacked bar lane inside an engineer row
 const ZOOMS: Record<string, number> = { Compact: 60, Comfortable: 88, Wide: 124 };
 
 const STATUSES = [
@@ -98,6 +99,26 @@ function computeLoad(assignments: TimelineAssignment[], weeks: string[]): Record
     });
   }
   return load;
+}
+/** Greedy interval-packing: lay an engineer's bars on as few stacked lanes as
+ *  possible — non-overlapping bars share one lane, so a normal sequential
+ *  schedule collapses to a single row. */
+function packLanes(items: TimelineAssignment[], weeks: string[]) {
+  const sorted = [...items].sort(
+    (a, b) => colOf(a.start_date, weeks) - colOf(b.start_date, weeks),
+  );
+  const laneEnd: number[] = [];
+  const placed = sorted.map((a) => {
+    const s = Math.max(0, colOf(a.start_date, weeks));
+    const e = Math.min(weeks.length - 1, colOf(a.end_date, weeks));
+    let lane = laneEnd.findIndex((end) => end < s);
+    if (lane === -1) {
+      lane = laneEnd.length;
+      laneEnd.push(e);
+    } else laneEnd[lane] = e;
+    return { a, lane };
+  });
+  return { placed, lanes: Math.max(1, laneEnd.length) };
 }
 
 // ---------------- types ----------------
@@ -575,7 +596,7 @@ function FilterMenu({ label, options, labels, selected, onChange }: { label: str
 }
 
 // ---------------- bar ----------------
-function Bar({ a, ctx }: { a: TimelineAssignment; ctx: Ctx }) {
+function Bar({ a, ctx, top = 4, height = ROW_H - 8 }: { a: TimelineAssignment; ctx: Ctx; top?: number; height?: number }) {
   const { weeks, weekW, drag } = ctx;
   let start = Math.max(0, colOf(a.start_date, weeks));
   let end = Math.min(weeks.length - 1, colOf(a.end_date, weeks));
@@ -604,7 +625,7 @@ function Bar({ a, ctx }: { a: TimelineAssignment; ctx: Ctx }) {
         "absolute rounded text-[11px] font-medium truncate px-1.5 cursor-grab active:cursor-grabbing group",
         active && "ring-2 ring-black/30 z-10 shadow",
       )}
-      style={{ left, width, top: 4, height: ROW_H - 8, background: st.bg, color: st.fg, lineHeight: `${ROW_H - 8}px` }}
+      style={{ left, width, top, height, background: st.bg, color: st.fg, lineHeight: `${height}px` }}
     >
       {/* resize handles */}
       <span
@@ -633,14 +654,14 @@ function Track({ ctx, children }: { ctx: Ctx; children?: ReactNode }) {
     </div>
   );
 }
-function LabelCell({ children, indent, highlight }: { children: ReactNode; indent?: number; highlight?: boolean }) {
+function LabelCell({ children, indent, highlight, height = ROW_H }: { children: ReactNode; indent?: number; highlight?: boolean; height?: number }) {
   return (
     <div
       className={clsx(
         "shrink-0 px-3 sticky left-0 z-[1] border-r border-brand-lightgray/60 flex items-center text-sm",
         highlight ? "bg-rose-50" : "bg-white",
       )}
-      style={{ width: LABEL_W, height: ROW_H, paddingLeft: 12 + (indent || 0) * 14 }}
+      style={{ width: LABEL_W, height, paddingLeft: 12 + (indent || 0) * 14 }}
     >
       <span className="truncate w-full">{children}</span>
     </div>
@@ -709,83 +730,84 @@ function EngineerView({
               const rowAssignments = byResource.get(r.id) || [];
               const cells = load[String(r.id)] || [];
               const isHover = hoverRes === r.id && drag != null;
+              const { placed, lanes } = packLanes(rowAssignments, weeks);
+              const rowH = lanes * LANE_H;
               return (
-                <div key={r.id} data-res-row={r.id} className={clsx("border-b border-brand-lightgray/40", isHover && "bg-rose-50/40")}>
-                  {/* resource header + utilization strip */}
-                  <div className="flex items-stretch">
-                    <LabelCell highlight={isHover}>
-                      <span
-                        className="cursor-grab active:cursor-grabbing text-brand-gray mr-1"
-                        title="Drag to reorder"
-                        onPointerDown={(e) => onRowDown(e, r)}
-                      >
-                        ⠿
-                      </span>
-                      <span className="font-medium">{r.name}</span>
-                      {r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
-                    </LabelCell>
-                    <div className="relative shrink-0 flex" style={{ width: weeks.length * weekW, height: ROW_H }}>
-                      {weeks.map((w, i) => {
-                        const v = cells[i] || 0;
-                        const over = v > 1.0001;
-                        return (
-                          <div
-                            key={w}
-                            className="border-r border-brand-lightgray/30 flex items-center justify-center text-[10px]"
-                            style={{
-                              width: weekW,
-                              background: over ? "#fce8ea" : v > 0 ? "#eaf6ee" : "transparent",
-                              color: over ? "#a31420" : "#4d4d4f",
-                              fontWeight: over ? 700 : 400,
-                            }}
-                            title={`${Math.round(v * 100)}% utilized`}
-                          >
-                            {v > 0 ? `${Math.round(v * 100)}%` : ""}
-                          </div>
-                        );
-                      })}
-                    </div>
+                <div
+                  key={r.id}
+                  data-res-row={r.id}
+                  className={clsx(
+                    "flex items-stretch border-b border-brand-lightgray/40",
+                    isHover && "bg-rose-50/40",
+                  )}
+                >
+                  <LabelCell highlight={isHover} height={rowH}>
+                    <span
+                      className="cursor-grab active:cursor-grabbing text-brand-gray mr-1"
+                      title="Drag to reorder"
+                      onPointerDown={(e) => onRowDown(e, r)}
+                    >
+                      ⠿
+                    </span>
+                    <span className="font-medium">{r.name}</span>
+                    {r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
+                  </LabelCell>
+                  <div className="relative shrink-0" style={{ width: weeks.length * weekW, height: rowH }}>
+                    {/* utilization heat behind the bars (hover a cell for the %) */}
+                    {weeks.map((w, i) => {
+                      const v = cells[i] || 0;
+                      const over = v > 1.0001;
+                      return (
+                        <div
+                          key={w}
+                          className="absolute top-0 border-r border-brand-lightgray/30"
+                          style={{
+                            left: i * weekW,
+                            width: weekW,
+                            height: rowH,
+                            background: over ? "#fce8ea" : v > 0 ? "#eaf6ee" : "transparent",
+                          }}
+                          title={v > 0 ? `${Math.round(v * 100)}% utilized` : ""}
+                        />
+                      );
+                    })}
+                    {placed.map(({ a, lane }) => (
+                      <Bar key={a.id} a={a} ctx={ctx} top={lane * LANE_H + 2} height={LANE_H - 4} />
+                    ))}
                   </div>
-                  {/* one row per assignment */}
-                  {rowAssignments.map((a) => (
-                    <div key={a.id} className="flex items-stretch">
-                      <LabelCell indent={1}>
-                        <span className="text-xs text-brand-gray">
-                          <DiscTag d={a.discipline} /> {a.project_name}
-                        </span>
-                      </LabelCell>
-                      <Track ctx={ctx}>
-                        <Bar a={a} ctx={ctx} />
-                      </Track>
-                    </div>
-                  ))}
                 </div>
               );
             })}
         </div>
       ))}
 
-      {unassigned.length > 0 && (
-        <div data-res-row="0" className={clsx(hoverRes === 0 && "bg-rose-50/40")}>
-          <div className="flex bg-slate-50/80 border-b border-brand-lightgray/60">
-            <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-gray" style={{ width: LABEL_W }}>
-              Unassigned
+      {unassigned.length > 0 &&
+        (() => {
+          const { placed, lanes } = packLanes(unassigned, weeks);
+          const rowH = lanes * LANE_H;
+          return (
+            <div data-res-row="0" className={clsx(hoverRes === 0 && "bg-rose-50/40")}>
+              <div className="flex bg-slate-50/80 border-b border-brand-lightgray/60">
+                <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-gray" style={{ width: LABEL_W }}>
+                  Unassigned
+                </div>
+              </div>
+              <div className="flex items-stretch border-b border-brand-lightgray/40">
+                <LabelCell height={rowH}>
+                  <span className="text-xs text-brand-gray">Drag a bar onto an engineer →</span>
+                </LabelCell>
+                <div className="relative shrink-0" style={{ width: weeks.length * weekW, height: rowH }}>
+                  {weeks.map((w, i) => (
+                    <div key={w} className="absolute top-0 border-r border-brand-lightgray/30" style={{ left: i * weekW, width: weekW, height: rowH }} />
+                  ))}
+                  {placed.map(({ a, lane }) => (
+                    <Bar key={a.id} a={a} ctx={ctx} top={lane * LANE_H + 2} height={LANE_H - 4} />
+                  ))}
+                </div>
+              </div>
             </div>
-          </div>
-          {unassigned.map((a) => (
-            <div key={a.id} className="flex items-stretch border-b border-brand-lightgray/40">
-              <LabelCell indent={1}>
-                <span className="text-xs text-brand-gray">
-                  <DiscTag d={a.discipline} /> {a.project_name}
-                </span>
-              </LabelCell>
-              <Track ctx={ctx}>
-                <Bar a={a} ctx={ctx} />
-              </Track>
-            </div>
-          ))}
-        </div>
-      )}
+          );
+        })()}
     </div>
   );
 }
