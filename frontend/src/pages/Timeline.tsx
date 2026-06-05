@@ -397,13 +397,27 @@ export default function Timeline() {
           </button>
         )}
         <div className="flex-1" />
-        <div className="flex flex-wrap items-center gap-2 text-[11px]">
-          {STATUSES.map((s) => (
-            <span key={s.value} className="inline-flex items-center gap-1">
-              <span className="inline-block h-3 w-3 rounded" style={{ background: s.bg }} />
-              {s.label}
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+          <span className="inline-flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-brand-gray">Status</span>
+            {STATUSES.map((s) => (
+              <span key={s.value} className="inline-flex items-center gap-1">
+                <span className="inline-block h-3 w-3 rounded" style={{ background: s.bg }} />
+                {s.label}
+              </span>
+            ))}
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-brand-gray">Utilization</span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-3 w-3 rounded border border-brand-lightgray" style={{ background: "#eaf6ee" }} />
+              ≤ 100%
             </span>
-          ))}
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-3 w-3 rounded border border-brand-lightgray" style={{ background: "#fce8ea" }} />
+              &gt; 100% over-allocated
+            </span>
+          </span>
         </div>
       </div>
 
