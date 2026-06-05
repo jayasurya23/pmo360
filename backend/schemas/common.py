@@ -504,11 +504,51 @@ class ParsedScheduleOut(BaseModel):
     total_duration_days: Optional[int] = None
     total_price: Optional[int] = None
     items: list[ParsedScheduleItemOut] = Field(default_factory=list)
+    parse_engine: str = "regex"             # "regex" (fast) | "llm" (AI)
 
 
 class ScheduleSaveRequest(BaseModel):
     project_id: int
     parsed: ParsedScheduleOut
+
+
+# ---------- Lead / admin cross-portfolio overview ----------
+class LeadTotals(BaseModel):
+    portfolios: int
+    clients: int
+    pms: int
+    open_actions: int
+    overdue_actions: int
+    open_risks: int
+    unassigned_open_actions: int
+
+
+class LeadPortfolioRow(BaseModel):
+    project_id: int
+    name: str
+    client_name: Optional[str] = None
+    schedule_version: Optional[str] = None
+    member_count: int = 0
+    open_actions: int = 0
+    overdue_actions: int = 0
+    open_risks: int = 0
+    last_meeting_date: Optional[date] = None
+
+
+class LeadPmRow(BaseModel):
+    user_id: int
+    name: str
+    email: str
+    is_admin: bool = False
+    portfolios: int = 0
+    open_actions: int = 0
+    overdue_actions: int = 0
+
+
+class LeadOverviewResponse(BaseModel):
+    totals: LeadTotals
+    portfolios: list[LeadPortfolioRow] = Field(default_factory=list)
+    pms: list[LeadPmRow] = Field(default_factory=list)
 
 
 # ---------- Dashboard ----------

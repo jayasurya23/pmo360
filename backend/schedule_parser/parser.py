@@ -68,21 +68,52 @@ class ParsedSchedule(BaseModel):
     total_duration_days: Optional[int] = None
     total_price: Optional[int] = None
     items: list[ParsedScheduleItem]
+    parse_engine: str = "regex"             # "regex" (deterministic) | "llm"
 
 
 # ============================================================
 # Public entry point
 # ============================================================
-def parse_schedule_file(filename: str, content: bytes) -> ParsedSchedule:
-    """Route to the appropriate parser based on filename extension."""
+def parse_schedule_file(
+    filename: str, content: bytes, engine: str = "auto",
+) -> ParsedSchedule:
+    """Route to the appropriate parser based on filename extension.
+
+    ``engine`` controls the PDF strategy:
+      - ``"auto"`` (default): run the fast deterministic regex parser first;
+        if its result looks weak AND an OpenAI key is configured, fall back to
+        LLM extraction and keep whichever recovered more rows.
+      - ``"regex"``: deterministic regex parser only.
+      - ``"llm"``: force LLM extraction (regex result ignored).
+    Excel workbooks are always parsed structurally (``engine`` is ignored).
+    """
     name = (filename or "").lower()
     if name.endswith(".xlsx") or name.endswith(".xlsm"):
         return parse_excel_schedule(content, filename=filename)
-    if name.endswith(".pdf"):
-        return parse_pdf_schedule(content, filename=filename)
-    raise ValueError(
-        f"Unsupported schedule format: {filename!r}. Use .xlsx or .pdf."
-    )
+    if not name.endswith(".pdf"):
+        raise ValueError(
+            f"Unsupported schedule format: {filename!r}. Use .xlsx or .pdf."
+        )
+
+    if engine == "llm":
+        return parse_pdf_schedule_llm(content, filename=filename)
+
+    regex_result = parse_pdf_schedule(content, filename=filename)
+    if engine == "regex":
+        return regex_result
+
+    # auto: keep the fast result unless it looks weak and the LLM is available.
+    if not _looks_weak(regex_result) or not _openai_available():
+        return regex_result
+    try:
+        llm_result = parse_pdf_schedule_llm(content, filename=filename)
+    except Exception as exc:  # noqa: BLE001 — never let an LLM hiccup break upload
+        import logging
+        logging.getLogger(__name__).warning(
+            "LLM schedule fallback failed (%s); using regex result.", exc
+        )
+        return regex_result
+    return llm_result if len(llm_result.items) > len(regex_result.items) else regex_result
 
 
 # ============================================================
@@ -359,6 +390,91 @@ def parse_pdf_schedule(content: bytes, filename: str = "") -> ParsedSchedule:
         total_duration_days=total_duration,
         total_price=total_price,
         items=items,
+    )
+
+
+# ============================================================
+# LLM fallback parser
+# ============================================================
+def _openai_available() -> bool:
+    import os
+    return bool(os.getenv("OPENAI_API_KEY"))
+
+
+def _looks_weak(parsed: ParsedSchedule) -> bool:
+    """Heuristic: did the regex parser likely miss most of the table?
+
+    Weak when there are very few rows, OR no discipline header was found, OR
+    no leaf/phase row carries a duration (i.e. the strict row pattern never
+    matched). Any of these means the LLM fallback is worth a shot.
+    """
+    items = parsed.items
+    if len(items) < 5:
+        return True
+    has_discipline = any(i.indent_level == 0 for i in items)
+    has_dated_row = any(i.duration_days for i in items if i.indent_level >= 1)
+    return not (has_discipline and has_dated_row)
+
+
+def _extract_pdf_text(content: bytes) -> str:
+    parts: list[str] = []
+    with pdfplumber.open(io.BytesIO(content)) as pdf:
+        for page in pdf.pages:
+            parts.append(page.extract_text() or "")
+    return "\n".join(parts)
+
+
+def parse_pdf_schedule_llm(content: bytes, filename: str = "") -> ParsedSchedule:
+    """Extract the schedule via the LLM provider, then map + coerce its dict
+    into a ParsedSchedule. Robust to layout variation the regex parser can't
+    handle (different discipline names, multi-line tasks, reflowed tables)."""
+    # Lazy import so the parser module doesn't pull in the OpenAI SDK unless
+    # the LLM path is actually exercised.
+    from llm.providers import get_provider
+
+    raw = _extract_pdf_text(content)
+    data = get_provider().parse_project_schedule(raw)
+    return _schedule_from_llm_dict(data, filename)
+
+
+def _schedule_from_llm_dict(data: dict, filename: str) -> ParsedSchedule:
+    raw_items = data.get("items") or []
+    items: list[ParsedScheduleItem] = []
+    price_accum = 0
+    for idx, it in enumerate(raw_items):
+        task = str(it.get("task") or "").strip()
+        if not task:
+            continue
+        try:
+            indent = int(it.get("indent_level", 2) or 0)
+        except (TypeError, ValueError):
+            indent = 2
+        indent = max(0, min(indent, 2))
+        price = _coerce_int(it.get("price"))
+        if price:
+            price_accum += price
+        items.append(ParsedScheduleItem(
+            order_index=idx,
+            indent_level=indent,
+            discipline=str(it.get("discipline") or "").strip(),
+            phase=str(it.get("phase") or "").strip(),
+            task=task,
+            duration_days=_coerce_int(it.get("duration_days")),
+            start_date=_coerce_date(it.get("start_date")),
+            finish_date=_coerce_date(it.get("finish_date")),
+            price=price,
+            is_milestone=bool(it.get("is_milestone", False)),
+        ))
+    return ParsedSchedule(
+        version=(str(data.get("version") or "V1").strip() or "V1"),
+        source_format="pdf",
+        source_filename=filename,
+        project_name=str(data.get("project_name") or "").strip(),
+        project_start_date=_coerce_date(data.get("project_start_date")),
+        total_duration_days=_coerce_int(data.get("total_duration_days")),
+        total_price=_coerce_int(data.get("total_price")) or (price_accum or None),
+        items=items,
+        parse_engine="llm",
     )
 
 

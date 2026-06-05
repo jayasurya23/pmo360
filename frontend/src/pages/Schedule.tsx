@@ -19,6 +19,8 @@ export default function SchedulePage() {
   const [loading, setLoading] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Remember the last uploaded file so "Re-parse with AI" can re-submit it.
+  const [lastFile, setLastFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const confirm = useConfirm();
 
@@ -36,11 +38,15 @@ export default function SchedulePage() {
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
 
-  const handleUpload = async (file: File) => {
+  const handleUpload = async (
+    file: File,
+    engine: "auto" | "llm" = "auto",
+  ) => {
     setError(null);
+    setLastFile(file);
     setParsing(true);
     try {
-      const p = await parseScheduleFile(file);
+      const p = await parseScheduleFile(file, engine);
       setParsed(p);
     } catch (e: any) {
       setError(e.message);
@@ -108,10 +114,39 @@ export default function SchedulePage() {
       {parsed && (
         <section className="card p-5">
           <div className="flex items-center justify-between mb-3">
-            <h3 className="section-title">
-              Preview — {parsed.version} ({parsed.items.length} items)
-            </h3>
+            <div className="flex items-center gap-2">
+              <h3 className="section-title">
+                Preview — {parsed.version} ({parsed.items.length} items)
+              </h3>
+              <span
+                className={
+                  "text-[11px] px-2 py-0.5 rounded-full border " +
+                  (parsed.parse_engine === "llm"
+                    ? "border-brand-red text-brand-red"
+                    : "border-brand-lightgray text-brand-gray")
+                }
+                title={
+                  parsed.parse_engine === "llm"
+                    ? "Extracted by AI — handles non-standard proposal layouts"
+                    : "Extracted by the fast built-in parser"
+                }
+              >
+                {parsed.parse_engine === "llm" ? "✨ AI-parsed" : "⚡ Fast parser"}
+              </span>
+            </div>
             <div className="flex gap-2">
+              {parsed.source_format === "pdf" &&
+                parsed.parse_engine !== "llm" &&
+                lastFile && (
+                  <button
+                    className="btn-ghost"
+                    onClick={() => void handleUpload(lastFile, "llm")}
+                    disabled={parsing}
+                    title="Re-run extraction with AI — use this if the fast parser missed rows or mis-read a non-standard layout."
+                  >
+                    {parsing ? "Parsing…" : "✨ Re-parse with AI"}
+                  </button>
+                )}
               <button className="btn-ghost" onClick={() => setParsed(null)}>
                 Discard
               </button>

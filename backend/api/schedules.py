@@ -32,12 +32,23 @@ def get_one(schedule_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/parse", response_model=ParsedScheduleOut)
-async def parse_uploaded(file: UploadFile = File(...)):
+async def parse_uploaded(
+    file: UploadFile = File(...),
+    engine: str = Form("auto"),
+):
+    """Parse an uploaded proposal/schedule file.
+
+    ``engine`` (PDF only): ``auto`` runs the fast regex parser and falls back
+    to AI only when the result looks weak; ``regex`` forces the fast parser;
+    ``llm`` forces AI extraction (use when a non-standard layout parsed badly).
+    """
+    if engine not in ("auto", "regex", "llm"):
+        raise HTTPException(400, "engine must be one of: auto, regex, llm")
     data = await file.read()
     if not data:
         raise HTTPException(400, "Empty file")
     try:
-        parsed = parse_schedule_file(file.filename or "", data)
+        parsed = parse_schedule_file(file.filename or "", data, engine=engine)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     items = [ParsedScheduleItemOut(**i.model_dump()) for i in parsed.items]
@@ -50,6 +61,7 @@ async def parse_uploaded(file: UploadFile = File(...)):
         total_duration_days=parsed.total_duration_days,
         total_price=parsed.total_price,
         items=items,
+        parse_engine=parsed.parse_engine,
     )
 
 

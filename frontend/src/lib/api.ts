@@ -9,6 +9,7 @@ import type {
   Agenda,
   Schedule,
   ParsedSchedule,
+  LeadOverview,
   GlobalAttendee,
   Attendee,
   ParsedMeeting,
@@ -405,14 +406,22 @@ export const generateAgendaDoc = async (
 export const agendaIcsUrl = (agendaId: number) =>
   `${API_BASE}/agendas/${agendaId}/ics`;
 
+// ---------- lead / admin overview ----------
+export const fetchLeadOverview = () =>
+  apiClient.get<LeadOverview>("/lead/overview").then((r) => r.data);
+
 // ---------- schedules ----------
 export const listSchedules = (projectId: number) =>
   apiClient
     .get<Schedule[]>("/schedules", { params: { project_id: projectId } })
     .then((r) => r.data);
-export const parseScheduleFile = async (file: File) => {
+export const parseScheduleFile = async (
+  file: File,
+  engine: "auto" | "regex" | "llm" = "auto",
+) => {
   const form = new FormData();
   form.append("file", file);
+  form.append("engine", engine);
   const res = await apiClient.post<ParsedSchedule>("/schedules/parse", form, {
     headers: { "Content-Type": "multipart/form-data" },
   });

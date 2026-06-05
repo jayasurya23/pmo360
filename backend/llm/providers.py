@@ -137,6 +137,21 @@ class LLMProvider(ABC):
             (comma-separated when multiple people are mentioned)
         """
 
+    @abstractmethod
+    def parse_project_schedule(
+        self,
+        raw_text: str,
+        project_context: str = "",
+    ) -> dict:
+        """Extract a structured project schedule from the raw text of a
+        Castillo proposal's "Project Schedule & Schedule of Value" page.
+
+        Returns a plain dict matching the ParsedSchedule shape (so this module
+        stays free of a schedule_parser import). The caller maps + coerces it.
+        Used as a fallback when the deterministic regex parser produces a weak
+        result, or when the PM explicitly asks for AI parsing.
+        """
+
 
 # ============================================================
 # OpenAI implementation
@@ -533,6 +548,111 @@ Style:
         if len(text) > 600:
             text = text[:597] + "…"
         return text
+
+
+    # ============================================================
+    # Project-schedule extraction (proposal PDF → structured items)
+    # ============================================================
+    SCHEDULE_SYSTEM_PROMPT = """\
+You extract a structured project schedule from the raw text of a Castillo \
+Engineering solar-PV proposal — specifically the "Project Schedule & Schedule \
+of Value" table. Return a JSON object matching the provided schema. Be faithful \
+to the source: never invent rows, durations, dates, or prices.
+
+The schedule is a 3-level hierarchy, encoded with `indent_level`:
+- 0 = DISCIPLINE header — one of: Project Initiation, Civil Engineering, \
+  Electrical Engineering, Structural Engineering, Project Closeout (or similar \
+  top-level section). These usually carry a rolled-up duration/price.
+- 1 = PHASE header under a discipline — e.g. "30% Design", "60% Design", \
+  "90% Design", "IFC Design", "Studies Updates", "IFR Design".
+- 2 = LEAF TASK under a phase — e.g. "60% - Planset", "Reactive Power Study", \
+  "Client Review", "Stormwater Management Report".
+
+For EVERY row capture:
+- `task`: the row label, verbatim (no renumbering, no paraphrase).
+- `duration_days`: integer working days, or null.
+- `start_date` / `finish_date`: ISO `YYYY-MM-DD`. Convert MM/DD/YY → 20YY \
+  (e.g. 08/21/25 → 2025-08-21). null if absent.
+- `price`: whole dollars as an integer with NO `$` or commas (e.g. "$30,000" \
+  → 30000). null when the row has no price.
+- `is_milestone`: true for discipline/phase header rows and for zero-duration \
+  milestones (Contract Signed, Deposit, Notice to Proceed, Project Closeout).
+- `discipline`: the nearest preceding discipline header (fill on phase + task \
+  rows; leave "" on the discipline header row itself).
+- `phase`: the nearest preceding phase header (fill on task rows only; "" \
+  otherwise).
+- `order_index`: 0-based, in top-to-bottom document order.
+
+Also extract, when present:
+- `version`: e.g. "V1" (often a "- V1" suffix in the title).
+- `project_name`, `project_start_date` (ISO).
+- `total_duration_days`, `total_price` — from the TOTAL row.
+
+Rows like "Contract Signed" / "Deposit" / "Notice to Proceed" under Project \
+Initiation are milestone leaf rows (indent_level 1 or 2) with no duration/price. \
+Output items ONLY for real schedule rows — skip page headers, column headers \
+("Task Days Start Finish Price"), footers, and addresses."""
+
+    SCHEDULE_USER_TEMPLATE = """\
+Project context: {context}
+
+Raw extracted text of the proposal schedule page(s):
+\"\"\"
+{raw}
+\"\"\"
+
+Return a JSON object with this exact structure:
+{{
+  "version": "string (e.g. V1)",
+  "project_name": "string",
+  "project_start_date": "YYYY-MM-DD or null",
+  "total_duration_days": "integer or null",
+  "total_price": "integer dollars or null",
+  "items": [
+    {{
+      "order_index": 0,
+      "indent_level": 0,
+      "discipline": "string",
+      "phase": "string",
+      "task": "string",
+      "duration_days": "integer or null",
+      "start_date": "YYYY-MM-DD or null",
+      "finish_date": "YYYY-MM-DD or null",
+      "price": "integer or null",
+      "is_milestone": false
+    }}
+  ]
+}}
+"""
+
+    def parse_project_schedule(
+        self,
+        raw_text: str,
+        project_context: str = "",
+    ) -> dict:
+        body = (raw_text or "").strip()
+        if not body:
+            return {"items": []}
+        user_msg = self.SCHEDULE_USER_TEMPLATE.format(
+            context=project_context or "Solar PV engineering project",
+            raw=body[:20000],  # proposals are short; bound the prompt defensively
+        )
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.SCHEDULE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0,
+        )
+        content = response.choices[0].message.content
+        if not content:
+            raise RuntimeError("OpenAI returned empty response for schedule parse")
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"OpenAI returned invalid JSON for schedule: {exc}")
 
 
 # ============================================================

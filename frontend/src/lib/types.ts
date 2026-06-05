@@ -343,6 +343,43 @@ export interface ParsedSchedule {
   total_duration_days?: number | null;
   total_price?: number | null;
   items: ScheduleItem[];
+  parse_engine?: string; // "regex" (fast) | "llm" (AI)
+}
+
+// Lead / admin cross-portfolio overview
+export interface LeadTotals {
+  portfolios: number;
+  clients: number;
+  pms: number;
+  open_actions: number;
+  overdue_actions: number;
+  open_risks: number;
+  unassigned_open_actions: number;
+}
+export interface LeadPortfolioRow {
+  project_id: number;
+  name: string;
+  client_name?: string | null;
+  schedule_version?: string | null;
+  member_count: number;
+  open_actions: number;
+  overdue_actions: number;
+  open_risks: number;
+  last_meeting_date?: string | null;
+}
+export interface LeadPmRow {
+  user_id: number;
+  name: string;
+  email: string;
+  is_admin: boolean;
+  portfolios: number;
+  open_actions: number;
+  overdue_actions: number;
+}
+export interface LeadOverview {
+  totals: LeadTotals;
+  portfolios: LeadPortfolioRow[];
+  pms: LeadPmRow[];
 }
 
 // Dashboard
