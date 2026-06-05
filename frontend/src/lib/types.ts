@@ -382,6 +382,55 @@ export interface LeadOverview {
   pms: LeadPmRow[];
 }
 
+// Timeline Estimator
+export type TimelineStatus =
+  | "delayed"
+  | "on_hold"
+  | "not_contracted"
+  | "in_progress"
+  | "ahead"
+  | "complete";
+export interface TimelineResource {
+  id: number;
+  name: string;
+  user_id?: number | null;
+  discipline: string;
+  title?: string | null;
+  is_placeholder: boolean;
+  active: boolean;
+  order_index: number;
+}
+export interface TimelineProject {
+  id: number;
+  name: string;
+  client?: string | null;
+  status: string;
+  notes?: string | null;
+}
+export interface TimelineAssignment {
+  id: number;
+  timeline_project_id: number;
+  resource_id?: number | null;
+  discipline: string;
+  milestone?: string | null;
+  start_date: string;
+  end_date: string;
+  utilization: number;
+  status?: string | null;
+  label?: string | null;
+  order_index: number;
+  project_name?: string | null;
+  client?: string | null;
+  effective_status?: string | null;
+}
+export interface TimelineBoard {
+  weeks: string[];
+  resources: TimelineResource[];
+  projects: TimelineProject[];
+  assignments: TimelineAssignment[];
+  load: Record<string, number[]>;
+}
+
 // Dashboard
 export interface DashboardAction {
   id: number;

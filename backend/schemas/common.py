@@ -551,6 +551,112 @@ class LeadOverviewResponse(BaseModel):
     pms: list[LeadPmRow] = Field(default_factory=list)
 
 
+# ---------- Timeline Estimator ----------
+class TimelineResourceIn(BaseModel):
+    name: str
+    user_id: Optional[int] = None
+    discipline: str = "Electrical"
+    title: Optional[str] = None
+    is_placeholder: bool = False
+    active: bool = True
+    order_index: int = 0
+
+
+class TimelineResourcePatch(BaseModel):
+    name: Optional[str] = None
+    discipline: Optional[str] = None
+    title: Optional[str] = None
+    is_placeholder: Optional[bool] = None
+    active: Optional[bool] = None
+    order_index: Optional[int] = None
+
+
+class TimelineResourceOut(ORMModel):
+    id: int
+    name: str
+    user_id: Optional[int] = None
+    discipline: str = "Electrical"
+    title: Optional[str] = None
+    is_placeholder: bool = False
+    active: bool = True
+    order_index: int = 0
+
+
+class TimelineProjectIn(BaseModel):
+    name: str
+    client: Optional[str] = None
+    status: str = "in_progress"
+    notes: Optional[str] = None
+
+
+class TimelineProjectPatch(BaseModel):
+    name: Optional[str] = None
+    client: Optional[str] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class TimelineProjectOut(ORMModel):
+    id: int
+    name: str
+    client: Optional[str] = None
+    status: str = "in_progress"
+    notes: Optional[str] = None
+
+
+class TimelineAssignmentIn(BaseModel):
+    timeline_project_id: int
+    resource_id: Optional[int] = None
+    discipline: str = "Electrical"
+    milestone: Optional[str] = None
+    start_date: date
+    end_date: date
+    utilization: float = 1.0
+    status: Optional[str] = None
+    label: Optional[str] = None
+    order_index: int = 0
+
+
+class TimelineAssignmentPatch(BaseModel):
+    resource_id: Optional[int] = None
+    discipline: Optional[str] = None
+    milestone: Optional[str] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    utilization: Optional[float] = None
+    status: Optional[str] = None
+    label: Optional[str] = None
+    order_index: Optional[int] = None
+
+
+class TimelineAssignmentOut(BaseModel):
+    id: int
+    timeline_project_id: int
+    resource_id: Optional[int] = None
+    discipline: str = "Electrical"
+    milestone: Optional[str] = None
+    start_date: date
+    end_date: date
+    utilization: float = 1.0
+    status: Optional[str] = None
+    label: Optional[str] = None
+    order_index: int = 0
+    # enriched from the parent project for rendering
+    project_name: Optional[str] = None
+    client: Optional[str] = None
+    effective_status: Optional[str] = None
+
+
+class TimelineBoardResponse(BaseModel):
+    weeks: list[date]                                   # Monday week-start dates
+    resources: list[TimelineResourceOut] = Field(default_factory=list)
+    projects: list[TimelineProjectOut] = Field(default_factory=list)
+    assignments: list[TimelineAssignmentOut] = Field(default_factory=list)
+    # per-resource per-week utilization fraction, keyed by str(resource_id);
+    # each value is a list aligned to `weeks`. >1.0 == over-allocated.
+    load: dict[str, list[float]] = Field(default_factory=dict)
+
+
 # ---------- Dashboard ----------
 class DashboardActionOut(ORMModel):
     id: int

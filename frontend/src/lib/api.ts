@@ -10,6 +10,10 @@ import type {
   Schedule,
   ParsedSchedule,
   LeadOverview,
+  TimelineBoard,
+  TimelineResource,
+  TimelineProject,
+  TimelineAssignment,
   GlobalAttendee,
   Attendee,
   ParsedMeeting,
@@ -409,6 +413,38 @@ export const agendaIcsUrl = (agendaId: number) =>
 // ---------- lead / admin overview ----------
 export const fetchLeadOverview = () =>
   apiClient.get<LeadOverview>("/lead/overview").then((r) => r.data);
+
+// ---------- timeline estimator ----------
+export const fetchTimelineBoard = (start?: string, end?: string) =>
+  apiClient
+    .get<TimelineBoard>("/timeline/board", { params: { start, end } })
+    .then((r) => r.data);
+export const listTimelineResources = (includeInactive = false) =>
+  apiClient
+    .get<TimelineResource[]>("/timeline/resources", {
+      params: { include_inactive: includeInactive },
+    })
+    .then((r) => r.data);
+export const createTimelineResource = (body: Partial<TimelineResource>) =>
+  apiClient.post<TimelineResource>("/timeline/resources", body).then((r) => r.data);
+export const patchTimelineResource = (id: number, body: Partial<TimelineResource>) =>
+  apiClient.patch<TimelineResource>(`/timeline/resources/${id}`, body).then((r) => r.data);
+export const deleteTimelineResource = (id: number) =>
+  apiClient.delete(`/timeline/resources/${id}`);
+export const listTimelineProjects = () =>
+  apiClient.get<TimelineProject[]>("/timeline/projects").then((r) => r.data);
+export const createTimelineProject = (body: Partial<TimelineProject>) =>
+  apiClient.post<TimelineProject>("/timeline/projects", body).then((r) => r.data);
+export const patchTimelineProject = (id: number, body: Partial<TimelineProject>) =>
+  apiClient.patch<TimelineProject>(`/timeline/projects/${id}`, body).then((r) => r.data);
+export const deleteTimelineProject = (id: number) =>
+  apiClient.delete(`/timeline/projects/${id}`);
+export const createTimelineAssignment = (body: Partial<TimelineAssignment>) =>
+  apiClient.post<TimelineAssignment>("/timeline/assignments", body).then((r) => r.data);
+export const patchTimelineAssignment = (id: number, body: Partial<TimelineAssignment>) =>
+  apiClient.patch<TimelineAssignment>(`/timeline/assignments/${id}`, body).then((r) => r.data);
+export const deleteTimelineAssignment = (id: number) =>
+  apiClient.delete(`/timeline/assignments/${id}`);
 
 // ---------- schedules ----------
 export const listSchedules = (projectId: number) =>

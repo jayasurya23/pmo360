@@ -9,7 +9,8 @@ rolling action log can track when items were raised vs when they were closed.
 """
 from datetime import datetime, date
 from sqlalchemy import (
-    Column, Integer, String, Text, Date, DateTime, ForeignKey, Boolean, JSON
+    Column, Integer, String, Text, Date, DateTime, ForeignKey, Boolean, JSON,
+    Float,
 )
 from sqlalchemy.orm import declarative_base, relationship, backref
 
@@ -555,3 +556,79 @@ class CalendarEventLink(Base):
         backref=backref("calendar_links", cascade="all, delete-orphan"),
     )
     linked_by = relationship("User", foreign_keys=[linked_by_id])
+
+
+# ============================================================
+# Timeline Estimator — resource-loaded capacity planner
+# (standalone: NOT tied to the meeting Client/Project tables)
+# ============================================================
+class TimelineResource(Base):
+    """A row in the by-engineer timeline view: a real person (linked to a
+    User when picked from the roster / M365 directory) or a free-text
+    placeholder ("New Hire", a vendor, etc.). Grouped by discipline."""
+    __tablename__ = "timeline_resources"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"))       # null for placeholders
+    discipline = Column(String(40), default="Electrical")   # Electrical/Civil/Structural/Water/Other
+    title = Column(String(80))                              # e.g. "EE II", "Intern"
+    is_placeholder = Column(Boolean, default=False)
+    active = Column(Boolean, default=True)
+    order_index = Column(Integer, default=0)
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+class TimelineProject(Base):
+    """A standalone timeline project. One project fans out into many
+    assignments — that's how the Civil/Electrical split and milestone
+    segmentation are represented."""
+    __tablename__ = "timeline_projects"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(300), nullable=False)
+    client = Column(String(200))                            # free text, no FK
+    status = Column(String(30), default="in_progress")
+    notes = Column(Text)
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
+    )
+
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    assignments = relationship(
+        "TimelineAssignment", back_populates="project",
+        cascade="all, delete-orphan",
+    )
+
+
+class TimelineAssignment(Base):
+    """A scheduled bar: a project (optionally one discipline / milestone slice
+    of it) assigned to a resource over a date range at some % utilization.
+    ``status`` overrides the parent project's status when set."""
+    __tablename__ = "timeline_assignments"
+    id = Column(Integer, primary_key=True)
+    timeline_project_id = Column(
+        Integer, ForeignKey("timeline_projects.id"), nullable=False,
+    )
+    resource_id = Column(Integer, ForeignKey("timeline_resources.id"))  # null = unassigned
+    discipline = Column(String(40), default="Electrical")   # Electrical/Civil/Structural/General
+    milestone = Column(String(60))                          # 30%/Stage B/60%/90%/IFP/IFC/Studies/free
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    utilization = Column(Float, default=1.0)                # fraction: 0.6, 1.0, 1.2 …
+    status = Column(String(30))                             # overrides project status when set
+    label = Column(String(200))                             # bar label override
+    order_index = Column(Integer, default=0)
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow,
+    )
+
+    project = relationship("TimelineProject", back_populates="assignments")
+    resource = relationship("TimelineResource")
+    created_by = relationship("User", foreign_keys=[created_by_id])
