@@ -12,6 +12,7 @@ import Notes from "./pages/Notes";
 import History from "./pages/History";
 import Schedule from "./pages/Schedule";
 import Settings from "./pages/Settings";
+import LeadDashboard from "./pages/LeadDashboard";
 
 export default function App() {
   return (
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="/notes" element={<Notes />} />
         <Route path="/history" element={<History />} />
         <Route path="/schedule" element={<Schedule />} />
+        <Route path="/lead" element={<LeadDashboard />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
     </Routes>

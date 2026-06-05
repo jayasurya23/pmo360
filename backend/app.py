@@ -26,7 +26,7 @@ from db import init_db
 from api import (
     clients, projects, meetings, actions, notes, agendas, schedules,
     roster, dashboard, parse, documents, search, me, users, templates,
-    attachments, members, calendar,
+    attachments, members, calendar, lead,
     settings as settings_router,
 )
 
@@ -76,6 +76,7 @@ def create_app() -> FastAPI:
     app.include_router(attachments.router)
     app.include_router(members.router)
     app.include_router(calendar.router)
+    app.include_router(lead.router)
 
     # ---- Health check ----
     @app.get("/api/health", tags=["health"])

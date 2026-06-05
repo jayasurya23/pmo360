@@ -27,6 +27,9 @@ const PRIMARY_NAV: NavItem[] = [
   { to: "/schedule", label: "Schedule" },
 ];
 
+// Admin/lead-only — appended to the nav when the signed-in user is an admin.
+const LEAD_NAV: NavItem = { to: "/lead", label: "👑 Lead" };
+
 // The "this meeting" minutes flow — Capture → Review → Preview → Send.
 const MEETING_FLOW: NavItem[] = [
   { to: "/capture", label: "Capture" },
@@ -99,6 +102,8 @@ export default function Layout() {
 
 function TopNav() {
   const location = useLocation();
+  const { me } = useApp();
+  const navItems = me?.is_admin ? [...PRIMARY_NAV, LEAD_NAV] : PRIMARY_NAV;
   return (
     <header className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-slate-200">
       <div className="max-w-screen-2xl mx-auto px-6 md:px-10 h-16 flex items-center gap-6">
@@ -112,7 +117,7 @@ function TopNav() {
         </NavLink>
 
         <nav className="hidden md:flex items-center gap-1">
-          {PRIMARY_NAV.map((item) => {
+          {navItems.map((item) => {
             const active =
               location.pathname === item.to ||
               (item.to === "/capture" &&
@@ -206,6 +211,8 @@ function ScopeToggle() {
 
 function MobileNav() {
   const location = useLocation();
+  const { me } = useApp();
+  const navItems = me?.is_admin ? [...PRIMARY_NAV, LEAD_NAV] : PRIMARY_NAV;
   return (
     <nav className="md:hidden border-t border-slate-200 overflow-x-auto">
       <div className="flex items-center gap-1 px-3 py-2">
