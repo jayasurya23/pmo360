@@ -325,12 +325,19 @@ def get_board(
     assignments = db.query(TimelineAssignment).all()
 
     # ---- Resolve the week window ----
+    # Auto mode keeps the date axis running ~2 weeks before today through
+    # ~16 weeks after today, so the week header stays filled out even after
+    # every project has ended (no truncating the columns to the data range).
+    # An explicit start/end (the date-window filter) is honoured verbatim.
     starts = [a.start_date for a in assignments]
     ends = [a.end_date for a in assignments]
+    today = date.today()
+    history_floor = _monday(today) - timedelta(weeks=2)
+    forward_horizon = today + timedelta(weeks=16)
     if start is None:
-        start = min(starts) if starts else _monday(date.today())
+        start = min([*starts, history_floor])
     if end is None:
-        end = max(ends) if ends else (date.today() + timedelta(days=70))
+        end = max([*ends, forward_horizon])
     first_monday = _monday(start)
     last_monday = _monday(end)
     weeks: list[date] = []
