@@ -632,3 +632,22 @@ class TimelineAssignment(Base):
     project = relationship("TimelineProject", back_populates="assignments")
     resource = relationship("TimelineResource")
     created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+class TimelineTimeOff(Base):
+    """A blocked / out-of-office date range for a resource. Not project work —
+    it reduces the resource's *available* capacity (shown on the grid and in
+    the workload view). Covers OOO, PTO, holidays, training, etc."""
+    __tablename__ = "timeline_timeoff"
+    id = Column(Integer, primary_key=True)
+    resource_id = Column(
+        Integer, ForeignKey("timeline_resources.id"), nullable=False,
+    )
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    reason = Column(String(80))   # OOO / PTO / Holiday / free text
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    resource = relationship("TimelineResource")
+    created_by = relationship("User", foreign_keys=[created_by_id])

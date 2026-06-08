@@ -647,14 +647,39 @@ class TimelineAssignmentOut(BaseModel):
     effective_status: Optional[str] = None
 
 
+class TimelineTimeOffIn(BaseModel):
+    resource_id: int
+    start_date: date
+    end_date: date
+    reason: Optional[str] = "OOO"
+
+
+class TimelineTimeOffPatch(BaseModel):
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    reason: Optional[str] = None
+
+
+class TimelineTimeOffOut(ORMModel):
+    id: int
+    resource_id: int
+    start_date: date
+    end_date: date
+    reason: Optional[str] = None
+
+
 class TimelineBoardResponse(BaseModel):
     weeks: list[date]                                   # Monday week-start dates
     resources: list[TimelineResourceOut] = Field(default_factory=list)
     projects: list[TimelineProjectOut] = Field(default_factory=list)
     assignments: list[TimelineAssignmentOut] = Field(default_factory=list)
+    timeoff: list[TimelineTimeOffOut] = Field(default_factory=list)
     # per-resource per-week utilization fraction, keyed by str(resource_id);
-    # each value is a list aligned to `weeks`. >1.0 == over-allocated.
+    # each value is a list aligned to `weeks`. over-allocated == load > avail.
     load: dict[str, list[float]] = Field(default_factory=dict)
+    # per-resource per-week availability fraction (1.0 = fully available,
+    # 0 = fully blocked by time-off), aligned to `weeks`.
+    availability: dict[str, list[float]] = Field(default_factory=dict)
 
 
 # ---------- Dashboard ----------

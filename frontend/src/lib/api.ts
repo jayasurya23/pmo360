@@ -14,6 +14,7 @@ import type {
   TimelineResource,
   TimelineProject,
   TimelineAssignment,
+  TimelineTimeOff,
   GlobalAttendee,
   Attendee,
   ParsedMeeting,
@@ -445,6 +446,14 @@ export const patchTimelineAssignment = (id: number, body: Partial<TimelineAssign
   apiClient.patch<TimelineAssignment>(`/timeline/assignments/${id}`, body).then((r) => r.data);
 export const deleteTimelineAssignment = (id: number) =>
   apiClient.delete(`/timeline/assignments/${id}`);
+export const createTimelineTimeOff = (body: {
+  resource_id: number;
+  start_date: string;
+  end_date: string;
+  reason?: string;
+}) => apiClient.post<TimelineTimeOff>("/timeline/timeoff", body).then((r) => r.data);
+export const deleteTimelineTimeOff = (id: number) =>
+  apiClient.delete(`/timeline/timeoff/${id}`);
 
 // ---------- schedules ----------
 export const listSchedules = (projectId: number) =>

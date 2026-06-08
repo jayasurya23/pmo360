@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -21,11 +22,14 @@ import {
   createTimelineResource,
   patchTimelineResource,
   deleteTimelineResource,
+  createTimelineTimeOff,
+  deleteTimelineTimeOff,
 } from "@/lib/api";
 import type {
   TimelineBoard,
   TimelineResource,
   TimelineAssignment,
+  TimelineTimeOff,
   GlobalAttendee,
 } from "@/lib/types";
 import { format, parseISO, startOfWeek, addDays } from "date-fns";
@@ -135,7 +139,7 @@ function _assignmentBody(a: TimelineAssignment): Partial<TimelineAssignment> {
 }
 
 // ---------------- types ----------------
-type View = "engineer" | "project";
+type View = "engineer" | "project" | "workload";
 type BarMode = "move" | "l" | "r";
 type DragRef =
   | {
@@ -163,6 +167,7 @@ interface Ctx {
   onBarMenu: (e: React.MouseEvent, a: TimelineAssignment) => void;
   onCellAdd: (resourceId: number | null, weekIso: string) => void;
   onCellMenu: (e: React.MouseEvent, resourceId: number | null, weekIso: string) => void;
+  onTimeOffMenu: (e: React.MouseEvent, t: TimelineTimeOff) => void;
 }
 
 const LS = "pmo360_timeline_prefs";
@@ -198,8 +203,9 @@ export default function Timeline() {
   const [addingToProject, setAddingToProject] = useState<number | null>(null);
   const [addPreset, setAddPreset] = useState<{ resourceId: number | null; start: string } | null>(null);
   const [menu, setMenu] = useState<
-    { x: number; y: number; a?: TimelineAssignment; resourceId?: number | null; weekIso?: string } | null
+    { x: number; y: number; a?: TimelineAssignment; resourceId?: number | null; weekIso?: string; timeoff?: TimelineTimeOff } | null
   >(null);
+  const [timeOffPreset, setTimeOffPreset] = useState<{ resourceId: number; start: string } | null>(null);
   const [undoStack, setUndoStack] = useState<{ label: string; run: () => Promise<void> }[]>([]);
 
   // drag
@@ -316,6 +322,18 @@ export default function Timeline() {
         await patchTimelineAssignment(a.id, before);
         await reload();
       });
+    } catch {
+      await reload();
+    }
+  }
+
+  async function removeTimeOff(t: TimelineTimeOff) {
+    setMenu(null);
+    const ok = await confirm({ title: "Remove this time-off block?", body: t.reason || "OOO", confirmLabel: "Remove", destructive: true });
+    if (!ok) return;
+    setBoard((b) => (b ? { ...b, timeoff: b.timeoff.filter((x) => x.id !== t.id) } : b));
+    try {
+      await deleteTimelineTimeOff(t.id);
     } catch {
       await reload();
     }
@@ -458,6 +476,7 @@ export default function Timeline() {
     onBarMenu: (e, a) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, a }); },
     onCellAdd: (resourceId, weekIso) => setAddPreset({ resourceId, start: weekIso }),
     onCellMenu: (e, resourceId, weekIso) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, resourceId, weekIso }); },
+    onTimeOffMenu: (e, t) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, timeoff: t }); },
   };
   const gridWidth = LABEL_W + weeks.length * weekW;
 
@@ -484,6 +503,7 @@ export default function Timeline() {
           options={[
             ["engineer", "By engineer"],
             ["project", "By project"],
+            ["workload", "Workload"],
           ]}
           value={view}
           onChange={(v) => setView(v as View)}
@@ -560,7 +580,11 @@ export default function Timeline() {
       {loading && <div className="text-sm text-brand-gray">Loading timeline…</div>}
       {error && <div className="text-sm text-brand-red">{error}</div>}
 
-      {board && !loading &&
+      {board && !loading && view === "workload" && (
+        <WorkloadView board={board} load={load} />
+      )}
+
+      {board && !loading && view !== "workload" &&
         (board.assignments.length === 0 && board.resources.length === 0 ? (
           <EmptyState
             title="No timeline data yet"
@@ -664,6 +688,17 @@ export default function Timeline() {
           onSetStatus={(a, s) => quickPatch(a, { status: s }, "status")}
           onSetUtil={(a, u) => quickPatch(a, { utilization: u }, "utilization")}
           onAddHere={(resId, wk) => { setMenu(null); setAddPreset({ resourceId: resId, start: wk }); }}
+          onBlockTime={(resId, wk) => { setMenu(null); if (resId != null) setTimeOffPreset({ resourceId: resId, start: wk }); }}
+          onRemoveTimeOff={removeTimeOff}
+        />
+      )}
+
+      {timeOffPreset && board && (
+        <TimeOffDialog
+          board={board}
+          preset={timeOffPreset}
+          onClose={() => setTimeOffPreset(null)}
+          onSaved={() => { setTimeOffPreset(null); void reload(); }}
         />
       )}
     </div>
@@ -849,6 +884,12 @@ function EngineerView({
     const i = Math.max(0, Math.min(weeks.length - 1, Math.floor((e.clientX - rect.left) / weekW)));
     return weeks[i];
   };
+  const timeoffByRes = useMemo(() => {
+    const m = new Map<number, TimelineTimeOff[]>();
+    for (const t of board.timeoff || [])
+      (m.get(t.resource_id) || m.set(t.resource_id, []).get(t.resource_id)!).push(t);
+    return m;
+  }, [board.timeoff]);
 
   return (
     <div>
@@ -866,6 +907,8 @@ function EngineerView({
             g.rows.map((r) => {
               const rowAssignments = byResource.get(r.id) || [];
               const cells = load[String(r.id)] || [];
+              const avail = board.availability?.[String(r.id)] || [];
+              const tos = timeoffByRes.get(r.id) || [];
               const isHover = hoverRes === r.id && drag != null;
               const { placed, lanes } = packLanes(rowAssignments, weeks);
               const rowH = lanes * LANE_H;
@@ -899,7 +942,9 @@ function EngineerView({
                     {/* utilization heat behind the bars (hover a cell for the %) */}
                     {weeks.map((w, i) => {
                       const v = cells[i] || 0;
-                      const over = v > 1.0001;
+                      const a = avail[i] ?? 1;
+                      const blocked = a < 0.999;
+                      const over = v > a + 0.0001;
                       return (
                         <div
                           key={w}
@@ -908,10 +953,41 @@ function EngineerView({
                             left: i * weekW,
                             width: weekW,
                             height: rowH,
-                            background: over ? "#fce8ea" : v > 0 ? "#eaf6ee" : "transparent",
+                            background: over ? "#fce8ea" : blocked ? "#eceef1" : v > 0 ? "#eaf6ee" : "transparent",
                           }}
-                          title={v > 0 ? `${Math.round(v * 100)}% utilized` : ""}
+                          title={
+                            blocked
+                              ? `${Math.round((1 - a) * 100)}% time off${v > 0 ? `, ${Math.round(v * 100)}% load` : ""}`
+                              : v > 0
+                                ? `${Math.round(v * 100)}% utilized`
+                                : ""
+                          }
                         />
+                      );
+                    })}
+                    {/* time-off bands (right-click to remove) */}
+                    {tos.map((t) => {
+                      const s = Math.max(0, colOf(t.start_date, weeks));
+                      const e2 = Math.min(weeks.length - 1, colOf(t.end_date, weeks));
+                      if (e2 < 0 || s > weeks.length - 1 || e2 < s) return null;
+                      return (
+                        <div
+                          key={`to-${t.id}`}
+                          onContextMenu={(ev) => ctx.onTimeOffMenu(ev, t)}
+                          title={`${t.reason || "OOO"} — right-click to remove`}
+                          className="absolute top-0 z-[1] flex items-center gap-1 px-1.5 text-[10px] font-semibold text-slate-500 truncate"
+                          style={{
+                            left: s * weekW + 1,
+                            width: (e2 - s + 1) * weekW - 2,
+                            height: rowH,
+                            background:
+                              "repeating-linear-gradient(45deg,#e5e7eb,#e5e7eb 6px,#eef0f2 6px,#eef0f2 12px)",
+                            border: "1px solid #d1d5db",
+                            borderRadius: 4,
+                          }}
+                        >
+                          🛇 {t.reason || "OOO"}
+                        </div>
                       );
                     })}
                     {placed.map(({ a, lane }) => (
@@ -1237,9 +1313,9 @@ function ResourceManagerDialog({ onClose, onChanged }: { onClose: () => void; on
 }
 
 // ---------------- right-click context menu ----------------
-type MenuState = { x: number; y: number; a?: TimelineAssignment; resourceId?: number | null; weekIso?: string };
+type MenuState = { x: number; y: number; a?: TimelineAssignment; resourceId?: number | null; weekIso?: string; timeoff?: TimelineTimeOff };
 function ContextMenu({
-  menu, onClose, onEdit, onDuplicate, onDelete, onUnassign, onSetStatus, onSetUtil, onAddHere,
+  menu, onClose, onEdit, onDuplicate, onDelete, onUnassign, onSetStatus, onSetUtil, onAddHere, onBlockTime, onRemoveTimeOff,
 }: {
   menu: MenuState;
   onClose: () => void;
@@ -1250,6 +1326,8 @@ function ContextMenu({
   onSetStatus: (a: TimelineAssignment, status: string) => void;
   onSetUtil: (a: TimelineAssignment, util: number) => void;
   onAddHere: (resourceId: number | null, weekIso: string) => void;
+  onBlockTime: (resourceId: number | null, weekIso: string) => void;
+  onRemoveTimeOff: (t: TimelineTimeOff) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1300,6 +1378,11 @@ function ContextMenu({
           <div className="border-t border-slate-100 my-1" />
           <MenuItem destructive onClick={() => onDelete(a)}>🗑 Delete</MenuItem>
         </>
+      ) : menu.timeoff ? (
+        <>
+          <div className="px-3 py-1 text-[11px] text-brand-gray truncate">🛇 {menu.timeoff.reason || "OOO"}</div>
+          <MenuItem destructive onClick={() => onRemoveTimeOff(menu.timeoff!)}>🗑 Remove time off</MenuItem>
+        </>
       ) : (
         <>
           <div className="px-3 py-1 text-[11px] text-brand-gray">
@@ -1308,6 +1391,11 @@ function ContextMenu({
           <MenuItem onClick={() => menu.weekIso && onAddHere(menu.resourceId ?? null, menu.weekIso)}>
             + Add project here…
           </MenuItem>
+          {menu.resourceId != null && (
+            <MenuItem onClick={() => menu.weekIso && onBlockTime(menu.resourceId ?? null, menu.weekIso)}>
+              🛇 Block time off (OOO)…
+            </MenuItem>
+          )}
         </>
       )}
     </div>
@@ -1321,5 +1409,167 @@ function MenuItem({ children, onClick, destructive }: { children: ReactNode; onC
     >
       {children}
     </button>
+  );
+}
+
+// ---------------- time-off dialog ----------------
+const TIMEOFF_REASONS = ["OOO", "PTO", "Holiday", "Training", "Sick", "Conference"];
+function TimeOffDialog({
+  board, preset, onClose, onSaved,
+}: {
+  board: TimelineBoard;
+  preset: { resourceId: number; start: string };
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const resource = board.resources.find((r) => r.id === preset.resourceId);
+  const [start, setStart] = useState(preset.start);
+  const [end, setEnd] = useState(shiftISO(preset.start, 4)); // Mon..Fri of that week
+  const [reason, setReason] = useState("OOO");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function save() {
+    if (!start || !end) { setErr("Start and end are required."); return; }
+    if (parseISO(end) < parseISO(start)) { setErr("End must be on or after start."); return; }
+    setSaving(true); setErr(null);
+    try {
+      await createTimelineTimeOff({
+        resource_id: preset.resourceId,
+        start_date: start,
+        end_date: end,
+        reason: reason.trim() || "OOO",
+      });
+      onSaved();
+    } catch (e: any) { setErr(e?.response?.data?.detail || e?.message || "Save failed"); setSaving(false); }
+  }
+  return (
+    <Modal title="Block time off" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="text-sm">
+          For <span className="font-semibold">{resource?.name || "—"}</span>
+          {resource?.title && <span className="text-brand-gray"> · {resource.title}</span>}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Start"><input type="date" className={inputCls} value={start} onChange={(e) => setStart(e.target.value)} autoFocus /></Field>
+          <Field label="End"><input type="date" className={inputCls} value={end} onChange={(e) => setEnd(e.target.value)} /></Field>
+        </div>
+        <Field label="Reason">
+          <input className={inputCls} list="timeoff-reasons" value={reason} onChange={(e) => setReason(e.target.value)} />
+          <datalist id="timeoff-reasons">{TIMEOFF_REASONS.map((x) => <option key={x} value={x} />)}</datalist>
+        </Field>
+        <p className="text-[11px] text-brand-gray">Blocked time reduces this engineer's available capacity in the Workload view and shades those weeks on the grid.</p>
+        {err && <div className="text-sm text-brand-red">{err}</div>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Block time"}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------- workload summary view ----------------
+function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<string, number[]> }) {
+  const weeks = board.weeks;
+  const projCount = (rid: number) =>
+    new Set(board.assignments.filter((a) => a.resource_id === rid).map((a) => a.timeline_project_id)).size;
+
+  const groups: { discipline: string; rows: TimelineResource[] }[] = [];
+  for (const r of board.resources) {
+    let g = groups.find((x) => x.discipline === r.discipline);
+    if (!g) groups.push((g = { discipline: r.discipline, rows: [] }));
+    g.rows.push(r);
+  }
+
+  const metrics = (r: TimelineResource) => {
+    const arr = load[String(r.id)] || [];
+    const avail = board.availability?.[String(r.id)] || [];
+    let sum = 0, peak = 0, over = 0, ooo = 0;
+    for (let i = 0; i < weeks.length; i++) {
+      const v = arr[i] || 0;
+      const a = avail[i] ?? 1;
+      sum += v;
+      if (v > peak) peak = v;
+      if (v > a + 0.0001) over++;
+      if (a < 0.999) ooo++;
+    }
+    return { arr, avail, avg: weeks.length ? sum / weeks.length : 0, peak, over, ooo, projects: projCount(r.id) };
+  };
+
+  // team rollup
+  let teamOver = 0, teamOoo = 0;
+  for (const r of board.resources) { const m = metrics(r); teamOver += m.over; teamOoo += m.ooo; }
+
+  return (
+    <div className="card p-0 overflow-x-auto">
+      <div className="px-4 py-3 border-b border-brand-lightgray/60 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+        <span className="font-semibold">Team workload</span>
+        <span className="text-brand-gray">{board.resources.length} people</span>
+        <span className="text-brand-gray">{teamOver} over-allocated engineer-weeks</span>
+        <span className="text-brand-gray">{teamOoo} time-off engineer-weeks</span>
+        <span className="ml-auto text-[11px] text-brand-gray">avg / peak load over {weeks.length} weeks · red = over capacity · gray = time off</span>
+      </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-[11px] uppercase tracking-wider text-brand-gray border-b border-brand-lightgray/60">
+            <th className="text-left px-4 py-2 font-semibold">Engineer</th>
+            <th className="text-right px-2 py-2 font-semibold">Projects</th>
+            <th className="text-right px-2 py-2 font-semibold">Avg</th>
+            <th className="text-right px-2 py-2 font-semibold">Peak</th>
+            <th className="text-right px-2 py-2 font-semibold">Over</th>
+            <th className="text-right px-2 py-2 font-semibold">Time off</th>
+            <th className="text-left px-4 py-2 font-semibold">Weekly load</th>
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map((g) => (
+            <Fragment key={g.discipline}>
+              <tr className="bg-slate-50/80">
+                <td colSpan={7} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-gray">
+                  <DiscTag d={g.discipline} /> {g.discipline} · {g.rows.length}
+                </td>
+              </tr>
+              {g.rows.map((r) => {
+                const m = metrics(r);
+                return (
+                  <tr key={r.id} className="border-b border-brand-lightgray/40 hover:bg-slate-50/60">
+                    <td className="px-4 py-2">
+                      <span className="font-medium">{r.name}</span>
+                      {r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
+                      {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded bg-slate-100 text-brand-gray">placeholder</span>}
+                    </td>
+                    <td className="text-right px-2 py-2 text-brand-gray">{m.projects || "—"}</td>
+                    <td className="text-right px-2 py-2">{Math.round(m.avg * 100)}%</td>
+                    <td className={clsx("text-right px-2 py-2 font-medium", m.peak > 1.0001 ? "text-brand-red" : "")}>{Math.round(m.peak * 100)}%</td>
+                    <td className="text-right px-2 py-2">{m.over ? <span className="text-brand-red font-semibold">{m.over}</span> : <span className="text-brand-gray">0</span>}</td>
+                    <td className="text-right px-2 py-2 text-brand-gray">{m.ooo || "—"}</td>
+                    <td className="px-4 py-1.5">
+                      <div className="flex items-end gap-px h-7">
+                        {weeks.map((w, i) => {
+                          const v = m.arr[i] || 0;
+                          const a = m.avail[i] ?? 1;
+                          const blocked = a < 0.999;
+                          const over = v > a + 0.0001;
+                          const h = Math.max(2, Math.min(28, v * 22));
+                          const bg = over ? "#e12a3f" : blocked ? "#cbd5e1" : v > 0 ? "#278747" : "#eef0f2";
+                          return (
+                            <div
+                              key={w}
+                              title={`${format(parseISO(w), "d MMM")}: ${Math.round(v * 100)}% load${blocked ? ` · ${Math.round((1 - a) * 100)}% off` : ""}`}
+                              style={{ width: 7, height: blocked && v === 0 ? 6 : h, background: bg, borderRadius: 1 }}
+                            />
+                          );
+                        })}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </Fragment>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }

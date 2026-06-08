@@ -27,11 +27,14 @@ from sqlalchemy.orm import Session
 
 from auth import require_db_user
 from core.deps import get_db
-from db.models import TimelineResource, TimelineProject, TimelineAssignment
+from db.models import (
+    TimelineResource, TimelineProject, TimelineAssignment, TimelineTimeOff,
+)
 from schemas.common import (
     TimelineResourceIn, TimelineResourcePatch, TimelineResourceOut,
     TimelineProjectIn, TimelineProjectPatch, TimelineProjectOut,
     TimelineAssignmentIn, TimelineAssignmentPatch, TimelineAssignmentOut,
+    TimelineTimeOffIn, TimelineTimeOffPatch, TimelineTimeOffOut,
     TimelineBoardResponse,
 )
 
@@ -281,6 +284,61 @@ def delete_assignment(
 
 
 # ============================================================
+# Time off — blocked / out-of-office ranges (reduce availability)
+# ============================================================
+@router.post("/timeoff", response_model=TimelineTimeOffOut, status_code=201)
+def create_timeoff(
+    payload: TimelineTimeOffIn,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+):
+    if db.get(TimelineResource, payload.resource_id) is None:
+        raise HTTPException(404, "Resource not found")
+    if payload.end_date < payload.start_date:
+        raise HTTPException(422, "end_date must be on or after start_date")
+    t = TimelineTimeOff(
+        resource_id=payload.resource_id,
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        reason=(payload.reason or "OOO").strip()[:80],
+        created_by_id=actor.id,
+    )
+    db.add(t)
+    db.flush()
+    return t
+
+
+@router.patch("/timeoff/{timeoff_id}", response_model=TimelineTimeOffOut)
+def patch_timeoff(
+    timeoff_id: int,
+    payload: TimelineTimeOffPatch,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+):
+    t = db.get(TimelineTimeOff, timeoff_id)
+    if t is None:
+        raise HTTPException(404, "Time-off not found")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(t, field, value)
+    if t.end_date < t.start_date:
+        raise HTTPException(422, "end_date must be on or after start_date")
+    db.flush()
+    return t
+
+
+@router.delete("/timeoff/{timeoff_id}", status_code=204)
+def delete_timeoff(
+    timeoff_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+):
+    t = db.get(TimelineTimeOff, timeoff_id)
+    if t is not None:
+        db.delete(t)
+    return None
+
+
+# ============================================================
 # Board — weeks + assignments + per-resource per-week utilization load
 # ============================================================
 def _assignment_out(a: TimelineAssignment, project: Optional[TimelineProject]) -> TimelineAssignmentOut:
@@ -323,6 +381,7 @@ def get_board(
     projects = db.query(TimelineProject).order_by(TimelineProject.name).all()
     proj_by_id = {p.id: p for p in projects}
     assignments = db.query(TimelineAssignment).all()
+    timeoff = db.query(TimelineTimeOff).all()
 
     # ---- Resolve the week window ----
     # Auto mode keeps the date axis running ~2 weeks before today through
@@ -362,10 +421,33 @@ def get_board(
             if wd:
                 arr[i] += (wd / 5.0) * util
 
+    # ---- Time off + per-resource per-week availability ----
+    # availability = 1 - (blocked workdays / 5), clamped to [0, 1].
+    timeoff_outs: list[TimelineTimeOffOut] = [
+        TimelineTimeOffOut(
+            id=t.id, resource_id=t.resource_id,
+            start_date=t.start_date, end_date=t.end_date, reason=t.reason,
+        )
+        for t in timeoff
+    ]
+    availability: dict[str, list[float]] = {}
+    for t in timeoff:
+        arr = availability.setdefault(str(t.resource_id), [0.0] * len(weeks))
+        for i, wk in enumerate(weeks):
+            wd = _workdays_overlap(t.start_date, t.end_date, wk)
+            if wd:
+                arr[i] += wd / 5.0  # accumulate blocked fraction for now
+    # convert accumulated blocked fraction -> availability (1 - blocked)
+    for rid, arr in availability.items():
+        for i in range(len(arr)):
+            arr[i] = max(0.0, 1.0 - min(1.0, arr[i]))
+
     return TimelineBoardResponse(
         weeks=weeks,
         resources=resources,
         projects=projects,
         assignments=assignment_outs,
+        timeoff=timeoff_outs,
         load=load,
+        availability=availability,
     )

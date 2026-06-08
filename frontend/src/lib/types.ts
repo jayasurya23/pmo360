@@ -423,12 +423,21 @@ export interface TimelineAssignment {
   client?: string | null;
   effective_status?: string | null;
 }
+export interface TimelineTimeOff {
+  id: number;
+  resource_id: number;
+  start_date: string;
+  end_date: string;
+  reason?: string | null;
+}
 export interface TimelineBoard {
   weeks: string[];
   resources: TimelineResource[];
   projects: TimelineProject[];
   assignments: TimelineAssignment[];
+  timeoff: TimelineTimeOff[];
   load: Record<string, number[]>;
+  availability: Record<string, number[]>;
 }
 
 // Dashboard

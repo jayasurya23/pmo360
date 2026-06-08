@@ -27,7 +27,18 @@ if BACKEND not in sys.path:
 
 import config  # noqa: F401  -- loads .env
 from db.session import get_engine, get_session_factory
-from db.models import Base, TimelineResource, TimelineProject, TimelineAssignment
+from db.models import (
+    Base, TimelineResource, TimelineProject, TimelineAssignment, TimelineTimeOff,
+)
+
+# Cell labels that mean "this person is unavailable" -> a time-off block,
+# not project work.
+TIMEOFF_LABELS = {"ooo", "out of office", "pto", "vacation", "holiday", "out", "leave"}
+def timeoff_reason(label: str) -> str | None:
+    n = label.strip().lower()
+    if n in TIMEOFF_LABELS or n.startswith("ooo"):
+        return label.strip().upper()[:80]
+    return None
 
 # ---- discipline mapping ------------------------------------------------
 # Explicit title keywords win; otherwise fall back to the row-section the
@@ -140,6 +151,7 @@ def main():
     db = Session()
     try:
         if not keep:
+            db.query(TimelineTimeOff).delete()
             db.query(TimelineAssignment).delete()
             db.query(TimelineProject).delete()
             db.query(TimelineResource).delete()
@@ -147,7 +159,7 @@ def main():
 
         proj_by_name: dict[str, TimelineProject] = {}
         used_names: dict[str, int] = {}
-        n_res = n_assign = 0
+        n_res = n_assign = n_timeoff = 0
 
         for r in range(header_row + 1, ws.max_row + 1):
             name = ws.cell(row=r, column=2).value
@@ -186,6 +198,16 @@ def main():
                 c = step_to
                 if val in (None, "") or isinstance(val, (datetime, date)):
                     continue
+                # OOO / PTO / holiday -> a time-off block, not project work.
+                reason = timeoff_reason(clean(val))
+                if reason:
+                    db.add(TimelineTimeOff(
+                        resource_id=res.id,
+                        start_date=col_date[lo], end_date=col_date[hi] + week_len,
+                        reason=reason,
+                    ))
+                    n_timeoff += 1
+                    continue
                 project_name, milestone, status = parse_label(val)
                 if not project_name:
                     continue
@@ -205,8 +227,9 @@ def main():
                 n_assign += 1
 
         db.commit()
-        print(f"Imported: {n_res} resources, {len(proj_by_name)} projects, {n_assign} assignments "
-              f"from sheet '{sheet}'. Weeks {col_date[first_col]} .. {col_date[last_col]}.")
+        print(f"Imported: {n_res} resources, {len(proj_by_name)} projects, {n_assign} assignments, "
+              f"{n_timeoff} time-off blocks from sheet '{sheet}'. "
+              f"Weeks {col_date[first_col]} .. {col_date[last_col]}.")
     finally:
         db.close()
 
