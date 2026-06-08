@@ -77,6 +77,32 @@ function colOf(iso: string, weeks: string[]): number {
   const d = parseISO(mondayISO(iso)).getTime();
   return Math.round((d - base) / (7 * 86400000));
 }
+/** Workday index from the board's first Monday: Mon–Fri of week 0 -> 0..4,
+ *  next Mon -> 5, etc. Each week cell is 5 work-days wide, so 1 work-day =
+ *  weekW/5 px. Weekend dates clamp to the end of their work-week. */
+function workdayPos(iso: string, firstMonday: string): number {
+  const base = parseISO(firstMonday).getTime();
+  const delta = Math.round((parseISO(iso).getTime() - base) / 86400000);
+  const wk = Math.floor(delta / 7);
+  const dow = ((delta % 7) + 7) % 7; // 0 Mon .. 6 Sun
+  return wk * 5 + Math.min(dow, 5);
+}
+/** Advance an ISO date by n work-days (skipping Sat/Sun); n may be negative. */
+function addWorkdays(iso: string, n: number): string {
+  let d = parseISO(iso);
+  const step = n >= 0 ? 1 : -1;
+  let remaining = Math.abs(Math.round(n));
+  while (remaining > 0) {
+    d = addDays(d, step);
+    const dow = d.getDay();
+    if (dow !== 0 && dow !== 6) remaining--;
+  }
+  return format(d, "yyyy-MM-dd");
+}
+/** Faint vertical line every work-day (weekW/5 px) so the 5-day grid + the
+ *  day-snapping of drags is legible. */
+const dayGridBg = (weekW: number) =>
+  `repeating-linear-gradient(to right, rgba(120,120,130,0.13) 0px, rgba(120,120,130,0.13) 1px, transparent 1px, transparent ${weekW / 5}px)`;
 function workdaysOverlap(aStart: string, aEnd: string, weekMonday: string): number {
   const ws = parseISO(weekMonday);
   const we = addDays(ws, 4); // Friday
@@ -109,14 +135,16 @@ function computeLoad(assignments: TimelineAssignment[], weeks: string[]): Record
  *  possible — non-overlapping bars share one lane, so a normal sequential
  *  schedule collapses to a single row. */
 function packLanes(items: TimelineAssignment[], weeks: string[]) {
+  const fm = weeks[0] || todayISO();
+  const total = weeks.length * 5;
   const sorted = [...items].sort(
-    (a, b) => colOf(a.start_date, weeks) - colOf(b.start_date, weeks),
+    (a, b) => workdayPos(a.start_date, fm) - workdayPos(b.start_date, fm),
   );
   const laneEnd: number[] = [];
   const placed = sorted.map((a) => {
-    const s = Math.max(0, colOf(a.start_date, weeks));
-    const e = Math.min(weeks.length - 1, colOf(a.end_date, weeks));
-    let lane = laneEnd.findIndex((end) => end < s);
+    const s = Math.max(0, workdayPos(a.start_date, fm));
+    const e = Math.min(total, workdayPos(a.end_date, fm) + 1); // exclusive end
+    let lane = laneEnd.findIndex((end) => end <= s);
     if (lane === -1) {
       lane = laneEnd.length;
       laneEnd.push(e);
@@ -363,7 +391,7 @@ export default function Timeline() {
       if (!d) return;
       const hover = d.rects.find((r) => e.clientY >= r.top && e.clientY <= r.bottom)?.id ?? null;
       if (d.kind === "bar") {
-        const dx = Math.round((e.clientX - d.startX) / weekW);
+        const dx = Math.round((e.clientX - d.startX) / (weekW / 5)); // work-days
         setDrag({ id: d.a.id, mode: d.mode, dx, hoverRes: hover });
       } else {
         setDrag({ row: true, dx: 0, hoverRes: hover });
@@ -381,19 +409,18 @@ export default function Timeline() {
       try {
         if (d.kind === "bar") {
           const a = d.a;
-          const dx = Math.round((e.clientX - d.startX) / weekW);
+          const dx = Math.round((e.clientX - d.startX) / (weekW / 5)); // work-days
           if (d.mode === "move") {
-            const shift = dx * 7;
             const newResource =
               view === "engineer" && hover != null
                 ? hover === 0
                   ? null
                   : hover
                 : a.resource_id ?? null;
-            if (shift === 0 && newResource === (a.resource_id ?? null)) return;
+            if (dx === 0 && newResource === (a.resource_id ?? null)) return;
             const patch = {
-              start_date: shiftISO(a.start_date, shift),
-              end_date: shiftISO(a.end_date, shift),
+              start_date: addWorkdays(a.start_date, dx),
+              end_date: addWorkdays(a.end_date, dx),
               resource_id: newResource,
             };
             patchLocal(a.id, patch);
@@ -401,16 +428,18 @@ export default function Timeline() {
             const inv = { start_date: a.start_date, end_date: a.end_date, resource_id: a.resource_id ?? null };
             pushUndo("move", async () => { patchLocal(a.id, inv); await patchTimelineAssignment(a.id, inv); });
           } else if (d.mode === "l") {
+            if (dx === 0) return;
             const os = a.start_date;
-            let ns = shiftISO(a.start_date, dx * 7);
+            let ns = addWorkdays(a.start_date, dx);
             if (parseISO(ns) > parseISO(a.end_date)) ns = a.end_date;
             if (ns === a.start_date) return;
             patchLocal(a.id, { start_date: ns });
             await patchTimelineAssignment(a.id, { start_date: ns });
             pushUndo("resize", async () => { patchLocal(a.id, { start_date: os }); await patchTimelineAssignment(a.id, { start_date: os }); });
           } else {
+            if (dx === 0) return;
             const oe = a.end_date;
-            let ne = shiftISO(a.end_date, dx * 7);
+            let ne = addWorkdays(a.end_date, dx);
             if (parseISO(ne) < parseISO(a.start_date)) ne = a.start_date;
             if (ne === a.end_date) return;
             patchLocal(a.id, { end_date: ne });
@@ -484,7 +513,7 @@ export default function Timeline() {
     <div className="space-y-4 select-none">
       <PageHeader
         title="Timeline Estimator"
-        subtitle="Drag bars to reschedule, drag onto another engineer to reassign, drag edges to resize. Cells over 100% are over-allocated."
+        subtitle="Each cell is one work-week (5 days); drag snaps to the day. Drag bars to reschedule, onto another engineer to reassign, or by the edges to resize. Use From/To to look beyond the default 8 weeks."
         actions={
           <div className="flex items-center gap-2">
             <button className="btn-ghost text-sm" onClick={() => setShowResources(true)}>
@@ -615,13 +644,17 @@ export default function Timeline() {
                 ))}
               </div>
 
-              {/* today line */}
-              {todayCol >= 0 && todayCol < weeks.length && (
-                <div
-                  className="absolute top-0 bottom-0 w-px bg-brand-red/40 z-10 pointer-events-none"
-                  style={{ left: LABEL_W + todayCol * weekW + weekW / 2 }}
-                />
-              )}
+              {/* today line — positioned at today's work-day */}
+              {weeks.length > 0 && (() => {
+                const tp = workdayPos(todayISO(), weeks[0]);
+                if (tp < 0 || tp >= weeks.length * 5) return null;
+                return (
+                  <div
+                    className="absolute top-0 bottom-0 w-px bg-brand-red/50 z-10 pointer-events-none"
+                    style={{ left: LABEL_W + tp * (weekW / 5) + (weekW / 5) / 2 }}
+                  />
+                );
+              })()}
 
               {view === "engineer" ? (
                 <EngineerView
@@ -764,22 +797,27 @@ function FilterMenu({ label, options, labels, selected, onChange }: { label: str
 // ---------------- bar ----------------
 function Bar({ a, ctx, top = 4, height = ROW_H - 8 }: { a: TimelineAssignment; ctx: Ctx; top?: number; height?: number }) {
   const { weeks, weekW, drag } = ctx;
-  let start = Math.max(0, colOf(a.start_date, weeks));
-  let end = Math.min(weeks.length - 1, colOf(a.end_date, weeks));
-  if (end < 0 || start > weeks.length - 1 || end < start) return null;
-  const st = STATUS_MAP[a.effective_status || "in_progress"] || STATUS_MAP["in_progress"];
-
-  let left = start * weekW + 2;
-  let width = (end - start + 1) * weekW - 4;
+  if (!weeks.length) return null;
+  const fm = weeks[0];
+  const total = weeks.length * 5;            // total work-days on the board
+  const dw = weekW / 5;                       // px per work-day
+  let sPos = workdayPos(a.start_date, fm);
+  let ePos = workdayPos(a.end_date, fm) + 1;  // inclusive end -> exclusive boundary
   const active = drag && drag.id === a.id;
   if (active) {
-    if (drag!.mode === "move") left += drag!.dx * weekW;
-    else if (drag!.mode === "l") {
-      left += drag!.dx * weekW;
-      width -= drag!.dx * weekW;
-    } else width += drag!.dx * weekW;
-    width = Math.max(weekW - 4, width);
+    if (drag!.mode === "move") { sPos += drag!.dx; ePos += drag!.dx; }
+    else if (drag!.mode === "l") sPos += drag!.dx;
+    else ePos += drag!.dx;
+    if (ePos < sPos + 1) ePos = sPos + 1;     // keep at least one work-day
   }
+  // cull bars fully outside the window (keep while actively dragging)
+  if (!active && (ePos <= 0 || sPos >= total)) return null;
+  const st = STATUS_MAP[a.effective_status || "in_progress"] || STATUS_MAP["in_progress"];
+
+  const vS = active ? sPos : Math.max(0, sPos);
+  const vE = active ? ePos : Math.min(total, ePos);
+  const left = vS * dw + 2;
+  const width = Math.max(dw - 4, (vE - vS) * dw - 4);
   const util = a.utilization != null ? `${Math.round(a.utilization * 100)}%` : "";
 
   return (
@@ -817,6 +855,7 @@ function Track({ ctx, children }: { ctx: Ctx; children?: ReactNode }) {
           <div key={w} className="border-r border-brand-lightgray/60" style={{ width: weekW }} />
         ))}
       </div>
+      <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: dayGridBg(weekW) }} />
       {children}
     </div>
   );
@@ -965,11 +1004,15 @@ function EngineerView({
                         />
                       );
                     })}
+                    {/* faint day grid (5 work-days per cell) */}
+                    <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: dayGridBg(weekW) }} />
                     {/* time-off bands (right-click to remove) */}
                     {tos.map((t) => {
-                      const s = Math.max(0, colOf(t.start_date, weeks));
-                      const e2 = Math.min(weeks.length - 1, colOf(t.end_date, weeks));
-                      if (e2 < 0 || s > weeks.length - 1 || e2 < s) return null;
+                      const dwpx = weekW / 5;
+                      const total = weeks.length * 5;
+                      const sP = Math.max(0, workdayPos(t.start_date, weeks[0]));
+                      const eP = Math.min(total, workdayPos(t.end_date, weeks[0]) + 1);
+                      if (eP <= 0 || sP >= total || eP <= sP) return null;
                       return (
                         <div
                           key={`to-${t.id}`}
@@ -977,8 +1020,8 @@ function EngineerView({
                           title={`${t.reason || "OOO"} — right-click to remove`}
                           className="absolute top-0 z-[1] flex items-center gap-1 px-1.5 text-[10px] font-semibold text-slate-500 truncate"
                           style={{
-                            left: s * weekW + 1,
-                            width: (e2 - s + 1) * weekW - 2,
+                            left: sP * dwpx + 1,
+                            width: (eP - sP) * dwpx - 2,
                             height: rowH,
                             background:
                               "repeating-linear-gradient(45deg,#e5e7eb,#e5e7eb 6px,#eef0f2 6px,#eef0f2 12px)",
@@ -1024,6 +1067,7 @@ function EngineerView({
                   {weeks.map((w, i) => (
                     <div key={w} className="absolute top-0 border-r border-brand-lightgray/60" style={{ left: i * weekW, width: weekW, height: rowH }} />
                   ))}
+                  <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: dayGridBg(weekW) }} />
                   {placed.map(({ a, lane }) => (
                     <Bar key={a.id} a={a} ctx={ctx} top={lane * LANE_H + 2} height={LANE_H - 4} />
                   ))}

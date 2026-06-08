@@ -384,19 +384,16 @@ def get_board(
     timeoff = db.query(TimelineTimeOff).all()
 
     # ---- Resolve the week window ----
-    # Auto mode keeps the date axis running ~2 weeks before today through
-    # ~16 weeks after today, so the week header stays filled out even after
-    # every project has ended (no truncating the columns to the data range).
-    # An explicit start/end (the date-window filter) is honoured verbatim.
-    starts = [a.start_date for a in assignments]
-    ends = [a.end_date for a in assignments]
+    # Default view starts at the CURRENT work-week and runs 8 weeks out (no
+    # past lead-in) — ongoing work simply renders clipped at the left edge.
+    # An explicit start/end (the From/To date filter) is honoured verbatim so
+    # the user can look further back or ahead.
     today = date.today()
-    history_floor = _monday(today) - timedelta(weeks=2)
-    forward_horizon = today + timedelta(weeks=16)
+    this_monday = _monday(today)
     if start is None:
-        start = min([*starts, history_floor])
+        start = this_monday
     if end is None:
-        end = max([*ends, forward_horizon])
+        end = this_monday + timedelta(weeks=8)
     first_monday = _monday(start)
     last_monday = _monday(end)
     weeks: list[date] = []
