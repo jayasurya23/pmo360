@@ -651,7 +651,7 @@ export default function Timeline() {
                 return (
                   <div
                     className="absolute top-0 bottom-0 w-px bg-brand-red/50 z-10 pointer-events-none"
-                    style={{ left: LABEL_W + tp * (weekW / 5) + (weekW / 5) / 2 }}
+                    style={{ left: LABEL_W + tp * (weekW / 5) }}
                   />
                 );
               })()}
