@@ -938,7 +938,7 @@ function EngineerView({
       {groups.map((g) => (
         <div key={g.discipline}>
           <button
-            className="flex w-full bg-slate-200/70 border-y border-brand-lightgray/60 sticky left-0"
+            className="flex w-full bg-slate-400/80 border-y border-brand-lightgray/60 sticky left-0"
             onClick={() => onToggle(g.discipline)}
           >
             <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-900 flex items-center gap-1" style={{ width: LABEL_W }}>
@@ -1074,7 +1074,7 @@ function EngineerView({
           const rowH = lanes * LANE_H;
           return (
             <div data-res-row="0" className={clsx(hoverRes === 0 && "bg-rose-50/40")}>
-              <div className="flex bg-slate-200/70 border-y border-brand-lightgray/60">
+              <div className="flex bg-slate-400/80 border-y border-brand-lightgray/60">
                 <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-900" style={{ width: LABEL_W }}>
                   Unassigned
                 </div>
@@ -1681,7 +1681,7 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
         <tbody>
           {groups.map((g) => (
             <Fragment key={g.discipline}>
-              <tr className="bg-slate-200/70">
+              <tr className="bg-slate-400/80">
                 <td colSpan={N_COLS} className="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-900">
                   <DiscTag d={g.discipline} /> {g.discipline} · {g.rows.length}
                 </td>
