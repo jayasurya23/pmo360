@@ -226,7 +226,7 @@ export default function Timeline() {
   const weekW = ZOOMS[zoom];
 
   // dialogs
-  const [showNewProject, setShowNewProject] = useState(true);
+  const [showNewProject, setShowNewProject] = useState(false);
   const [showResources, setShowResources] = useState(false);
   const [editing, setEditing] = useState<TimelineAssignment | null>(null);
   const [addingToProject, setAddingToProject] = useState<number | null>(null);
@@ -514,7 +514,7 @@ export default function Timeline() {
     <div className="space-y-4 select-none">
       <PageHeader
         title="Timeline Estimator"
-        subtitle="Each cell is one work-week (5 days); drag snaps to the day. Drag bars to reschedule, onto another engineer to reassign, or by the edges to resize. Use From/To to look beyond the default 8 weeks."
+        subtitle="Capacity planner — each cell is a work-week. Drag bars to reschedule, drag edges to resize, right-click for options."
         actions={
           <div className="flex items-center gap-2">
             <button className="btn-ghost text-sm" onClick={() => setShowResources(true)}>
@@ -528,7 +528,7 @@ export default function Timeline() {
       />
 
       {/* toolbar */}
-      <div className="flex flex-wrap items-center gap-3 text-xs">
+      <div className="card flex flex-wrap items-center gap-1.5 px-3 py-2 text-xs">
         <Segmented
           options={[
             ["engineer", "By engineer"],
@@ -538,24 +538,19 @@ export default function Timeline() {
           value={view}
           onChange={(v) => setView(v as View)}
         />
+        <Divider />
         <Segmented options={Object.keys(ZOOMS).map((z) => [z, z] as [string, string])} value={zoom} onChange={setZoom} />
-        <button className="btn-ghost py-1 px-2" onClick={jumpToToday}>
-          Today
-        </button>
+        <button className="btn-ghost py-1 px-2.5" onClick={jumpToToday}>Today</button>
         <button
-          className="btn-ghost py-1 px-2 disabled:opacity-40"
+          className="btn-ghost py-1 px-2.5 disabled:opacity-40"
           onClick={() => void doUndo()}
           disabled={undoStack.length === 0}
           title={undoStack.length ? `Undo ${undoStack[undoStack.length - 1].label} (Ctrl+Z)` : "Nothing to undo"}
         >
           ↩ Undo{undoStack.length ? ` (${undoStack.length})` : ""}
         </button>
-        <FilterMenu
-          label="Discipline"
-          options={DISCIPLINES}
-          selected={discFilter}
-          onChange={setDiscFilter}
-        />
+        <Divider />
+        <FilterMenu label="Discipline" options={DISCIPLINES} selected={discFilter} onChange={setDiscFilter} />
         <FilterMenu
           label="Status"
           options={STATUSES.map((s) => s.value)}
@@ -563,48 +558,20 @@ export default function Timeline() {
           selected={statusFilter}
           onChange={setStatusFilter}
         />
+        <Divider />
         <label className="flex items-center gap-1 text-brand-gray">
-          From
-          <input type="date" className="rounded border border-slate-200 px-1 py-0.5" value={winStart} onChange={(e) => setWinStart(e.target.value)} />
+          <span className="text-[10px] uppercase tracking-wider">From</span>
+          <input type="date" className="rounded-md border border-slate-300 px-2 py-1" value={winStart} onChange={(e) => setWinStart(e.target.value)} />
         </label>
         <label className="flex items-center gap-1 text-brand-gray">
-          To
-          <input type="date" className="rounded border border-slate-200 px-1 py-0.5" value={winEnd} onChange={(e) => setWinEnd(e.target.value)} />
+          <span className="text-[10px] uppercase tracking-wider">To</span>
+          <input type="date" className="rounded-md border border-slate-300 px-2 py-1" value={winEnd} onChange={(e) => setWinEnd(e.target.value)} />
         </label>
         {(winStart || winEnd) && (
-          <button
-            className="text-brand-red hover:underline"
-            onClick={() => {
-              setWinStart("");
-              setWinEnd("");
-            }}
-          >
-            reset
-          </button>
+          <button className="text-brand-red hover:underline" onClick={() => { setWinStart(""); setWinEnd(""); }}>reset</button>
         )}
         <div className="flex-1" />
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
-          <span className="inline-flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wider text-brand-gray">Status</span>
-            {STATUSES.map((s) => (
-              <span key={s.value} className="inline-flex items-center gap-1">
-                <span className="inline-block h-3 w-3 rounded" style={{ background: s.bg }} />
-                {s.label}
-              </span>
-            ))}
-          </span>
-          <span className="inline-flex items-center gap-2">
-            <span className="text-[10px] uppercase tracking-wider text-brand-gray">Utilization</span>
-            <span className="inline-flex items-center gap-1">
-              <span className="inline-block h-3 w-3 rounded border border-brand-lightgray" style={{ background: "#eaf6ee" }} />
-              ≤ 100%
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <span className="inline-block h-3 w-3 rounded border border-brand-lightgray" style={{ background: "#fce8ea" }} />
-              &gt; 100% over-allocated
-            </span>
-          </span>
-        </div>
+        <LegendMenu />
       </div>
 
       {loading && <div className="text-sm text-brand-gray">Loading timeline…</div>}
@@ -791,6 +758,54 @@ function FilterMenu({ label, options, labels, selected, onChange }: { label: str
               clear
             </button>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Divider() {
+  return <span className="mx-1 h-5 w-px bg-slate-200" aria-hidden />;
+}
+function LegendMenu() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+  return (
+    <div ref={ref} className="relative">
+      <button
+        className="rounded-full border border-slate-200 px-3 py-1 font-semibold text-slate-500 hover:text-slate-900"
+        onClick={() => setOpen((o) => !o)}
+      >
+        Legend
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1 w-60 bg-white border border-slate-200 rounded-lg shadow-lg p-3 space-y-2">
+          <div className="text-[10px] uppercase tracking-wider text-brand-gray">Status</div>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+            {STATUSES.map((s) => (
+              <span key={s.value} className="inline-flex items-center gap-1.5 text-[11px] text-slate-700">
+                <span className="inline-block h-3 w-3 rounded" style={{ background: s.bg }} />
+                {s.label}
+              </span>
+            ))}
+          </div>
+          <div className="border-t border-slate-100 pt-2 text-[10px] uppercase tracking-wider text-brand-gray">Cell utilization</div>
+          <div className="flex flex-col gap-1.5 text-[11px] text-slate-700">
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded border border-brand-lightgray" style={{ background: "#eaf6ee" }} /> ≤ 100% (has capacity)
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded border border-brand-lightgray" style={{ background: "#fce8ea" }} /> &gt; 100% over-allocated
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="inline-block h-3 w-3 rounded" style={{ background: "#eceef1" }} /> time off / not started
+            </span>
+          </div>
         </div>
       )}
     </div>
