@@ -42,7 +42,7 @@ const LANE_H = 42; // height of one stacked bar lane inside an engineer row
 const ZOOMS: Record<string, number> = { Compact: 84, Comfortable: 116, Wide: 156 };
 
 const STATUSES = [
-  { value: "in_progress", label: "In Progress", bg: "#ad1f2b", fg: "#ffffff" },
+  { value: "in_progress", label: "In Progress", bg: "#2563eb", fg: "#ffffff" },
   { value: "ahead", label: "Ahead of Schedule", bg: "#1aa6c9", fg: "#ffffff" },
   { value: "on_hold", label: "On Hold", bg: "#c7bb2e", fg: "#1a1a1a" },
   { value: "delayed", label: "Delayed", bg: "#e12a3f", fg: "#ffffff" },
@@ -938,11 +938,11 @@ function EngineerView({
       {groups.map((g) => (
         <div key={g.discipline}>
           <button
-            className="flex w-full bg-slate-50/80 border-b border-brand-lightgray/60 sticky left-0"
+            className="flex w-full bg-slate-200/70 border-y border-brand-lightgray/60 sticky left-0"
             onClick={() => onToggle(g.discipline)}
           >
-            <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-gray" style={{ width: LABEL_W }}>
-              {collapsed.has(g.discipline) ? "▸" : "▾"} {g.discipline} · {g.rows.length}
+            <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-900 flex items-center gap-1" style={{ width: LABEL_W }}>
+              {collapsed.has(g.discipline) ? "▸" : "▾"} <DiscTag d={g.discipline} /> {g.discipline} · {g.rows.length}
             </div>
           </button>
           {!collapsed.has(g.discipline) &&
@@ -1074,8 +1074,8 @@ function EngineerView({
           const rowH = lanes * LANE_H;
           return (
             <div data-res-row="0" className={clsx(hoverRes === 0 && "bg-rose-50/40")}>
-              <div className="flex bg-slate-50/80 border-b border-brand-lightgray/60">
-                <div className="px-3 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-gray" style={{ width: LABEL_W }}>
+              <div className="flex bg-slate-200/70 border-y border-brand-lightgray/60">
+                <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-900" style={{ width: LABEL_W }}>
                   Unassigned
                 </div>
               </div>
@@ -1587,6 +1587,9 @@ function TimeOffDialog({
 const N_COLS = 8;
 function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<string, number[]> }) {
   const weeks = board.weeks;
+  const HORIZON = 7;                       // current week + 6 ahead
+  const vweeks = weeks.slice(0, HORIZON);
+  const BARW = 22;                         // px per weekly-load bar (spaced out)
   const todayCol = colOf(todayISO(), weeks);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const toggle = (id: number) =>
@@ -1616,7 +1619,7 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
     const arr = load[String(r.id)] || [];
     const avail = board.availability?.[String(r.id)] || [];
     let sum = 0, peak = 0, over = 0, ooo = 0;
-    for (let i = 0; i < weeks.length; i++) {
+    for (let i = 0; i < vweeks.length; i++) {
       const v = arr[i] || 0;
       const a = avail[i] ?? 1;
       sum += v;
@@ -1627,7 +1630,7 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
     const now = todayCol >= 0 ? arr[todayCol] || 0 : 0;
     return {
       arr, avail, now,
-      avg: weeks.length ? sum / weeks.length : 0,
+      avg: vweeks.length ? sum / vweeks.length : 0,
       peak, over, ooo,
       projects: new Set((assignsByRes.get(r.id) || []).map((a) => a.timeline_project_id)).size,
     };
@@ -1639,8 +1642,9 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
   const teamNowAvg = nPeople ? teamNow / nPeople : 0;
 
   const pct = (v: number) => `${Math.round(v * 100)}%`;
+  // green = room · amber = near capacity · red = over · black = OOO/PTO/not-started
   const loadColor = (v: number, blocked: boolean, over: boolean) =>
-    over ? "#e12a3f" : blocked ? "#cbd5e1" : v > 0 ? "#278747" : "#eef0f2";
+    over ? "#e12a3f" : blocked ? "#1a1a1a" : v >= 0.85 ? "#f59e0b" : v > 0 ? "#278747" : "#eef0f2";
 
   return (
     <div className="card p-0 overflow-x-auto">
@@ -1650,11 +1654,11 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
         <span className="text-brand-gray">avg load now {pct(teamNowAvg)}</span>
         <span className="text-brand-gray">{teamOver} over-allocated engineer-weeks</span>
         <span className="text-brand-gray">{teamOoo} time-off engineer-weeks</span>
-        <span className="ml-auto text-[11px] text-brand-gray">click an engineer to see their projects · red = over capacity · gray = time off</span>
+        <span className="ml-auto text-[11px] text-brand-gray">click an engineer to see their projects · green ≤ capacity · amber near full · red over · black = OOO/PTO</span>
       </div>
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-[11px] uppercase tracking-wider text-brand-gray border-b border-brand-lightgray/60">
+          <tr className="text-[11px] uppercase tracking-wider text-brand-gray border-b border-brand-lightgray/60 align-bottom">
             <th className="text-left px-4 py-2 font-semibold">Engineer</th>
             <th className="text-right px-2 py-2 font-semibold">Projects</th>
             <th className="text-right px-2 py-2 font-semibold">Now</th>
@@ -1662,14 +1666,23 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
             <th className="text-right px-2 py-2 font-semibold">Peak</th>
             <th className="text-right px-2 py-2 font-semibold">Over</th>
             <th className="text-right px-2 py-2 font-semibold">Time off</th>
-            <th className="text-left px-4 py-2 font-semibold">Weekly load</th>
+            <th className="text-left px-4 py-2 font-semibold">
+              Weekly load <span className="font-normal normal-case">(next 6 wks)</span>
+              <div className="flex gap-1 mt-1 normal-case tracking-normal">
+                {vweeks.map((w) => (
+                  <span key={w} className="text-center text-[9px] font-normal text-brand-gray" style={{ width: BARW }}>
+                    {format(parseISO(w), "M/d")}
+                  </span>
+                ))}
+              </div>
+            </th>
           </tr>
         </thead>
         <tbody>
           {groups.map((g) => (
             <Fragment key={g.discipline}>
-              <tr className="bg-slate-50/80">
-                <td colSpan={N_COLS} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-gray">
+              <tr className="bg-slate-200/70">
+                <td colSpan={N_COLS} className="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-900">
                   <DiscTag d={g.discipline} /> {g.discipline} · {g.rows.length}
                 </td>
               </tr>
@@ -1697,18 +1710,18 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
                       <td className="text-right px-2 py-2">{m.over ? <span className="text-brand-red font-semibold">{m.over}</span> : <span className="text-brand-gray">0</span>}</td>
                       <td className="text-right px-2 py-2 text-brand-gray">{m.ooo || "—"}</td>
                       <td className="px-4 py-1.5">
-                        <div className="flex items-end gap-px h-7">
-                          {weeks.map((w, i) => {
+                        <div className="flex items-end gap-1 h-9">
+                          {vweeks.map((w, i) => {
                             const v = m.arr[i] || 0;
                             const a = m.avail[i] ?? 1;
                             const blocked = a < 0.999;
                             const over = v > a + 0.0001;
-                            const h = Math.max(2, Math.min(28, v * 22));
+                            const h = blocked && v === 0 ? 34 : Math.max(3, Math.min(34, v * 26));
                             return (
                               <div
                                 key={w}
                                 title={`${format(parseISO(w), "d MMM")}: ${pct(v)} load${blocked ? ` · ${pct(1 - a)} off` : ""}`}
-                                style={{ width: 7, height: blocked && v === 0 ? 6 : h, background: loadColor(v, blocked, over), borderRadius: 1 }}
+                                style={{ width: BARW, height: h, background: loadColor(v, blocked, over), borderRadius: 2 }}
                               />
                             );
                           })}
