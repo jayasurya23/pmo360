@@ -397,6 +397,7 @@ export interface TimelineResource {
   discipline: string;
   title?: string | null;
   is_placeholder: boolean;
+  available_from?: string | null;
   active: boolean;
   order_index: number;
 }

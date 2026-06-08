@@ -52,12 +52,13 @@ const STATUSES = [
 const STATUS_MAP: Record<string, { label: string; bg: string; fg: string }> =
   Object.fromEntries(STATUSES.map((s) => [s.value, s]));
 
-const DISCIPLINES = ["Electrical", "Civil", "Structural", "Water", "General", "Other"];
+const DISCIPLINES = ["Electrical", "Civil", "Structural", "Water", "Vendors", "General", "Other"];
 const DISC_TAG: Record<string, { short: string; color: string }> = {
   Electrical: { short: "E", color: "#ad1f2b" },
   Civil: { short: "C", color: "#185fa5" },
   Structural: { short: "S", color: "#5e4b40" },
   Water: { short: "W", color: "#1aa6c9" },
+  Vendors: { short: "V", color: "#6d28d9" },
   General: { short: "G", color: "#4d4d4f" },
   Other: { short: "•", color: "#4d4d4f" },
 };
@@ -225,7 +226,7 @@ export default function Timeline() {
   const weekW = ZOOMS[zoom];
 
   // dialogs
-  const [showNewProject, setShowNewProject] = useState(false);
+  const [showNewProject, setShowNewProject] = useState(true);
   const [showResources, setShowResources] = useState(false);
   const [editing, setEditing] = useState<TimelineAssignment | null>(null);
   const [addingToProject, setAddingToProject] = useState<number | null>(null);
@@ -519,8 +520,8 @@ export default function Timeline() {
             <button className="btn-ghost text-sm" onClick={() => setShowResources(true)}>
               👥 Resources
             </button>
-            <button className="btn-primary text-sm" onClick={() => setShowNewProject(true)}>
-              + New project
+            <button className="btn-primary text-sm" onClick={() => setShowNewProject((v) => !v)}>
+              {showNewProject ? "✕ Close form" : "+ New project"}
             </button>
           </div>
         }
@@ -609,18 +610,18 @@ export default function Timeline() {
       {loading && <div className="text-sm text-brand-gray">Loading timeline…</div>}
       {error && <div className="text-sm text-brand-red">{error}</div>}
 
-      {board && !loading && view === "workload" && (
-        <WorkloadView board={board} load={load} />
-      )}
-
-      {board && !loading && view !== "workload" &&
-        (board.assignments.length === 0 && board.resources.length === 0 ? (
-          <EmptyState
-            title="No timeline data yet"
-            hint="Add resources (engineers / placeholders) via Resources, then create a project and assign work."
-          />
-        ) : (
-          <div className="card p-0 overflow-x-auto" ref={scrollRef}>
+      {board && !loading && (
+        <div className="flex gap-4 items-start">
+          <div className="flex-1 min-w-0">
+            {view === "workload" ? (
+              <WorkloadView board={board} load={load} />
+            ) : board.assignments.length === 0 && board.resources.length === 0 ? (
+              <EmptyState
+                title="No timeline data yet"
+                hint="Add resources (engineers / placeholders) via Resources, then create a project and assign work."
+              />
+            ) : (
+              <div className="card p-0 overflow-x-auto" ref={scrollRef}>
             <div style={{ width: gridWidth, minWidth: gridWidth, position: "relative" }}>
               {/* header */}
               <div className="flex sticky top-0 z-20 bg-white border-b border-brand-lightgray">
@@ -682,10 +683,12 @@ export default function Timeline() {
               )}
             </div>
           </div>
-        ))}
-
-      {showNewProject && (
-        <NewProjectDialog board={board} onClose={() => setShowNewProject(false)} onSaved={() => { setShowNewProject(false); void reload(); }} />
+            )}
+          </div>
+          {showNewProject && (
+            <NewProjectPanel board={board} onClose={() => setShowNewProject(false)} onSaved={() => void reload()} />
+          )}
+        </div>
       )}
       {showResources && (
         <ResourceManagerDialog onClose={() => setShowResources(false)} onChanged={() => void reload()} />
@@ -1033,6 +1036,28 @@ function EngineerView({
                         </div>
                       );
                     })}
+                    {/* pre-start block: weeks before a placeholder's start date */}
+                    {r.available_from && (() => {
+                      const dwpx = weekW / 5;
+                      const endPos = Math.min(weeks.length * 5, workdayPos(r.available_from, weeks[0]));
+                      if (endPos <= 0) return null;
+                      return (
+                        <div
+                          title={`Not started yet — available from ${format(parseISO(r.available_from), "d MMM yyyy")}`}
+                          className="absolute top-0 z-[1] flex items-center gap-1 px-1.5 text-[10px] font-semibold text-violet-700 truncate"
+                          style={{
+                            left: 1,
+                            width: endPos * dwpx - 2,
+                            height: rowH,
+                            background: "repeating-linear-gradient(45deg,#ede9fe,#ede9fe 6px,#f5f3ff 6px,#f5f3ff 12px)",
+                            border: "1px dashed #c4b5fd",
+                            borderRadius: 4,
+                          }}
+                        >
+                          ⏳ Starts {format(parseISO(r.available_from), "d MMM")}
+                        </div>
+                      );
+                    })()}
                     {placed.map(({ a, lane }) => (
                       <Bar key={a.id} a={a} ctx={ctx} top={lane * LANE_H + 2} height={LANE_H - 4} />
                     ))}
@@ -1161,7 +1186,7 @@ const Field = ({ label, children }: { label: string; children: ReactNode }) => (
   </label>
 );
 
-function NewProjectDialog({ board, onClose, onSaved }: { board: TimelineBoard | null; onClose: () => void; onSaved: () => void }) {
+function NewProjectPanel({ board, onClose, onSaved }: { board: TimelineBoard | null; onClose: () => void; onSaved: () => void }) {
   const [name, setName] = useState("");
   const [client, setClient] = useState("");
   const [status, setStatus] = useState("in_progress");
@@ -1173,41 +1198,47 @@ function NewProjectDialog({ board, onClose, onSaved }: { board: TimelineBoard | 
   const [util, setUtil] = useState(1.0);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
 
   async function save() {
     if (!name.trim()) { setErr("Project name is required."); return; }
-    setSaving(true); setErr(null);
+    setSaving(true); setErr(null); setDone(null);
     try {
       const p = await createTimelineProject({ name, client: client || null, status });
       if (start && end)
         await createTimelineAssignment({ timeline_project_id: p.id, resource_id: resourceId ? Number(resourceId) : null, discipline, milestone: milestone || null, start_date: start, end_date: end, utilization: util });
+      // keep the panel open for rapid entry; just reset + refresh the board
+      setDone(`Added “${name.trim()}”.`);
+      setName(""); setClient(""); setStatus("in_progress");
+      setResourceId(""); setMilestone(""); setStart(""); setEnd(""); setUtil(1.0);
+      setSaving(false);
       onSaved();
     } catch (e: any) { setErr(e?.response?.data?.detail || e?.message || "Save failed"); setSaving(false); }
   }
   return (
-    <Modal title="New project" onClose={onClose}>
+    <div className="card w-[320px] shrink-0 p-4 sticky top-4 self-start">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="section-title">New project</h3>
+        <button className="text-brand-gray hover:text-brand-red text-xl leading-none" title="Close panel" onClick={onClose}>×</button>
+      </div>
       <div className="space-y-3">
         <Field label="Project name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Client"><input className={inputCls} value={client} onChange={(e) => setClient(e.target.value)} /></Field>
-          <Field label="Status"><select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value)}>{STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select></Field>
-        </div>
+        <Field label="Client"><input className={inputCls} value={client} onChange={(e) => setClient(e.target.value)} /></Field>
+        <Field label="Status"><select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value)}>{STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select></Field>
         <div className="border-t border-brand-lightgray/60 pt-3 text-[11px] uppercase tracking-wider text-brand-gray">First assignment (optional)</div>
+        <Field label="Assigned to"><select className={inputCls} value={resourceId} onChange={(e) => setResourceId(e.target.value)}><option value="">Unassigned</option>{(board?.resources ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Field>
         <div className="grid grid-cols-2 gap-3">
-          <Field label="Assigned to"><select className={inputCls} value={resourceId} onChange={(e) => setResourceId(e.target.value)}><option value="">Unassigned</option>{(board?.resources ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Field>
           <Field label="Discipline"><select className={inputCls} value={discipline} onChange={(e) => setDiscipline(e.target.value)}>{DISCIPLINES.map((d) => <option key={d}>{d}</option>)}</select></Field>
+          <Field label="% Utilization"><select className={inputCls} value={util} onChange={(e) => setUtil(Number(e.target.value))}>{UTILS.map((u) => <option key={u} value={u}>{Math.round(u * 100)}%</option>)}</select></Field>
           <Field label="Start"><input type="date" className={inputCls} value={start} onChange={(e) => setStart(e.target.value)} /></Field>
           <Field label="End"><input type="date" className={inputCls} value={end} onChange={(e) => setEnd(e.target.value)} /></Field>
-          <Field label="Milestone"><select className={inputCls} value={milestone} onChange={(e) => setMilestone(e.target.value)}>{MILESTONES.map((m) => <option key={m} value={m}>{m || "—"}</option>)}</select></Field>
-          <Field label="% Utilization"><select className={inputCls} value={util} onChange={(e) => setUtil(Number(e.target.value))}>{UTILS.map((u) => <option key={u} value={u}>{Math.round(u * 100)}%</option>)}</select></Field>
         </div>
+        <Field label="Milestone"><select className={inputCls} value={milestone} onChange={(e) => setMilestone(e.target.value)}>{MILESTONES.map((m) => <option key={m} value={m}>{m || "—"}</option>)}</select></Field>
         {err && <div className="text-sm text-brand-red">{err}</div>}
-        <div className="flex justify-end gap-2 pt-1">
-          <button className="btn-ghost" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" onClick={save} disabled={saving}>{saving ? "Saving…" : "Create"}</button>
-        </div>
+        {done && <div className="text-xs text-green-600">{done} Add another or close ×.</div>}
+        <button className="btn-primary w-full" onClick={save} disabled={saving}>{saving ? "Saving…" : "Create project"}</button>
       </div>
-    </Modal>
+    </div>
   );
 }
 
@@ -1299,6 +1330,9 @@ function ResourceManagerDialog({ onClose, onChanged }: { onClose: () => void; on
   const [discipline, setDiscipline] = useState("Electrical");
   const [title, setTitle] = useState("");
   const [placeholder, setPlaceholder] = useState(false);
+  const [availFrom, setAvailFrom] = useState("");
+  const [linkingId, setLinkingId] = useState<number | null>(null);
+  const [linkName, setLinkName] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function load() { setResources(await listTimelineResources(true)); }
@@ -1308,13 +1342,23 @@ function ResourceManagerDialog({ onClose, onChanged }: { onClose: () => void; on
     if (!name.trim()) return;
     setBusy(true);
     try {
-      await createTimelineResource({ name: name.trim(), discipline, title: title || null, is_placeholder: placeholder, order_index: resources.length });
-      setName(""); setTitle(""); setPlaceholder(false);
+      await createTimelineResource({ name: name.trim(), discipline, title: title || null, is_placeholder: placeholder, available_from: (placeholder && availFrom) ? availFrom : null, order_index: resources.length });
+      setName(""); setTitle(""); setPlaceholder(false); setAvailFrom("");
       await load(); onChanged();
     } finally { setBusy(false); }
   }
   async function setDisc(r: TimelineResource, d: string) { await patchTimelineResource(r.id, { discipline: d }); await load(); onChanged(); }
+  async function setAvail(r: TimelineResource, v: string) { await patchTimelineResource(r.id, { available_from: v || null }); await load(); onChanged(); }
   async function toggleActive(r: TimelineResource) { await patchTimelineResource(r.id, { active: !r.active }); await load(); onChanged(); }
+  async function linkToPerson(r: TimelineResource) {
+    const nm = linkName.trim();
+    if (!nm) return;
+    // Hiring a placeholder: take the real person's name, drop placeholder
+    // status (and the potential-start block — they've started).
+    await patchTimelineResource(r.id, { name: nm, is_placeholder: false, available_from: null });
+    setLinkingId(null); setLinkName("");
+    await load(); onChanged();
+  }
   async function remove(r: TimelineResource) {
     const ok = await confirm({ title: `Remove ${r.name}?`, body: "Their assignments become Unassigned (not deleted).", confirmLabel: "Remove", destructive: true });
     if (!ok) return;
@@ -1335,18 +1379,44 @@ function ResourceManagerDialog({ onClose, onChanged }: { onClose: () => void; on
             <input type="checkbox" checked={placeholder} onChange={(e) => setPlaceholder(e.target.checked)} />
             Placeholder (new hire / vendor — not a real person yet)
           </label>
+          {placeholder && (
+            <label className="flex items-center gap-2 text-xs text-brand-gray">
+              Potential start date
+              <input type="date" className="rounded border border-slate-200 px-2 py-1" value={availFrom} onChange={(e) => setAvailFrom(e.target.value)} />
+              <span className="text-[11px]">(weeks before are blocked)</span>
+            </label>
+          )}
           <button className="btn-primary text-sm" onClick={add} disabled={busy || !name.trim()}>{busy ? "Adding…" : "Add resource"}</button>
         </div>
-        <div className="max-h-72 overflow-y-auto divide-y divide-brand-lightgray/40">
+        <div className="max-h-80 overflow-y-auto divide-y divide-brand-lightgray/40">
           {resources.map((r) => (
-            <div key={r.id} className="flex items-center gap-2 py-2 text-sm">
-              <span className={clsx("flex-1 truncate", !r.active && "text-brand-gray line-through")}>
-                {r.name}{r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
-                {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded bg-slate-100 text-brand-gray">placeholder</span>}
-              </span>
-              <select className="rounded border border-slate-200 text-xs px-1 py-0.5" value={r.discipline} onChange={(e) => void setDisc(r, e.target.value)}>{DISCIPLINES.map((d) => <option key={d}>{d}</option>)}</select>
-              <button className="text-xs text-brand-gray hover:text-brand-red" onClick={() => void toggleActive(r)}>{r.active ? "Hide" : "Show"}</button>
-              <button className="text-xs text-brand-red hover:underline" onClick={() => void remove(r)}>Remove</button>
+            <div key={r.id} className="py-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className={clsx("flex-1 truncate", !r.active && "text-brand-gray line-through")}>
+                  <DiscTag d={r.discipline} />
+                  {r.name}{r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
+                  {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded bg-violet-100 text-violet-700">placeholder</span>}
+                </span>
+                <select className="rounded border border-slate-200 text-xs px-1 py-0.5" value={r.discipline} onChange={(e) => void setDisc(r, e.target.value)}>{DISCIPLINES.map((d) => <option key={d}>{d}</option>)}</select>
+                <button className="text-xs text-brand-gray hover:text-brand-red" onClick={() => void toggleActive(r)}>{r.active ? "Hide" : "Show"}</button>
+                <button className="text-xs text-brand-red hover:underline" onClick={() => void remove(r)}>Remove</button>
+              </div>
+              {r.is_placeholder && (
+                <div className="flex flex-wrap items-center gap-2 pl-1 pt-1.5 text-xs text-brand-gray">
+                  <span>Starts</span>
+                  <input type="date" className="rounded border border-slate-200 px-1.5 py-0.5" value={r.available_from || ""} onChange={(e) => void setAvail(r, e.target.value)} />
+                  <span className="text-brand-lightgray">·</span>
+                  {linkingId === r.id ? (
+                    <span className="inline-flex items-center gap-1">
+                      <input list="timeline-roster" autoFocus className="rounded border border-slate-200 px-1.5 py-0.5" placeholder="Real person's name" value={linkName} onChange={(e) => setLinkName(e.target.value)} />
+                      <button className="text-brand-red font-semibold hover:underline" onClick={() => void linkToPerson(r)}>Link</button>
+                      <button className="text-brand-gray hover:underline" onClick={() => { setLinkingId(null); setLinkName(""); }}>cancel</button>
+                    </span>
+                  ) : (
+                    <button className="text-brand-red hover:underline" onClick={() => { setLinkingId(r.id); setLinkName(""); }}>🔗 Link to person…</button>
+                  )}
+                </div>
+              )}
             </div>
           ))}
           {resources.length === 0 && <div className="py-3 text-sm text-brand-gray">No resources yet.</div>}

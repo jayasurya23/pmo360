@@ -558,15 +558,18 @@ class TimelineResourceIn(BaseModel):
     discipline: str = "Electrical"
     title: Optional[str] = None
     is_placeholder: bool = False
+    available_from: Optional[date] = None
     active: bool = True
     order_index: int = 0
 
 
 class TimelineResourcePatch(BaseModel):
     name: Optional[str] = None
+    user_id: Optional[int] = None
     discipline: Optional[str] = None
     title: Optional[str] = None
     is_placeholder: Optional[bool] = None
+    available_from: Optional[date] = None
     active: Optional[bool] = None
     order_index: Optional[int] = None
 
@@ -578,6 +581,7 @@ class TimelineResourceOut(ORMModel):
     discipline: str = "Electrical"
     title: Optional[str] = None
     is_placeholder: bool = False
+    available_from: Optional[date] = None
     active: bool = True
     order_index: int = 0
 

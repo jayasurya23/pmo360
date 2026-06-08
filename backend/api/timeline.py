@@ -110,6 +110,7 @@ def create_resource(
         discipline=payload.discipline or "Electrical",
         title=(payload.title or None),
         is_placeholder=payload.is_placeholder,
+        available_from=payload.available_from,
         active=payload.active,
         order_index=payload.order_index,
         created_by_id=actor.id,
@@ -419,7 +420,9 @@ def get_board(
                 arr[i] += (wd / 5.0) * util
 
     # ---- Time off + per-resource per-week availability ----
-    # availability = 1 - (blocked workdays / 5), clamped to [0, 1].
+    # availability = 1 - (blocked workdays / 5), clamped to [0, 1]. Blocked
+    # workdays come from explicit time-off AND, for placeholders with a
+    # potential start date, every workday before they're available.
     timeoff_outs: list[TimelineTimeOffOut] = [
         TimelineTimeOffOut(
             id=t.id, resource_id=t.resource_id,
@@ -433,7 +436,17 @@ def get_board(
         for i, wk in enumerate(weeks):
             wd = _workdays_overlap(t.start_date, t.end_date, wk)
             if wd:
-                arr[i] += wd / 5.0  # accumulate blocked fraction for now
+                arr[i] += wd / 5.0  # accumulate blocked fraction
+    # pre-start blocking: workdays before a resource's available_from
+    for r in resources:
+        if r.available_from is None:
+            continue
+        arr = availability.setdefault(str(r.id), [0.0] * len(weeks))
+        cutoff = r.available_from - timedelta(days=1)  # last blocked day
+        for i, wk in enumerate(weeks):
+            if cutoff < wk:
+                continue
+            arr[i] += _workdays_overlap(wk, cutoff, wk) / 5.0
     # convert accumulated blocked fraction -> availability (1 - blocked)
     for rid, arr in availability.items():
         for i in range(len(arr)):

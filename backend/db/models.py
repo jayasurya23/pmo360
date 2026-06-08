@@ -570,9 +570,12 @@ class TimelineResource(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(200), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))       # null for placeholders
-    discipline = Column(String(40), default="Electrical")   # Electrical/Civil/Structural/Water/Other
+    discipline = Column(String(40), default="Electrical")   # Electrical/Civil/Structural/Water/Vendors/Other
     title = Column(String(80))                              # e.g. "EE II", "Intern"
     is_placeholder = Column(Boolean, default=False)
+    # For new-hire / vendor placeholders: the date they (are expected to)
+    # become available. Weeks before this are blocked off on the board.
+    available_from = Column(Date)
     active = Column(Boolean, default=True)
     order_index = Column(Integer, default=0)
     created_by_id = Column(Integer, ForeignKey("users.id"))
