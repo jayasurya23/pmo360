@@ -1470,10 +1470,26 @@ function TimeOffDialog({
 }
 
 // ---------------- workload summary view ----------------
+const N_COLS = 8;
 function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<string, number[]> }) {
   const weeks = board.weeks;
-  const projCount = (rid: number) =>
-    new Set(board.assignments.filter((a) => a.resource_id === rid).map((a) => a.timeline_project_id)).size;
+  const todayCol = colOf(todayISO(), weeks);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const toggle = (id: number) =>
+    setExpanded((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+
+  const assignsByRes = new Map<number, TimelineAssignment[]>();
+  for (const a of board.assignments)
+    if (a.resource_id != null) (assignsByRes.get(a.resource_id) || assignsByRes.set(a.resource_id, []).get(a.resource_id)!).push(a);
+  const timeoffByRes = new Map<number, TimelineTimeOff[]>();
+  for (const t of board.timeoff || [])
+    (timeoffByRes.get(t.resource_id) || timeoffByRes.set(t.resource_id, []).get(t.resource_id)!).push(t);
+  const projName = (id: number) => board.projects.find((p) => p.id === id)?.name || "—";
+  const fmtRange = (s: string, e: string) => `${format(parseISO(s), "d MMM")} – ${format(parseISO(e), "d MMM")}`;
 
   const groups: { discipline: string; rows: TimelineResource[] }[] = [];
   for (const r of board.resources) {
@@ -1494,27 +1510,40 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
       if (v > a + 0.0001) over++;
       if (a < 0.999) ooo++;
     }
-    return { arr, avail, avg: weeks.length ? sum / weeks.length : 0, peak, over, ooo, projects: projCount(r.id) };
+    const now = todayCol >= 0 ? arr[todayCol] || 0 : 0;
+    return {
+      arr, avail, now,
+      avg: weeks.length ? sum / weeks.length : 0,
+      peak, over, ooo,
+      projects: new Set((assignsByRes.get(r.id) || []).map((a) => a.timeline_project_id)).size,
+    };
   };
 
   // team rollup
-  let teamOver = 0, teamOoo = 0;
-  for (const r of board.resources) { const m = metrics(r); teamOver += m.over; teamOoo += m.ooo; }
+  let teamOver = 0, teamOoo = 0, teamNow = 0, nPeople = board.resources.length;
+  for (const r of board.resources) { const m = metrics(r); teamOver += m.over; teamOoo += m.ooo; teamNow += m.now; }
+  const teamNowAvg = nPeople ? teamNow / nPeople : 0;
+
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  const loadColor = (v: number, blocked: boolean, over: boolean) =>
+    over ? "#e12a3f" : blocked ? "#cbd5e1" : v > 0 ? "#278747" : "#eef0f2";
 
   return (
     <div className="card p-0 overflow-x-auto">
       <div className="px-4 py-3 border-b border-brand-lightgray/60 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
         <span className="font-semibold">Team workload</span>
-        <span className="text-brand-gray">{board.resources.length} people</span>
+        <span className="text-brand-gray">{nPeople} people</span>
+        <span className="text-brand-gray">avg load now {pct(teamNowAvg)}</span>
         <span className="text-brand-gray">{teamOver} over-allocated engineer-weeks</span>
         <span className="text-brand-gray">{teamOoo} time-off engineer-weeks</span>
-        <span className="ml-auto text-[11px] text-brand-gray">avg / peak load over {weeks.length} weeks · red = over capacity · gray = time off</span>
+        <span className="ml-auto text-[11px] text-brand-gray">click an engineer to see their projects · red = over capacity · gray = time off</span>
       </div>
       <table className="w-full text-sm">
         <thead>
           <tr className="text-[11px] uppercase tracking-wider text-brand-gray border-b border-brand-lightgray/60">
             <th className="text-left px-4 py-2 font-semibold">Engineer</th>
             <th className="text-right px-2 py-2 font-semibold">Projects</th>
+            <th className="text-right px-2 py-2 font-semibold">Now</th>
             <th className="text-right px-2 py-2 font-semibold">Avg</th>
             <th className="text-right px-2 py-2 font-semibold">Peak</th>
             <th className="text-right px-2 py-2 font-semibold">Over</th>
@@ -1526,44 +1555,90 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
           {groups.map((g) => (
             <Fragment key={g.discipline}>
               <tr className="bg-slate-50/80">
-                <td colSpan={7} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-gray">
+                <td colSpan={N_COLS} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-brand-gray">
                   <DiscTag d={g.discipline} /> {g.discipline} · {g.rows.length}
                 </td>
               </tr>
               {g.rows.map((r) => {
                 const m = metrics(r);
+                const isOpen = expanded.has(r.id);
+                const rowAssigns = [...(assignsByRes.get(r.id) || [])].sort((a, b) => a.start_date.localeCompare(b.start_date));
+                const rowTimeoff = [...(timeoffByRes.get(r.id) || [])].sort((a, b) => a.start_date.localeCompare(b.start_date));
                 return (
-                  <tr key={r.id} className="border-b border-brand-lightgray/40 hover:bg-slate-50/60">
-                    <td className="px-4 py-2">
-                      <span className="font-medium">{r.name}</span>
-                      {r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
-                      {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded bg-slate-100 text-brand-gray">placeholder</span>}
-                    </td>
-                    <td className="text-right px-2 py-2 text-brand-gray">{m.projects || "—"}</td>
-                    <td className="text-right px-2 py-2">{Math.round(m.avg * 100)}%</td>
-                    <td className={clsx("text-right px-2 py-2 font-medium", m.peak > 1.0001 ? "text-brand-red" : "")}>{Math.round(m.peak * 100)}%</td>
-                    <td className="text-right px-2 py-2">{m.over ? <span className="text-brand-red font-semibold">{m.over}</span> : <span className="text-brand-gray">0</span>}</td>
-                    <td className="text-right px-2 py-2 text-brand-gray">{m.ooo || "—"}</td>
-                    <td className="px-4 py-1.5">
-                      <div className="flex items-end gap-px h-7">
-                        {weeks.map((w, i) => {
-                          const v = m.arr[i] || 0;
-                          const a = m.avail[i] ?? 1;
-                          const blocked = a < 0.999;
-                          const over = v > a + 0.0001;
-                          const h = Math.max(2, Math.min(28, v * 22));
-                          const bg = over ? "#e12a3f" : blocked ? "#cbd5e1" : v > 0 ? "#278747" : "#eef0f2";
-                          return (
-                            <div
-                              key={w}
-                              title={`${format(parseISO(w), "d MMM")}: ${Math.round(v * 100)}% load${blocked ? ` · ${Math.round((1 - a) * 100)}% off` : ""}`}
-                              style={{ width: 7, height: blocked && v === 0 ? 6 : h, background: bg, borderRadius: 1 }}
-                            />
-                          );
-                        })}
-                      </div>
-                    </td>
-                  </tr>
+                  <Fragment key={r.id}>
+                    <tr
+                      className="border-b border-brand-lightgray/40 hover:bg-slate-50/60 cursor-pointer"
+                      onClick={() => toggle(r.id)}
+                    >
+                      <td className="px-4 py-2">
+                        <span className="text-brand-gray mr-1 inline-block w-3">{isOpen ? "▾" : "▸"}</span>
+                        <span className="font-medium">{r.name}</span>
+                        {r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
+                        {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded bg-slate-100 text-brand-gray">placeholder</span>}
+                      </td>
+                      <td className="text-right px-2 py-2 text-brand-gray">{m.projects || "—"}</td>
+                      <td className={clsx("text-right px-2 py-2 font-medium", m.now > 1.0001 ? "text-brand-red" : m.now > 0 ? "" : "text-brand-gray")}>{pct(m.now)}</td>
+                      <td className="text-right px-2 py-2">{pct(m.avg)}</td>
+                      <td className={clsx("text-right px-2 py-2 font-medium", m.peak > 1.0001 ? "text-brand-red" : "")}>{pct(m.peak)}</td>
+                      <td className="text-right px-2 py-2">{m.over ? <span className="text-brand-red font-semibold">{m.over}</span> : <span className="text-brand-gray">0</span>}</td>
+                      <td className="text-right px-2 py-2 text-brand-gray">{m.ooo || "—"}</td>
+                      <td className="px-4 py-1.5">
+                        <div className="flex items-end gap-px h-7">
+                          {weeks.map((w, i) => {
+                            const v = m.arr[i] || 0;
+                            const a = m.avail[i] ?? 1;
+                            const blocked = a < 0.999;
+                            const over = v > a + 0.0001;
+                            const h = Math.max(2, Math.min(28, v * 22));
+                            return (
+                              <div
+                                key={w}
+                                title={`${format(parseISO(w), "d MMM")}: ${pct(v)} load${blocked ? ` · ${pct(1 - a)} off` : ""}`}
+                                style={{ width: 7, height: blocked && v === 0 ? 6 : h, background: loadColor(v, blocked, over), borderRadius: 1 }}
+                              />
+                            );
+                          })}
+                        </div>
+                      </td>
+                    </tr>
+                    {isOpen && (
+                      <tr className="bg-slate-50/40 border-b border-brand-lightgray/40">
+                        <td colSpan={N_COLS} className="px-4 py-2">
+                          <div className="pl-5 space-y-1.5">
+                            {rowAssigns.length === 0 && rowTimeoff.length === 0 && (
+                              <div className="text-xs text-brand-gray">No projects or time off in this window.</div>
+                            )}
+                            {rowAssigns.map((a) => {
+                              const st = STATUS_MAP[a.effective_status || "in_progress"] || STATUS_MAP["in_progress"];
+                              return (
+                                <div key={a.id} className="flex items-center gap-2 text-xs">
+                                  <DiscTag d={a.discipline} />
+                                  <span className="font-medium text-slate-700 truncate" style={{ minWidth: 180 }}>
+                                    {a.label || projName(a.timeline_project_id)}
+                                    {!a.label && a.milestone ? ` · ${a.milestone}` : ""}
+                                  </span>
+                                  <span className="text-brand-gray tabular-nums">{fmtRange(a.start_date, a.end_date)}</span>
+                                  <span className="text-brand-gray">· {pct(a.utilization ?? 1)}</span>
+                                  <span className="inline-flex items-center gap-1 ml-auto">
+                                    <span className="inline-block h-2.5 w-2.5 rounded" style={{ background: st.bg }} />
+                                    <span className="text-brand-gray">{st.label}</span>
+                                  </span>
+                                </div>
+                              );
+                            })}
+                            {rowTimeoff.map((t) => (
+                              <div key={`to-${t.id}`} className="flex items-center gap-2 text-xs text-slate-500">
+                                <span className="inline-block text-[9px] font-bold rounded px-1 mr-1 align-middle bg-slate-300 text-white">🛇</span>
+                                <span className="font-medium" style={{ minWidth: 180 }}>{t.reason || "OOO"}</span>
+                                <span className="tabular-nums">{fmtRange(t.start_date, t.end_date)}</span>
+                                <span className="ml-auto italic">time off</span>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </Fragment>
