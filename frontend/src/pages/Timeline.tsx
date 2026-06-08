@@ -226,7 +226,7 @@ export default function Timeline() {
   const weekW = ZOOMS[zoom];
 
   // dialogs
-  const [showNewProject, setShowNewProject] = useState(false);
+  const [showNewProject, setShowNewProject] = useState(prefs.newProjectOpen !== false);
   const [showResources, setShowResources] = useState(false);
   const [editing, setEditing] = useState<TimelineAssignment | null>(null);
   const [addingToProject, setAddingToProject] = useState<number | null>(null);
@@ -245,9 +245,9 @@ export default function Timeline() {
   useEffect(() => {
     localStorage.setItem(
       LS,
-      JSON.stringify({ view, zoom, collapsed: [...collapsed] }),
+      JSON.stringify({ view, zoom, collapsed: [...collapsed], newProjectOpen: showNewProject }),
     );
-  }, [view, zoom, collapsed]);
+  }, [view, zoom, collapsed, showNewProject]);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -652,8 +652,18 @@ export default function Timeline() {
           </div>
             )}
           </div>
-          {showNewProject && (
+          {showNewProject ? (
             <NewProjectPanel board={board} onClose={() => setShowNewProject(false)} onSaved={() => void reload()} />
+          ) : (
+            <button
+              onClick={() => setShowNewProject(true)}
+              title="Open New project panel"
+              className="shrink-0 self-start sticky top-4 card flex flex-col items-center gap-2 py-3 text-brand-red hover:bg-rose-50 transition"
+              style={{ width: 38 }}
+            >
+              <span className="text-lg leading-none">＋</span>
+              <span className="[writing-mode:vertical-rl] text-[11px] font-semibold uppercase tracking-wider">New project</span>
+            </button>
           )}
         </div>
       )}
