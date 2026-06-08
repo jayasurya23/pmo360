@@ -31,10 +31,10 @@ import { format, parseISO, startOfWeek, addDays } from "date-fns";
 import clsx from "clsx";
 
 // ---------------- constants ----------------
-const LABEL_W = 230;
-const ROW_H = 30;
-const LANE_H = 26; // height of one stacked bar lane inside an engineer row
-const ZOOMS: Record<string, number> = { Compact: 60, Comfortable: 88, Wide: 124 };
+const LABEL_W = 264;
+const ROW_H = 48;
+const LANE_H = 42; // height of one stacked bar lane inside an engineer row
+const ZOOMS: Record<string, number> = { Compact: 84, Comfortable: 116, Wide: 156 };
 
 const STATUSES = [
   { value: "in_progress", label: "In Progress", bg: "#ad1f2b", fg: "#ffffff" },
@@ -120,6 +120,18 @@ function packLanes(items: TimelineAssignment[], weeks: string[]) {
   });
   return { placed, lanes: Math.max(1, laneEnd.length) };
 }
+function _assignmentBody(a: TimelineAssignment): Partial<TimelineAssignment> {
+  return {
+    timeline_project_id: a.timeline_project_id,
+    resource_id: a.resource_id,
+    discipline: a.discipline,
+    milestone: a.milestone,
+    start_date: a.start_date,
+    end_date: a.end_date,
+    utilization: a.utilization,
+    status: a.status,
+  };
+}
 
 // ---------------- types ----------------
 type View = "engineer" | "project";
@@ -147,6 +159,9 @@ interface Ctx {
   todayCol: number;
   onBarDown: (e: React.PointerEvent, a: TimelineAssignment, mode: BarMode) => void;
   onEditBar: (a: TimelineAssignment) => void;
+  onBarMenu: (e: React.MouseEvent, a: TimelineAssignment) => void;
+  onCellAdd: (resourceId: number | null, weekIso: string) => void;
+  onCellMenu: (e: React.MouseEvent, resourceId: number | null, weekIso: string) => void;
 }
 
 const LS = "pmo360_timeline_prefs";
@@ -179,6 +194,11 @@ export default function Timeline() {
   const [showResources, setShowResources] = useState(false);
   const [editing, setEditing] = useState<TimelineAssignment | null>(null);
   const [addingToProject, setAddingToProject] = useState<number | null>(null);
+  const [addPreset, setAddPreset] = useState<{ resourceId: number | null; start: string } | null>(null);
+  const [menu, setMenu] = useState<
+    { x: number; y: number; a?: TimelineAssignment; resourceId?: number | null; weekIso?: string } | null
+  >(null);
+  const [undoStack, setUndoStack] = useState<{ label: string; run: () => Promise<void> }[]>([]);
 
   // drag
   const dragRef = useRef<DragRef>(null);
@@ -221,6 +241,78 @@ export default function Timeline() {
     setBoard((b) =>
       b ? { ...b, assignments: b.assignments.map((a) => (a.id === id ? { ...a, ...patch } : a)) } : b,
     );
+  }
+  const addLocal = (a: TimelineAssignment) =>
+    setBoard((b) => (b ? { ...b, assignments: [...b.assignments, a] } : b));
+  const removeLocal = (id: number) =>
+    setBoard((b) => (b ? { ...b, assignments: b.assignments.filter((x) => x.id !== id) } : b));
+
+  // ---- undo stack (direct-manipulation ops) ----
+  const pushUndo = (label: string, run: () => Promise<void>) =>
+    setUndoStack((s) => [...s.slice(-49), { label, run }]);
+  const doUndo = useCallback(async () => {
+    setUndoStack((s) => {
+      const last = s[s.length - 1];
+      if (last) void last.run().catch(() => void reload());
+      return s.slice(0, -1);
+    });
+  }, [reload]);
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        void doUndo();
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [doUndo]);
+
+  async function deleteAssignment(a: TimelineAssignment) {
+    setMenu(null);
+    removeLocal(a.id);
+    try {
+      await deleteTimelineAssignment(a.id);
+      pushUndo("delete", async () => {
+        const created = await createTimelineAssignment(_assignmentBody(a));
+        addLocal({ ...a, id: created.id });
+      });
+    } catch {
+      await reload();
+    }
+  }
+  async function duplicateAssignment(a: TimelineAssignment) {
+    setMenu(null);
+    try {
+      // offset a week so the copy is visible rather than hidden behind the original
+      const body = { ..._assignmentBody(a), start_date: shiftISO(a.start_date, 7), end_date: shiftISO(a.end_date, 7) };
+      const created = await createTimelineAssignment(body);
+      addLocal(created);
+      pushUndo("duplicate", async () => {
+        removeLocal(created.id);
+        await deleteTimelineAssignment(created.id);
+      });
+    } catch {
+      await reload();
+    }
+  }
+  async function quickPatch(a: TimelineAssignment, patch: Partial<TimelineAssignment>, label: string) {
+    setMenu(null);
+    const before: Partial<TimelineAssignment> = {};
+    (Object.keys(patch) as (keyof TimelineAssignment)[]).forEach((k) => ((before as any)[k] = a[k] ?? null));
+    patchLocal(a.id, { ...patch, effective_status: "status" in patch ? (patch.status as string) : a.effective_status });
+    try {
+      await patchTimelineAssignment(a.id, patch);
+      pushUndo(label, async () => {
+        patchLocal(a.id, before);
+        await patchTimelineAssignment(a.id, before);
+        await reload();
+      });
+    } catch {
+      await reload();
+    }
   }
 
   // ---- drag handlers ----
@@ -282,18 +374,24 @@ export default function Timeline() {
             };
             patchLocal(a.id, patch);
             await patchTimelineAssignment(a.id, patch);
+            const inv = { start_date: a.start_date, end_date: a.end_date, resource_id: a.resource_id ?? null };
+            pushUndo("move", async () => { patchLocal(a.id, inv); await patchTimelineAssignment(a.id, inv); });
           } else if (d.mode === "l") {
+            const os = a.start_date;
             let ns = shiftISO(a.start_date, dx * 7);
             if (parseISO(ns) > parseISO(a.end_date)) ns = a.end_date;
             if (ns === a.start_date) return;
             patchLocal(a.id, { start_date: ns });
             await patchTimelineAssignment(a.id, { start_date: ns });
+            pushUndo("resize", async () => { patchLocal(a.id, { start_date: os }); await patchTimelineAssignment(a.id, { start_date: os }); });
           } else {
+            const oe = a.end_date;
             let ne = shiftISO(a.end_date, dx * 7);
             if (parseISO(ne) < parseISO(a.start_date)) ne = a.start_date;
             if (ne === a.end_date) return;
             patchLocal(a.id, { end_date: ne });
             await patchTimelineAssignment(a.id, { end_date: ne });
+            pushUndo("resize", async () => { patchLocal(a.id, { end_date: oe }); await patchTimelineAssignment(a.id, { end_date: oe }); });
           }
         } else {
           // row reorder within the same discipline
@@ -351,6 +449,9 @@ export default function Timeline() {
     todayCol,
     onBarDown,
     onEditBar: setEditing,
+    onBarMenu: (e, a) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, a }); },
+    onCellAdd: (resourceId, weekIso) => setAddPreset({ resourceId, start: weekIso }),
+    onCellMenu: (e, resourceId, weekIso) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, resourceId, weekIso }); },
   };
   const gridWidth = LABEL_W + weeks.length * weekW;
 
@@ -384,6 +485,14 @@ export default function Timeline() {
         <Segmented options={Object.keys(ZOOMS).map((z) => [z, z] as [string, string])} value={zoom} onChange={setZoom} />
         <button className="btn-ghost py-1 px-2" onClick={jumpToToday}>
           Today
+        </button>
+        <button
+          className="btn-ghost py-1 px-2 disabled:opacity-40"
+          onClick={() => void doUndo()}
+          disabled={undoStack.length === 0}
+          title={undoStack.length ? `Undo ${undoStack[undoStack.length - 1].label} (Ctrl+Z)` : "Nothing to undo"}
+        >
+          ↩ Undo{undoStack.length ? ` (${undoStack.length})` : ""}
         </button>
         <FilterMenu
           label="Discipline"
@@ -466,7 +575,7 @@ export default function Timeline() {
                   <div
                     key={w}
                     className={clsx(
-                      "shrink-0 px-1 py-2 text-[11px] text-center border-r border-brand-lightgray/50",
+                      "shrink-0 px-1.5 py-2.5 text-xs text-center border-r border-brand-lightgray/80",
                       i === todayCol ? "text-brand-red font-semibold" : "text-brand-gray",
                     )}
                     style={{ width: weekW }}
@@ -518,13 +627,15 @@ export default function Timeline() {
       {showResources && (
         <ResourceManagerDialog onClose={() => setShowResources(false)} onChanged={() => void reload()} />
       )}
-      {(editing || addingToProject !== null) && board && (
+      {(editing || addingToProject !== null || addPreset) && board && (
         <AssignmentDialog
           board={board}
           assignment={editing}
           projectId={addingToProject ?? editing?.timeline_project_id ?? null}
-          onClose={() => { setEditing(null); setAddingToProject(null); }}
-          onSaved={() => { setEditing(null); setAddingToProject(null); void reload(); }}
+          presetResourceId={addPreset ? addPreset.resourceId : undefined}
+          presetStart={addPreset ? addPreset.start : undefined}
+          onClose={() => { setEditing(null); setAddingToProject(null); setAddPreset(null); }}
+          onSaved={() => { setEditing(null); setAddingToProject(null); setAddPreset(null); void reload(); }}
           onDelete={async () => {
             if (!editing) return;
             const ok = await confirm({ title: "Delete this assignment?", body: editing.project_name || undefined, confirmLabel: "Delete", destructive: true });
@@ -533,6 +644,20 @@ export default function Timeline() {
             setEditing(null);
             void reload();
           }}
+        />
+      )}
+
+      {menu && board && (
+        <ContextMenu
+          menu={menu}
+          onClose={() => setMenu(null)}
+          onEdit={(a) => { setMenu(null); setEditing(a); }}
+          onDuplicate={duplicateAssignment}
+          onDelete={deleteAssignment}
+          onUnassign={(a) => quickPatch(a, { resource_id: null }, "unassign")}
+          onSetStatus={(a, s) => quickPatch(a, { status: s }, "status")}
+          onSetUtil={(a, u) => quickPatch(a, { utilization: u }, "utilization")}
+          onAddHere={(resId, wk) => { setMenu(null); setAddPreset({ resourceId: resId, start: wk }); }}
         />
       )}
     </div>
@@ -619,10 +744,11 @@ function Bar({ a, ctx, top = 4, height = ROW_H - 8 }: { a: TimelineAssignment; c
   return (
     <div
       onPointerDown={(e) => ctx.onBarDown(e, a, "move")}
-      onDoubleClick={() => ctx.onEditBar(a)}
-      title={`${a.project_name || a.label || ""} · ${a.discipline}${a.milestone ? " · " + a.milestone : ""} · ${util}  (double-click to edit)`}
+      onDoubleClick={(e) => { e.stopPropagation(); ctx.onEditBar(a); }}
+      onContextMenu={(e) => ctx.onBarMenu(e, a)}
+      title={`${a.project_name || a.label || ""} · ${a.discipline}${a.milestone ? " · " + a.milestone : ""} · ${util}  (double-click to edit · right-click for options)`}
       className={clsx(
-        "absolute rounded text-[11px] font-medium truncate px-1.5 cursor-grab active:cursor-grabbing group",
+        "absolute rounded text-xs font-medium truncate px-2.5 cursor-grab active:cursor-grabbing group",
         active && "ring-2 ring-black/30 z-10 shadow",
       )}
       style={{ left, width, top, height, background: st.bg, color: st.fg, lineHeight: `${height}px` }}
@@ -647,7 +773,7 @@ function Track({ ctx, children }: { ctx: Ctx; children?: ReactNode }) {
     <div className="relative shrink-0" style={{ width: weeks.length * weekW, height: ROW_H }}>
       <div className="absolute inset-0 flex">
         {weeks.map((w) => (
-          <div key={w} className="border-r border-brand-lightgray/30" style={{ width: weekW }} />
+          <div key={w} className="border-r border-brand-lightgray/60" style={{ width: weekW }} />
         ))}
       </div>
       {children}
@@ -712,6 +838,11 @@ function EngineerView({
   }
   const unassigned = assignments.filter((a) => a.resource_id == null);
   const hoverRes = drag?.hoverRes ?? null;
+  const weekAt = (e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const i = Math.max(0, Math.min(weeks.length - 1, Math.floor((e.clientX - rect.left) / weekW)));
+    return weeks[i];
+  };
 
   return (
     <div>
@@ -737,7 +868,7 @@ function EngineerView({
                   key={r.id}
                   data-res-row={r.id}
                   className={clsx(
-                    "flex items-stretch border-b border-brand-lightgray/40",
+                    "flex items-stretch border-b border-brand-lightgray/60",
                     isHover && "bg-rose-50/40",
                   )}
                 >
@@ -752,7 +883,13 @@ function EngineerView({
                     <span className="font-medium">{r.name}</span>
                     {r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
                   </LabelCell>
-                  <div className="relative shrink-0" style={{ width: weeks.length * weekW, height: rowH }}>
+                  <div
+                    className="relative shrink-0"
+                    style={{ width: weeks.length * weekW, height: rowH }}
+                    onDoubleClick={(e) => { const w = weekAt(e); if (w) ctx.onCellAdd(r.id, w); }}
+                    onContextMenu={(e) => { const w = weekAt(e); if (w) ctx.onCellMenu(e, r.id, w); }}
+                    title="Double-click an empty cell to add a project · right-click for options"
+                  >
                     {/* utilization heat behind the bars (hover a cell for the %) */}
                     {weeks.map((w, i) => {
                       const v = cells[i] || 0;
@@ -760,7 +897,7 @@ function EngineerView({
                       return (
                         <div
                           key={w}
-                          className="absolute top-0 border-r border-brand-lightgray/30"
+                          className="absolute top-0 border-r border-brand-lightgray/60"
                           style={{
                             left: i * weekW,
                             width: weekW,
@@ -792,13 +929,18 @@ function EngineerView({
                   Unassigned
                 </div>
               </div>
-              <div className="flex items-stretch border-b border-brand-lightgray/40">
+              <div className="flex items-stretch border-b border-brand-lightgray/60">
                 <LabelCell height={rowH}>
                   <span className="text-xs text-brand-gray">Drag a bar onto an engineer →</span>
                 </LabelCell>
-                <div className="relative shrink-0" style={{ width: weeks.length * weekW, height: rowH }}>
+                <div
+                  className="relative shrink-0"
+                  style={{ width: weeks.length * weekW, height: rowH }}
+                  onDoubleClick={(e) => { const w = weekAt(e); if (w) ctx.onCellAdd(null, w); }}
+                  onContextMenu={(e) => { const w = weekAt(e); if (w) ctx.onCellMenu(e, null, w); }}
+                >
                   {weeks.map((w, i) => (
-                    <div key={w} className="absolute top-0 border-r border-brand-lightgray/30" style={{ left: i * weekW, width: weekW, height: rowH }} />
+                    <div key={w} className="absolute top-0 border-r border-brand-lightgray/60" style={{ left: i * weekW, width: weekW, height: rowH }} />
                   ))}
                   {placed.map(({ a, lane }) => (
                     <Bar key={a.id} a={a} ctx={ctx} top={lane * LANE_H + 2} height={LANE_H - 4} />
@@ -836,7 +978,7 @@ function ProjectView({
         const rows = byProject.get(p.id) || [];
         const st = STATUS_MAP[p.status] || STATUS_MAP["in_progress"];
         return (
-          <div key={p.id} className="border-b border-brand-lightgray/40">
+          <div key={p.id} className="border-b border-brand-lightgray/60">
             <div className="flex items-stretch bg-slate-50/60">
               <LabelCell>
                 <span className="font-medium">{p.name}</span>
@@ -943,33 +1085,64 @@ function NewProjectDialog({ board, onClose, onSaved }: { board: TimelineBoard | 
   );
 }
 
-function AssignmentDialog({ board, assignment, projectId, onClose, onSaved, onDelete }: { board: TimelineBoard; assignment: TimelineAssignment | null; projectId: number | null; onClose: () => void; onSaved: () => void; onDelete: () => void }) {
+function AssignmentDialog({ board, assignment, projectId, presetResourceId, presetStart, onClose, onSaved, onDelete }: { board: TimelineBoard; assignment: TimelineAssignment | null; projectId: number | null; presetResourceId?: number | null; presetStart?: string | null; onClose: () => void; onSaved: () => void; onDelete: () => void }) {
+  const isEdit = !!assignment;
+  // "combo" = creating a brand-new assignment from a blank cell — let the PM
+  // type a new or existing project name (find-or-create), pre-seed resource/date.
+  const combo = !isEdit && projectId == null;
   const [pid, setPid] = useState(String(projectId ?? assignment?.timeline_project_id ?? ""));
-  const [resourceId, setResourceId] = useState(assignment?.resource_id != null ? String(assignment.resource_id) : "");
-  const [discipline, setDiscipline] = useState(assignment?.discipline || "Electrical");
+  const [projName, setProjName] = useState("");
+  const [resourceId, setResourceId] = useState(
+    assignment?.resource_id != null ? String(assignment.resource_id)
+      : presetResourceId != null ? String(presetResourceId) : "",
+  );
+  const presetDisc =
+    presetResourceId != null
+      ? board.resources.find((r) => r.id === presetResourceId)?.discipline
+      : undefined;
+  const [discipline, setDiscipline] = useState(assignment?.discipline || presetDisc || "Electrical");
   const [milestone, setMilestone] = useState(assignment?.milestone || "");
-  const [start, setStart] = useState(assignment?.start_date || "");
-  const [end, setEnd] = useState(assignment?.end_date || "");
+  const [start, setStart] = useState(assignment?.start_date || presetStart || "");
+  const [end, setEnd] = useState(
+    assignment?.end_date || (presetStart ? shiftISO(presetStart, 4) : ""),
+  );
   const [util, setUtil] = useState(assignment?.utilization ?? 1.0);
   const [statusOverride, setStatusOverride] = useState(assignment?.status || "");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const isEdit = !!assignment;
 
   async function save() {
-    if (!pid || !start || !end) { setErr("Project, start, and end are required."); return; }
+    if ((!combo && !pid) || (combo && !projName.trim()) || !start || !end) {
+      setErr("Project, start, and end are required."); return;
+    }
     setSaving(true); setErr(null);
     const body = { resource_id: resourceId ? Number(resourceId) : null, discipline, milestone: milestone || null, start_date: start, end_date: end, utilization: util, status: statusOverride || null };
     try {
-      if (isEdit && assignment) await patchTimelineAssignment(assignment.id, body);
-      else await createTimelineAssignment({ ...body, timeline_project_id: Number(pid) });
+      if (isEdit && assignment) {
+        await patchTimelineAssignment(assignment.id, body);
+      } else {
+        let targetPid = Number(pid);
+        if (combo) {
+          const typed = projName.trim();
+          const existing = board.projects.find((p) => p.name.toLowerCase() === typed.toLowerCase());
+          targetPid = existing ? existing.id : (await createTimelineProject({ name: typed })).id;
+        }
+        await createTimelineAssignment({ ...body, timeline_project_id: targetPid });
+      }
       onSaved();
     } catch (e: any) { setErr(e?.response?.data?.detail || e?.message || "Save failed"); setSaving(false); }
   }
   return (
     <Modal title={isEdit ? "Edit assignment" : "Add assignment"} onClose={onClose}>
       <div className="space-y-3">
-        <Field label="Project"><select className={inputCls} value={pid} onChange={(e) => setPid(e.target.value)} disabled={isEdit}><option value="">— pick —</option>{board.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
+        {combo ? (
+          <Field label="Project (type a new name or pick an existing one)">
+            <input className={inputCls} list="timeline-projects" value={projName} onChange={(e) => setProjName(e.target.value)} placeholder="e.g. Snapdragon Substation" autoFocus />
+            <datalist id="timeline-projects">{board.projects.map((p) => <option key={p.id} value={p.name} />)}</datalist>
+          </Field>
+        ) : (
+          <Field label="Project"><select className={inputCls} value={pid} onChange={(e) => setPid(e.target.value)} disabled={isEdit}><option value="">— pick —</option>{board.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Field label="Assigned to"><select className={inputCls} value={resourceId} onChange={(e) => setResourceId(e.target.value)}><option value="">Unassigned</option>{board.resources.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Field>
           <Field label="Discipline"><select className={inputCls} value={discipline} onChange={(e) => setDiscipline(e.target.value)}>{DISCIPLINES.map((d) => <option key={d}>{d}</option>)}</select></Field>
@@ -1054,5 +1227,93 @@ function ResourceManagerDialog({ onClose, onChanged }: { onClose: () => void; on
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ---------------- right-click context menu ----------------
+type MenuState = { x: number; y: number; a?: TimelineAssignment; resourceId?: number | null; weekIso?: string };
+function ContextMenu({
+  menu, onClose, onEdit, onDuplicate, onDelete, onUnassign, onSetStatus, onSetUtil, onAddHere,
+}: {
+  menu: MenuState;
+  onClose: () => void;
+  onEdit: (a: TimelineAssignment) => void;
+  onDuplicate: (a: TimelineAssignment) => void;
+  onDelete: (a: TimelineAssignment) => void;
+  onUnassign: (a: TimelineAssignment) => void;
+  onSetStatus: (a: TimelineAssignment, status: string) => void;
+  onSetUtil: (a: TimelineAssignment, util: number) => void;
+  onAddHere: (resourceId: number | null, weekIso: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const down = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) onClose(); };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("mousedown", down);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("mousedown", down); document.removeEventListener("keydown", key); };
+  }, [onClose]);
+
+  const a = menu.a;
+  const left = Math.min(menu.x, (typeof window !== "undefined" ? window.innerWidth : 1200) - 230);
+  const top = Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 800) - 380);
+
+  return (
+    <div ref={ref} className="fixed z-[60] w-56 bg-white border border-slate-200 rounded-lg shadow-xl py-1 text-sm" style={{ left, top }}>
+      {a ? (
+        <>
+          <div className="px-3 py-1 text-[11px] text-brand-gray truncate">{a.project_name || a.label || "Assignment"}</div>
+          <MenuItem onClick={() => onEdit(a)}>✎ Edit…</MenuItem>
+          <MenuItem onClick={() => onDuplicate(a)}>⧉ Duplicate</MenuItem>
+          {a.resource_id != null && <MenuItem onClick={() => onUnassign(a)}>⇤ Unassign</MenuItem>}
+          <div className="border-t border-slate-100 my-1" />
+          <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-brand-gray">Set status</div>
+          {STATUSES.map((s) => (
+            <MenuItem key={s.value} onClick={() => onSetStatus(a, s.value)}>
+              <span className="inline-block h-2.5 w-2.5 rounded mr-2 align-middle" style={{ background: s.bg }} />
+              {s.label}
+              {(a.status || a.effective_status) === s.value && <span className="ml-auto text-brand-red">✓</span>}
+            </MenuItem>
+          ))}
+          <div className="border-t border-slate-100 my-1" />
+          <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-brand-gray">Utilization</div>
+          <div className="flex flex-wrap gap-1 px-3 pb-1.5 pt-0.5">
+            {UTILS.map((u) => (
+              <button
+                key={u}
+                className={clsx(
+                  "text-[11px] rounded border px-1.5 py-0.5 hover:border-brand-red hover:text-brand-red",
+                  Math.abs((a.utilization ?? 1) - u) < 0.001 ? "border-brand-red text-brand-red" : "border-slate-200 text-slate-600",
+                )}
+                onClick={() => onSetUtil(a, u)}
+              >
+                {Math.round(u * 100)}%
+              </button>
+            ))}
+          </div>
+          <div className="border-t border-slate-100 my-1" />
+          <MenuItem destructive onClick={() => onDelete(a)}>🗑 Delete</MenuItem>
+        </>
+      ) : (
+        <>
+          <div className="px-3 py-1 text-[11px] text-brand-gray">
+            {menu.weekIso ? `Week of ${format(parseISO(menu.weekIso), "d MMM yyyy")}` : ""}
+          </div>
+          <MenuItem onClick={() => menu.weekIso && onAddHere(menu.resourceId ?? null, menu.weekIso)}>
+            + Add project here…
+          </MenuItem>
+        </>
+      )}
+    </div>
+  );
+}
+function MenuItem({ children, onClick, destructive }: { children: ReactNode; onClick: () => void; destructive?: boolean }) {
+  return (
+    <button
+      className={clsx("flex w-full items-center px-3 py-1.5 text-left hover:bg-slate-50", destructive ? "text-brand-red" : "text-slate-700")}
+      onClick={onClick}
+    >
+      {children}
+    </button>
   );
 }
