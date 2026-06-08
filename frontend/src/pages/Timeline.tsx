@@ -9,6 +9,7 @@ import {
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { useAuth } from "@/auth/useAuth";
 import {
   fetchTimelineBoard,
   listGlobalRoster,
@@ -169,6 +170,7 @@ const LS = "pmo360_timeline_prefs";
 // ---------------- main ----------------
 export default function Timeline() {
   const confirm = useConfirm();
+  const { isAuthenticated } = useAuth();
   const [board, setBoard] = useState<TimelineBoard | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -223,9 +225,13 @@ export default function Timeline() {
       setLoading(false);
     }
   }, [winStart, winEnd]);
+  // Refetch when auth becomes ready: the first load can fire before MSAL has
+  // restored/created the account (token not attached yet -> 401). When
+  // isAuthenticated flips true after sign-in, pull the board again so the
+  // user doesn't have to manually refresh.
   useEffect(() => {
     void reload();
-  }, [reload]);
+  }, [reload, isAuthenticated]);
 
   const weeks = board?.weeks ?? [];
   const todayCol = colOf(todayISO(), weeks);
@@ -763,7 +769,7 @@ function Bar({ a, ctx, top = 4, height = ROW_H - 8 }: { a: TimelineAssignment; c
         className="absolute right-0 top-0 h-full w-1.5 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-black/20"
       />
       {a.label || a.project_name || "—"}
-      {a.milestone ? ` ${a.milestone}` : ""} · {util}
+      {!a.label && a.milestone ? ` ${a.milestone}` : ""} · {util}
     </div>
   );
 }
