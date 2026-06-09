@@ -29,6 +29,7 @@ from auth import require_db_user
 from core.deps import get_db
 from db.models import (
     TimelineResource, TimelineProject, TimelineAssignment, TimelineTimeOff,
+    TimelineClient,
 )
 from schemas.common import (
     TimelineResourceIn, TimelineResourcePatch, TimelineResourceOut,
@@ -172,16 +173,53 @@ def create_project(
     actor=Depends(require_db_user),
 ):
     _check_status(payload.status)
+    client = (payload.client or "").strip() or None
     p = TimelineProject(
         name=payload.name.strip(),
-        client=(payload.client or None),
+        client=client,
         status=payload.status or "in_progress",
         notes=(payload.notes or None),
         created_by_id=actor.id,
     )
     db.add(p)
+    # Register a brand-new client in the pick-list so it persists in the dropdown.
+    if client:
+        _ensure_client(db, client, actor.id)
     db.flush()
     return p
+
+
+def _ensure_client(db: Session, name: str, actor_id: int) -> None:
+    name = name.strip()
+    if not name:
+        return
+    existing = {c.name.strip().lower() for c in db.query(TimelineClient).all()}
+    if name.lower() not in existing:
+        db.add(TimelineClient(name=name, created_by_id=actor_id))
+
+
+# ============================================================
+# Clients (timeline-only pick-list)
+# ============================================================
+@router.get("/clients", response_model=list[str])
+def list_clients(db: Session = Depends(get_db), actor=Depends(require_db_user)):
+    names = {c.name.strip() for c in db.query(TimelineClient).all() if c.name.strip()}
+    names |= {p.client.strip() for p in db.query(TimelineProject).all() if p.client and p.client.strip()}
+    return sorted(names, key=str.lower)
+
+
+@router.post("/clients", response_model=list[str], status_code=201)
+def add_client(
+    payload: dict,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+):
+    name = (payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(422, "Client name required")
+    _ensure_client(db, name, actor.id)
+    db.flush()
+    return list_clients(db=db, actor=actor)
 
 
 @router.patch("/projects/{project_id}", response_model=TimelineProjectOut)
@@ -452,6 +490,9 @@ def get_board(
         for i in range(len(arr)):
             arr[i] = max(0.0, 1.0 - min(1.0, arr[i]))
 
+    client_names = {c.name.strip() for c in db.query(TimelineClient).all() if c.name.strip()}
+    client_names |= {p.client.strip() for p in projects if p.client and p.client.strip()}
+
     return TimelineBoardResponse(
         weeks=weeks,
         resources=resources,
@@ -460,4 +501,5 @@ def get_board(
         timeoff=timeoff_outs,
         load=load,
         availability=availability,
+        clients=sorted(client_names, key=str.lower),
     )

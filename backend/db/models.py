@@ -637,6 +637,19 @@ class TimelineAssignment(Base):
     created_by = relationship("User", foreign_keys=[created_by_id])
 
 
+class TimelineClient(Base):
+    """The client/company pick-list for timeline projects (seeded from the
+    Contracts sheet). Free to add to — typing a new client on a project also
+    registers it here. Timeline-only; unrelated to the meeting Client table."""
+    __tablename__ = "timeline_clients"
+    id = Column(Integer, primary_key=True)
+    name = Column(String(200), nullable=False)
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
 class TimelineTimeOff(Base):
     """A blocked / out-of-office date range for a resource. Not project work —
     it reduces the resource's *available* capacity (shown on the grid and in

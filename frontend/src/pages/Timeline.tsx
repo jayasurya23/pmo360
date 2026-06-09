@@ -1248,7 +1248,10 @@ function NewProjectPanel({ board, onClose, onSaved }: { board: TimelineBoard | n
       </div>
       <div className="space-y-3">
         <Field label="Project name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
-        <Field label="Client"><input className={inputCls} value={client} onChange={(e) => setClient(e.target.value)} /></Field>
+        <Field label="Client">
+          <input className={inputCls} list="timeline-clients" placeholder="Pick a client or type a new one" value={client} onChange={(e) => setClient(e.target.value)} />
+          <datalist id="timeline-clients">{(board?.clients ?? []).map((c) => <option key={c} value={c} />)}</datalist>
+        </Field>
         <Field label="Status"><select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value)}>{STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select></Field>
         <div className="border-t border-brand-lightgray/60 pt-3 text-[11px] uppercase tracking-wider text-brand-gray">First assignment (optional)</div>
         <Field label="Assigned to"><select className={inputCls} value={resourceId} onChange={(e) => setResourceId(e.target.value)}><option value="">Unassigned</option>{(board?.resources ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Field>

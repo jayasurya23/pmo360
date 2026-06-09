@@ -678,6 +678,7 @@ class TimelineBoardResponse(BaseModel):
     projects: list[TimelineProjectOut] = Field(default_factory=list)
     assignments: list[TimelineAssignmentOut] = Field(default_factory=list)
     timeoff: list[TimelineTimeOffOut] = Field(default_factory=list)
+    clients: list[str] = Field(default_factory=list)   # pick-list for the Client field
     # per-resource per-week utilization fraction, keyed by str(resource_id);
     # each value is a list aligned to `weeks`. over-allocated == load > avail.
     load: dict[str, list[float]] = Field(default_factory=dict)

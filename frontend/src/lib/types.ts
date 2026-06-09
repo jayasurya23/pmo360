@@ -439,6 +439,7 @@ export interface TimelineBoard {
   timeoff: TimelineTimeOff[];
   load: Record<string, number[]>;
   availability: Record<string, number[]>;
+  clients: string[];
 }
 
 // Dashboard
