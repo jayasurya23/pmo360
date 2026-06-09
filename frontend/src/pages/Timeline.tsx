@@ -15,6 +15,7 @@ import {
   fetchTimelineBoard,
   listGlobalRoster,
   createTimelineProject,
+  patchTimelineProject,
   createTimelineAssignment,
   patchTimelineAssignment,
   deleteTimelineAssignment,
@@ -510,8 +511,23 @@ export default function Timeline() {
   };
   const gridWidth = LABEL_W + weeks.length * weekW;
 
+  async function setProjectClient(projectId: number, client: string) {
+    const c = client.trim() || null;
+    setBoard((b) =>
+      b ? { ...b, projects: b.projects.map((p) => (p.id === projectId ? { ...p, client: c } : p)) } : b,
+    );
+    try {
+      await patchTimelineProject(projectId, { client: c });
+      await reload(); // refresh the client pick-list in case it's a new one
+    } catch {
+      await reload();
+    }
+  }
+
   return (
     <div className="space-y-4 select-none">
+      {/* shared client pick-list (used by New Project panel + per-project editor) */}
+      <datalist id="timeline-clients">{(board?.clients ?? []).map((c) => <option key={c} value={c} />)}</datalist>
       <PageHeader
         title="Timeline Estimator"
         subtitle="Capacity planner — each cell is a work-week. Drag bars to reschedule, drag edges to resize, right-click for options."
@@ -646,6 +662,7 @@ export default function Timeline() {
                   assignments={visibleAssignments}
                   ctx={ctx}
                   onAddTo={setAddingToProject}
+                  onSetClient={setProjectClient}
                 />
               )}
             </div>
@@ -1136,13 +1153,19 @@ function ProjectView({
   assignments,
   ctx,
   onAddTo,
+  onSetClient,
 }: {
   board: TimelineBoard;
   assignments: TimelineAssignment[];
   ctx: Ctx;
   onAddTo: (projectId: number) => void;
+  onSetClient: (projectId: number, client: string) => void;
 }) {
   const { weeks, weekW } = ctx;
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editVal, setEditVal] = useState("");
+  const startEdit = (id: number, client: string | null | undefined) => { setEditId(id); setEditVal(client || ""); };
+  const commit = (id: number) => { onSetClient(id, editVal); setEditId(null); };
   const resName = (id?: number | null) =>
     id == null ? "Unassigned" : board.resources.find((r) => r.id === id)?.name || "Unassigned";
   const byProject = new Map<number, TimelineAssignment[]>();
@@ -1164,6 +1187,26 @@ function ProjectView({
                 <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: st.bg, color: st.fg }}>
                   {st.label}
                 </span>
+                {editId === p.id ? (
+                  <span className="inline-flex items-center gap-1">
+                    <input
+                      list="timeline-clients"
+                      autoFocus
+                      className="rounded border border-slate-300 px-1.5 py-0.5 text-xs"
+                      style={{ width: 190 }}
+                      placeholder="Pick or type a client"
+                      value={editVal}
+                      onChange={(e) => setEditVal(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") commit(p.id); if (e.key === "Escape") setEditId(null); }}
+                    />
+                    <button className="text-[11px] text-brand-red font-semibold hover:underline" onClick={() => commit(p.id)}>Save</button>
+                    <button className="text-[11px] text-brand-gray hover:underline" onClick={() => setEditId(null)}>cancel</button>
+                  </span>
+                ) : (
+                  <button className="text-[11px] text-brand-gray hover:text-brand-red" title="Set / change client" onClick={() => startEdit(p.id, p.client)}>
+                    {p.client ? "✎ client" : "✎ set client"}
+                  </button>
+                )}
                 <button className="text-[11px] text-brand-red hover:underline" onClick={() => onAddTo(p.id)}>
                   + add assignment
                 </button>
@@ -1250,7 +1293,6 @@ function NewProjectPanel({ board, onClose, onSaved }: { board: TimelineBoard | n
         <Field label="Project name"><input className={inputCls} value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
         <Field label="Client">
           <input className={inputCls} list="timeline-clients" placeholder="Pick a client or type a new one" value={client} onChange={(e) => setClient(e.target.value)} />
-          <datalist id="timeline-clients">{(board?.clients ?? []).map((c) => <option key={c} value={c} />)}</datalist>
         </Field>
         <Field label="Status"><select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value)}>{STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select></Field>
         <div className="border-t border-brand-lightgray/60 pt-3 text-[11px] uppercase tracking-wider text-brand-gray">First assignment (optional)</div>
