@@ -7,8 +7,10 @@ Three endpoints:
 
 Matching priority (first hit wins):
   0. CalendarEventLink row — explicit PM override, never second-guessed.
-  1. Attendee email matches a project's roster email set
-     (ProjectAttendee.email ∪ MeetingAttendee.email).
+  1. A CLIENT (external) attendee email matches a project's roster email set
+     (ProjectAttendee.email ∪ MeetingAttendee.email). Castillo-internal
+     emails are ignored — a colleague is on every internal sync and across
+     many rosters, so matching through them links unrelated meetings.
   2. Event subject (case-insensitive) contains a project or client name.
      Sorted longest-name-first so "TestCo Renewables Site A" beats "TestCo"
      when both appear in the subject.
@@ -124,6 +126,23 @@ def _accessible_project_ids(db: Session, actor) -> set[int]:
     return set(list_my_project_ids(db, actor.id))
 
 
+# Castillo-internal email domains. A colleague's address shows up on nearly
+# every internal meeting AND across many portfolio rosters, so matching a
+# calendar event to a portfolio THROUGH an internal email is noise — it
+# linked every internal sync to whatever portfolio a colleague happened to be
+# rostered on (e.g. everything funnelling to the Cedar Flats demo). We never
+# index internal emails and ignore them when scanning an event's attendees;
+# portfolio matches must come from a CLIENT (external) email or the subject.
+# Mirrors the frontend INTERNAL_EMAIL_DOMAIN heuristic in CalendarCard.tsx.
+INTERNAL_EMAIL_DOMAINS = {"castillope.com"}
+
+
+def _is_internal_email(email: str) -> bool:
+    """True when the address is on a Castillo-internal domain."""
+    at = email.rfind("@")
+    return at != -1 and email[at + 1:].strip().lower() in INTERNAL_EMAIL_DOMAINS
+
+
 def _build_email_index(
     db: Session, project_ids: set[int],
 ) -> dict[str, int]:
@@ -134,7 +153,9 @@ def _build_email_index(
       - MeetingAttendee (per-meeting snapshot — picks up ad-hoc attendees
         who never made it into the roster)
     First-seen wins per email so we don't bounce the user between portfolios
-    when the same person attends both.
+    when the same person attends both. Castillo-internal emails are skipped
+    (see INTERNAL_EMAIL_DOMAINS) — they're colleagues, not the client signal
+    we match on.
     """
     if not project_ids:
         return {}
@@ -147,7 +168,7 @@ def _build_email_index(
         .all()
     ):
         email = (pa.email or "").strip().lower()
-        if email and email not in index:
+        if email and not _is_internal_email(email) and email not in index:
             index[email] = pa.project_id
 
     rows = (
@@ -159,7 +180,7 @@ def _build_email_index(
     )
     for email, project_id in rows:
         clean = (email or "").strip().lower()
-        if not clean or clean in index:
+        if not clean or _is_internal_email(clean) or clean in index:
             continue
         index[clean] = project_id
 
@@ -242,11 +263,12 @@ def match_calendar_events(
             reason = "manual"
             is_manual = True
 
-        # Priority 1: attendee email
+        # Priority 1: attendee email (client/external only — internal
+        # colleague emails are never indexed, so skip them here too).
         if matched_id is None:
             for raw in ev.attendee_emails:
                 clean = (raw or "").strip().lower()
-                if not clean:
+                if not clean or _is_internal_email(clean):
                     continue
                 hit = email_index.get(clean)
                 if hit is not None:
