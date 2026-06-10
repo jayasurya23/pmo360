@@ -16,6 +16,7 @@ import {
   listGlobalRoster,
   createTimelineProject,
   patchTimelineProject,
+  deleteTimelineProject,
   createTimelineAssignment,
   patchTimelineAssignment,
   deleteTimelineAssignment,
@@ -29,6 +30,7 @@ import {
 import type {
   TimelineBoard,
   TimelineResource,
+  TimelineProject,
   TimelineAssignment,
   TimelineTimeOff,
   GlobalAttendee,
@@ -564,18 +566,39 @@ export default function Timeline() {
   };
   const gridWidth = LABEL_W + weeks.length * weekW;
 
-  async function setProjectClient(projectId: number, client: string) {
-    const c = client.trim() || null;
+  async function patchProjectField(projectId: number, patch: Partial<TimelineProject>) {
     const ev = board?.projects.find((p) => p.id === projectId)?.version;
     setBoard((b) =>
-      b ? { ...b, projects: b.projects.map((p) => (p.id === projectId ? { ...p, client: c } : p)) } : b,
+      b ? { ...b, projects: b.projects.map((p) => (p.id === projectId ? { ...p, ...patch } : p)) } : b,
     );
     try {
-      await patchTimelineProject(projectId, { client: c, expected_version: ev });
+      await patchTimelineProject(projectId, { ...patch, expected_version: ev });
       setConflict(null);
-      await reload(); // refresh the client pick-list in case it's a new one
+      await reload(); // refresh client pick-list / status / name
     } catch (e) {
       await onWriteError(e);
+    }
+  }
+  async function deleteProject(projectId: number) {
+    const p = board?.projects.find((x) => x.id === projectId);
+    const ok = await confirm({
+      title: `Delete project “${p?.name ?? ""}”?`,
+      body: "This removes the project and all of its assignment bars. This can't be undone.",
+      confirmLabel: "Delete project",
+      destructive: true,
+    });
+    if (!ok) return;
+    setBoard((b) =>
+      b ? {
+        ...b,
+        projects: b.projects.filter((x) => x.id !== projectId),
+        assignments: b.assignments.filter((a) => a.timeline_project_id !== projectId),
+      } : b,
+    );
+    try {
+      await deleteTimelineProject(projectId);
+    } catch {
+      await reload();
     }
   }
 
@@ -725,7 +748,8 @@ export default function Timeline() {
                   assignments={visibleAssignments}
                   ctx={ctx}
                   onAddTo={setAddingToProject}
-                  onSetClient={setProjectClient}
+                  onPatchProject={patchProjectField}
+                  onDeleteProject={deleteProject}
                 />
               )}
             </div>
@@ -1238,19 +1262,26 @@ function ProjectView({
   assignments,
   ctx,
   onAddTo,
-  onSetClient,
+  onPatchProject,
+  onDeleteProject,
 }: {
   board: TimelineBoard;
   assignments: TimelineAssignment[];
   ctx: Ctx;
   onAddTo: (projectId: number) => void;
-  onSetClient: (projectId: number, client: string) => void;
+  onPatchProject: (projectId: number, patch: Partial<TimelineProject>) => void;
+  onDeleteProject: (projectId: number) => void;
 }) {
   const { weeks, weekW } = ctx;
-  const [editId, setEditId] = useState<number | null>(null);
-  const [editVal, setEditVal] = useState("");
-  const startEdit = (id: number, client: string | null | undefined) => { setEditId(id); setEditVal(client || ""); };
-  const commit = (id: number) => { onSetClient(id, editVal); setEditId(null); };
+  const [edit, setEdit] = useState<{ id: number; field: "client" | "name"; val: string } | null>(null);
+  const startEdit = (id: number, field: "client" | "name", val: string | null | undefined) => setEdit({ id, field, val: val || "" });
+  const commit = () => {
+    if (!edit) return;
+    const v = edit.val.trim();
+    if (edit.field === "name") { if (v) onPatchProject(edit.id, { name: v }); }
+    else onPatchProject(edit.id, { client: v || null });
+    setEdit(null);
+  };
   const resName = (id?: number | null) =>
     id == null ? "Unassigned" : board.resources.find((r) => r.id === id)?.name || "Unassigned";
   const byProject = new Map<number, TimelineAssignment[]>();
@@ -1265,14 +1296,35 @@ function ProjectView({
           <div key={p.id} className="border-b border-brand-lightgray/60">
             <div className="flex items-stretch bg-slate-50/60">
               <LabelCell>
-                <span className="font-medium">{p.name}</span>
-                {p.client && <span className="text-brand-gray text-xs"> · {p.client}</span>}
+                {edit?.id === p.id && edit.field === "name" ? (
+                  <input
+                    autoFocus
+                    className="w-full rounded border border-slate-300 px-1.5 py-0.5 text-sm"
+                    value={edit.val}
+                    onChange={(e) => setEdit({ ...edit, val: e.target.value })}
+                    onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEdit(null); }}
+                    onBlur={commit}
+                  />
+                ) : (
+                  <button className="w-full truncate text-left hover:text-brand-red" title="Click to rename" onClick={() => startEdit(p.id, "name", p.name)}>
+                    <span className="font-medium">{p.name}</span>
+                    {p.client && <span className="text-brand-gray text-xs"> · {p.client}</span>}
+                  </button>
+                )}
               </LabelCell>
               <div className="relative shrink-0 flex items-center gap-2 px-2" style={{ width: weeks.length * weekW, height: ROW_H }}>
-                <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: st.bg, color: st.fg }}>
-                  {st.label}
-                </span>
-                {editId === p.id ? (
+                <select
+                  value={p.status}
+                  title="Change status"
+                  onChange={(e) => onPatchProject(p.id, { status: e.target.value })}
+                  className="text-[10px] rounded px-1 py-0.5 font-medium border-0 cursor-pointer"
+                  style={{ background: st.bg, color: st.fg }}
+                >
+                  {STATUSES.map((s) => (
+                    <option key={s.value} value={s.value} style={{ background: "#fff", color: "#1a1a1a" }}>{s.label}</option>
+                  ))}
+                </select>
+                {edit?.id === p.id && edit.field === "client" ? (
                   <span className="inline-flex items-center gap-1">
                     <input
                       list="timeline-clients"
@@ -1280,20 +1332,23 @@ function ProjectView({
                       className="rounded border border-slate-300 px-1.5 py-0.5 text-xs"
                       style={{ width: 190 }}
                       placeholder="Pick or type a client"
-                      value={editVal}
-                      onChange={(e) => setEditVal(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") commit(p.id); if (e.key === "Escape") setEditId(null); }}
+                      value={edit.val}
+                      onChange={(e) => setEdit({ ...edit, val: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEdit(null); }}
                     />
-                    <button className="text-[11px] text-brand-red font-semibold hover:underline" onClick={() => commit(p.id)}>Save</button>
-                    <button className="text-[11px] text-brand-gray hover:underline" onClick={() => setEditId(null)}>cancel</button>
+                    <button className="text-[11px] text-brand-red font-semibold hover:underline" onClick={commit}>Save</button>
+                    <button className="text-[11px] text-brand-gray hover:underline" onClick={() => setEdit(null)}>cancel</button>
                   </span>
                 ) : (
-                  <button className="text-[11px] text-brand-gray hover:text-brand-red" title="Set / change client" onClick={() => startEdit(p.id, p.client)}>
+                  <button className="text-[11px] text-brand-gray hover:text-brand-red" title="Set / change client" onClick={() => startEdit(p.id, "client", p.client)}>
                     {p.client ? "✎ client" : "✎ set client"}
                   </button>
                 )}
                 <button className="text-[11px] text-brand-red hover:underline" onClick={() => onAddTo(p.id)}>
                   + add assignment
+                </button>
+                <button className="text-sm text-brand-gray hover:text-brand-red ml-auto" title="Delete project" onClick={() => onDeleteProject(p.id)}>
+                  🗑
                 </button>
               </div>
             </div>
