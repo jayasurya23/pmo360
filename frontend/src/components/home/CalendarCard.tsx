@@ -20,7 +20,15 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { format, parseISO, isToday, isTomorrow, startOfDay, addDays } from "date-fns";
+import {
+  format,
+  parseISO,
+  isToday,
+  isTomorrow,
+  startOfDay,
+  addDays,
+  isWeekend,
+} from "date-fns";
 
 import { useAuth } from "@/auth/useAuth";
 import { useApp } from "@/lib/state";
@@ -82,6 +90,13 @@ function classifyInternal(emails: string[]): boolean {
 }
 
 
+/** How far forward the card looks: one week (7 days from today). Weekend
+ *  days are filtered out of the rendered list (groupByDay) so only workdays
+ *  show. Used for both the Graph query window and the day list so they stay
+ *  in sync. */
+const HORIZON_DAYS = 7;
+
+
 export default function CalendarCard() {
   const { isAuthenticated, user, getCalendarToken } = useAuth();
   const { clients } = useApp();
@@ -120,7 +135,7 @@ export default function CalendarCard() {
         const token = await getCalendarToken();
         const events = await listUpcomingEvents(token, {
           signedInEmail: user?.email,
-          daysAhead: 14,
+          daysAhead: HORIZON_DAYS,
         });
         if (events.length === 0) {
           setRows([]);
@@ -252,7 +267,7 @@ export default function CalendarCard() {
             Upcoming meetings
           </div>
           <div className="text-base font-semibold text-brand-black mt-1">
-            📅 Next 14 days from Outlook
+            📅 The week ahead from Outlook · Mon–Fri
           </div>
         </div>
         {phase !== "signed-out" && (
@@ -279,7 +294,7 @@ export default function CalendarCard() {
         {phase === "loading" && rows.length === 0 && <SkeletonRow />}
         {phase === "empty" && (
           <div className="text-sm text-brand-gray italic">
-            Nothing on your calendar in the next two weeks. Try adding
+            Nothing on your calendar in the week ahead. Try adding
             attendees from a portfolio's roster to your Outlook meetings
             so we can auto-link them next time.
           </div>
@@ -355,8 +370,8 @@ function ConsentCta({ onConnect }: { onConnect: () => void }) {
   return (
     <div className="flex items-center justify-between gap-3 bg-sky-50 border border-sky-200 rounded px-3 py-2">
       <div className="text-sm text-sky-900">
-        Connect your Outlook calendar so we can list your next two weeks of
-        meetings and link them to portfolios.
+        Connect your Outlook calendar so we can list your week ahead and
+        link those meetings to portfolios.
       </div>
       <button
         type="button"
@@ -707,14 +722,11 @@ interface DayGroup {
   rows: EventRow[];
 }
 
-/** How many days forward the card covers. Matches the Graph query window
- *  (listUpcomingEvents `daysAhead`) and the "Next 14 days" header. */
-const HORIZON_DAYS = 14;
-
 /**
- * Build one bucket per local calendar day from TODAY forward (inclusive),
- * INCLUDING days with no meetings — so the column reads as a continuous
- * day-by-day calendar instead of silently skipping free days.
+ * Build one bucket per local WORKDAY from today through the next week
+ * (HORIZON_DAYS), INCLUDING workdays with no meetings — so the column reads
+ * as a continuous Mon–Fri planner instead of silently skipping free days.
+ * Weekends (Sat/Sun) are omitted entirely.
  *
  * Events are bucketed by their LOCAL day, and each label is derived from a
  * real local `Date` (via date-fns, which formats in local time) rather than
@@ -739,6 +751,7 @@ function groupByDay(rows: EventRow[]): DayGroup[] {
   const today = startOfDay(new Date());
   for (let i = 0; i < HORIZON_DAYS; i++) {
     const d = addDays(today, i);
+    if (isWeekend(d)) continue; // workdays only — skip Sat/Sun
     const key = format(d, "yyyy-MM-dd");
     const prefix = isToday(d) ? "Today · " : isTomorrow(d) ? "Tomorrow · " : "";
     out.push({
