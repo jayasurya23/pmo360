@@ -618,9 +618,11 @@ function UserMenu() {
   if (!isAuthenticated) {
     return (
       <div className="flex items-center gap-2">
-        <span className="hidden lg:inline text-xs text-slate-500">
-          {settings?.app.local_dev_mode ? "Local dev" : "Production"}
-        </span>
+        {settings?.app.local_dev_mode && (
+          <span className="hidden lg:inline rounded-full bg-amber-100 text-amber-700 text-[11px] font-medium px-2 py-0.5">
+            Local dev
+          </span>
+        )}
         <button
           type="button"
           onClick={() => void signIn()}
@@ -634,9 +636,11 @@ function UserMenu() {
 
   return (
     <div className="relative flex items-center gap-2" ref={wrapRef}>
-      <span className="hidden lg:inline text-xs text-slate-500">
-        {settings?.app.local_dev_mode ? "Local dev" : "Production"}
-      </span>
+      {settings?.app.local_dev_mode && (
+        <span className="hidden lg:inline rounded-full bg-amber-100 text-amber-700 text-[11px] font-medium px-2 py-0.5">
+          Local dev
+        </span>
+      )}
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
