@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { format, parseISO, isToday, isTomorrow } from "date-fns";
+import { format, parseISO, isToday, isTomorrow, startOfDay, addDays } from "date-fns";
 
 import { useAuth } from "@/auth/useAuth";
 import { useApp } from "@/lib/state";
@@ -285,40 +285,46 @@ export default function CalendarCard() {
           </div>
         )}
 
-        {(phase === "loaded" || phase === "loading") && groups.length > 0 && (
+        {(phase === "loaded" || (phase === "loading" && rows.length > 0)) && (
           <div className="space-y-4">
             {groups.map((g) => (
-              <div key={g.label}>
+              <div key={g.key}>
                 <div className="text-[11px] uppercase tracking-wider text-brand-gray font-semibold mb-1">
                   {g.label}
                 </div>
-                <div className="card divide-y divide-brand-lightgray/60">
-                  {g.rows.map(({ event, match, isInternal }) => (
-                    <EventRowItem
-                      key={event.id}
-                      event={event}
-                      match={match}
-                      isInternal={isInternal}
-                      pickerOpen={pendingLinkFor === event.id}
-                      onTogglePicker={async () => {
-                        const next =
-                          pendingLinkFor === event.id ? null : event.id;
-                        if (next) {
-                          await ensurePortfolios();
+                {g.rows.length === 0 ? (
+                  <div className="text-xs text-brand-gray/60 italic px-1 py-0.5">
+                    No meetings
+                  </div>
+                ) : (
+                  <div className="card divide-y divide-brand-lightgray/60">
+                    {g.rows.map(({ event, match, isInternal }) => (
+                      <EventRowItem
+                        key={event.id}
+                        event={event}
+                        match={match}
+                        isInternal={isInternal}
+                        pickerOpen={pendingLinkFor === event.id}
+                        onTogglePicker={async () => {
+                          const next =
+                            pendingLinkFor === event.id ? null : event.id;
+                          if (next) {
+                            await ensurePortfolios();
+                          }
+                          setPendingLinkFor(next);
+                        }}
+                        portfolios={portfolios || []}
+                        onPickPortfolio={(pid) =>
+                          onPickPortfolio(event.linkKey, pid)
                         }
-                        setPendingLinkFor(next);
-                      }}
-                      portfolios={portfolios || []}
-                      onPickPortfolio={(pid) =>
-                        onPickPortfolio(event.linkKey, pid)
-                      }
-                      onUnlink={() => onUnlink(event.linkKey)}
-                      onBuildAgenda={() =>
-                        nav(buildAgendaHref(event, match, clients))
-                      }
-                    />
-                  ))}
-                </div>
+                        onUnlink={() => onUnlink(event.linkKey)}
+                        onBuildAgenda={() =>
+                          nav(buildAgendaHref(event, match, clients))
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -692,28 +698,54 @@ function ManualPortfolioPicker({
  * ============================================================ */
 
 interface DayGroup {
+  /** Local calendar day, yyyy-MM-dd — stable React key. */
+  key: string;
+  /** Human label, e.g. "Today · Wed, Jun 10" / "Tomorrow · Thu, Jun 11" /
+   *  "Fri, Jun 12". */
   label: string;
+  /** Events that day (sorted by start). Empty array on a free day. */
   rows: EventRow[];
 }
 
+/** How many days forward the card covers. Matches the Graph query window
+ *  (listUpcomingEvents `daysAhead`) and the "Next 14 days" header. */
+const HORIZON_DAYS = 14;
+
+/**
+ * Build one bucket per local calendar day from TODAY forward (inclusive),
+ * INCLUDING days with no meetings — so the column reads as a continuous
+ * day-by-day calendar instead of silently skipping free days.
+ *
+ * Events are bucketed by their LOCAL day, and each label is derived from a
+ * real local `Date` (via date-fns, which formats in local time) rather than
+ * re-parsing the day key as UTC midnight — the old approach drifted the
+ * weekday/date by a day for anyone east/west of UTC.
+ */
 function groupByDay(rows: EventRow[]): DayGroup[] {
   const map = new Map<string, EventRow[]>();
   for (const r of rows) {
     if (!r.event.startUtc) continue;
-    const start = parseISO(r.event.startUtc);
-    const key = format(start, "yyyy-MM-dd");
+    const key = format(parseISO(r.event.startUtc), "yyyy-MM-dd"); // local day
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(r);
   }
+  for (const list of map.values()) {
+    list.sort((a, b) =>
+      (a.event.startUtc || "").localeCompare(b.event.startUtc || ""),
+    );
+  }
+
   const out: DayGroup[] = [];
-  for (const [key, list] of map.entries()) {
-    const d = parseISO(key + "T00:00:00Z");
-    const label = isToday(d)
-      ? "Today"
-      : isTomorrow(d)
-      ? "Tomorrow"
-      : format(d, "EEEE, MMM d");
-    out.push({ label, rows: list });
+  const today = startOfDay(new Date());
+  for (let i = 0; i < HORIZON_DAYS; i++) {
+    const d = addDays(today, i);
+    const key = format(d, "yyyy-MM-dd");
+    const prefix = isToday(d) ? "Today · " : isTomorrow(d) ? "Tomorrow · " : "";
+    out.push({
+      key,
+      label: `${prefix}${format(d, "EEE, MMM d")}`,
+      rows: map.get(key) ?? [],
+    });
   }
   return out;
 }

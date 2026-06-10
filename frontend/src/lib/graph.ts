@@ -331,9 +331,19 @@ export async function listUpcomingEvents(
 
   // calendarview requires startDateTime + endDateTime as URL params.
   // Graph wants ISO-8601 in UTC, e.g. "2026-05-27T00:00:00Z".
+  //
+  // Start the window at LOCAL midnight *today* (not the current instant) so:
+  //   - the whole of today is shown, including meetings earlier today that
+  //     have already ended (the card is a day planner, not a "what's left");
+  //   - nothing from yesterday leaks in (using "now" + UTC rounding could
+  //     pull an early-UTC event that's still "yesterday" locally).
+  // Cover `daysAhead` full local days from there.
   const now = new Date();
-  const end = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
-  const startParam = encodeURIComponent(now.toISOString());
+  const startLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(
+    startLocal.getTime() + daysAhead * 24 * 60 * 60 * 1000,
+  );
+  const startParam = encodeURIComponent(startLocal.toISOString());
   const endParam = encodeURIComponent(end.toISOString());
   const select =
     "id,subject,start,end,isAllDay,organizer,attendees,onlineMeetingProvider," +
