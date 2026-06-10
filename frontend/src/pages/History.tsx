@@ -56,6 +56,41 @@ export default function History() {
       .finally(() => setLoading(false));
   }, [currentProject?.id]);
 
+  // ---- Derived lists ----
+  // These useMemo hooks MUST run before the no-portfolio early return below.
+  // On a cold deep-link load `currentProject` is briefly null (early return,
+  // hooks skipped) and then hydrates to a value (hooks run); if they lived
+  // after the return, that change in hook count between renders trips React
+  // error #310 and blanks the page. In-app nav never hits it because a
+  // portfolio is already selected on mount.
+  const filteredMeetings = useMemo(
+    () =>
+      statusFilter === "all"
+        ? meetings
+        : meetings.filter((m) => (m.stage || "draft") === statusFilter),
+    [meetings, statusFilter],
+  );
+
+  const meetingsByMonth = useMemo(() => {
+    const groups = new Map<string, Meeting[]>();
+    // listMeetings returns newest-first; preserve that within each month.
+    for (const m of filteredMeetings) {
+      const key = format(parseISO(m.meeting_date), "MMMM yyyy");
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(m);
+    }
+    return Array.from(groups.entries());
+  }, [filteredMeetings]);
+
+  const stageCounts = useMemo(() => {
+    const c = { draft: 0, final: 0, sent: 0 };
+    for (const m of meetings) {
+      const s = (m.stage || "draft") as keyof typeof c;
+      if (s in c) c[s] += 1;
+    }
+    return c;
+  }, [meetings]);
+
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
 
@@ -166,35 +201,6 @@ export default function History() {
       /* ignore */
     }
   };
-
-  // ---- Filter + month grouping ----
-  const filteredMeetings = useMemo(
-    () =>
-      statusFilter === "all"
-        ? meetings
-        : meetings.filter((m) => (m.stage || "draft") === statusFilter),
-    [meetings, statusFilter],
-  );
-
-  const meetingsByMonth = useMemo(() => {
-    const groups = new Map<string, Meeting[]>();
-    // listMeetings returns newest-first; preserve that within each month.
-    for (const m of filteredMeetings) {
-      const key = format(parseISO(m.meeting_date), "MMMM yyyy");
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(m);
-    }
-    return Array.from(groups.entries());
-  }, [filteredMeetings]);
-
-  const stageCounts = useMemo(() => {
-    const c = { draft: 0, final: 0, sent: 0 };
-    for (const m of meetings) {
-      const s = (m.stage || "draft") as keyof typeof c;
-      if (s in c) c[s] += 1;
-    }
-    return c;
-  }, [meetings]);
 
   return (
     <div className="space-y-6">

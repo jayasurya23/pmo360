@@ -79,6 +79,12 @@ export default function Review() {
   const [scheduleItemCount, setScheduleItemCount] = useState<number | null>(
     null,
   );
+  // Transient confirmation toast for the "Save" (stay-on-page) action.
+  // Declared up here with the other hooks so it always runs before the
+  // no-portfolio early return below — otherwise a cold deep-link load (no
+  // portfolio selected yet) changes the hook count between renders and trips
+  // React error #310, blanking the page.
+  const [savedToast, setSavedToast] = useState(false);
   useEffect(() => {
     if (!currentProject) {
       setScheduleItemCount(null);
@@ -261,9 +267,9 @@ export default function Review() {
   };
 
   // "Save" — persist and STAY on the page. For PMs who want to checkpoint
-  // mid-edit without leaving Review. Surfaces a transient confirmation so
-  // the save is unmistakable (the autosave status pill is subtle).
-  const [savedToast, setSavedToast] = useState(false);
+  // mid-edit without leaving Review. Surfaces a transient confirmation
+  // (`savedToast`, declared above with the other hooks) so the save is
+  // unmistakable (the autosave status pill is subtle).
   const handleSaveStay = async () => {
     setSaving(true);
     setError(null);
