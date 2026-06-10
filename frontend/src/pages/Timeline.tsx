@@ -243,6 +243,11 @@ export default function Timeline() {
   const [drag, setDrag] = useState<DragVis | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // live auto-refresh bookkeeping
+  const loadedRef = useRef(false);   // suppress the loading spinner after first load
+  const busyRef = useRef(false);     // gate polling while editing/dragging
+  const [lastSync, setLastSync] = useState(0);
+
   useEffect(() => {
     localStorage.setItem(
       LS,
@@ -251,12 +256,14 @@ export default function Timeline() {
   }, [view, zoom, collapsed, showNewProject]);
 
   const reload = useCallback(async () => {
-    setLoading(true);
+    if (!loadedRef.current) setLoading(true);  // only block the UI on the first load
     try {
       setBoard(await fetchTimelineBoard(winStart || undefined, winEnd || undefined));
+      loadedRef.current = true;
+      setLastSync(Date.now());
       setError(null);
     } catch (e: any) {
-      setError(e?.response?.data?.detail || e?.message || "Failed to load");
+      if (!loadedRef.current) setError(e?.response?.data?.detail || e?.message || "Failed to load");
     } finally {
       setLoading(false);
     }
@@ -268,6 +275,31 @@ export default function Timeline() {
   useEffect(() => {
     void reload();
   }, [reload, isAuthenticated]);
+
+  // ---- live updates: auto-refresh so PMs see each other's edits ----
+  // Poll the board on an interval + on window focus. Gated so a refresh never
+  // yanks an in-progress drag or an open editor out from under the user.
+  busyRef.current = !!(
+    dragRef.current || drag || editing || addingToProject !== null ||
+    addPreset || timeOffPreset || showResources || menu
+  );
+  useEffect(() => {
+    const POLL_MS = 12000;
+    const tick = () => {
+      if (document.visibilityState !== "visible") return;
+      if (dragRef.current || busyRef.current) return;
+      void reload();
+    };
+    const id = window.setInterval(tick, POLL_MS);
+    const onFocus = () => { if (!dragRef.current && !busyRef.current) void reload(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+    };
+  }, [reload]);
 
   const weeks = board?.weeks ?? [];
   const todayCol = colOf(todayISO(), weeks);
@@ -587,6 +619,8 @@ export default function Timeline() {
           <button className="text-brand-red hover:underline" onClick={() => { setWinStart(""); setWinEnd(""); }}>reset</button>
         )}
         <div className="flex-1" />
+        <LiveDot lastSync={lastSync} onRefresh={() => void reload()} />
+        <Divider />
         <LegendMenu />
       </div>
 
@@ -793,6 +827,28 @@ function FilterMenu({ label, options, labels, selected, onChange }: { label: str
 
 function Divider() {
   return <span className="mx-1 h-5 w-px bg-slate-200" aria-hidden />;
+}
+function LiveDot({ lastSync, onRefresh }: { lastSync: number; onRefresh: () => void }) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => force((n) => n + 1), 5000);
+    return () => window.clearInterval(id);
+  }, []);
+  const secs = lastSync ? Math.max(0, Math.round((Date.now() - lastSync) / 1000)) : null;
+  const ago = secs == null ? "" : secs < 5 ? "just now" : secs < 60 ? `${secs}s ago` : `${Math.round(secs / 60)}m ago`;
+  return (
+    <button
+      onClick={onRefresh}
+      title="Live — the board auto-refreshes every ~12s and when you focus the tab, so other PMs' changes appear here. Click to refresh now."
+      className="inline-flex items-center gap-1.5 font-semibold text-brand-gray hover:text-slate-900"
+    >
+      <span className="relative flex h-2 w-2">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
+      </span>
+      Live{ago ? ` · ${ago}` : ""}
+    </button>
+  );
 }
 function LegendMenu() {
   const [open, setOpen] = useState(false);
