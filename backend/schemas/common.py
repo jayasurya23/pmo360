@@ -598,6 +598,7 @@ class TimelineProjectPatch(BaseModel):
     client: Optional[str] = None
     status: Optional[str] = None
     notes: Optional[str] = None
+    expected_version: Optional[int] = None   # optimistic-concurrency token
 
 
 class TimelineProjectOut(ORMModel):
@@ -606,6 +607,7 @@ class TimelineProjectOut(ORMModel):
     client: Optional[str] = None
     status: str = "in_progress"
     notes: Optional[str] = None
+    version: int = 1
 
 
 class TimelineAssignmentIn(BaseModel):
@@ -631,6 +633,7 @@ class TimelineAssignmentPatch(BaseModel):
     status: Optional[str] = None
     label: Optional[str] = None
     order_index: Optional[int] = None
+    expected_version: Optional[int] = None   # optimistic-concurrency token
 
 
 class TimelineAssignmentOut(BaseModel):
@@ -645,6 +648,7 @@ class TimelineAssignmentOut(BaseModel):
     status: Optional[str] = None
     label: Optional[str] = None
     order_index: int = 0
+    version: int = 1
     # enriched from the parent project for rendering
     project_name: Optional[str] = None
     client: Optional[str] = None

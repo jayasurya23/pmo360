@@ -407,6 +407,7 @@ export interface TimelineProject {
   client?: string | null;
   status: string;
   notes?: string | null;
+  version: number;
 }
 export interface TimelineAssignment {
   id: number;
@@ -420,6 +421,7 @@ export interface TimelineAssignment {
   status?: string | null;
   label?: string | null;
   order_index: number;
+  version: number;
   project_name?: string | null;
   client?: string | null;
   effective_status?: string | null;

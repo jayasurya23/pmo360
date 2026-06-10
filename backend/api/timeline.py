@@ -57,6 +57,21 @@ def _check_status(s: Optional[str]) -> None:
         )
 
 
+def _check_stale(expected: Optional[int], current: Optional[int], kind: str) -> None:
+    """Optimistic concurrency: reject a save whose expected_version no longer
+    matches the row's current version (another PM saved in between)."""
+    if expected is not None and (current or 1) != expected:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "stale_version",
+                "message": f"This {kind} was changed by someone else. Reload to see the latest.",
+                "current_version": current,
+                "submitted_version": expected,
+            },
+        )
+
+
 def _monday(d: date) -> date:
     """Monday of the week containing d."""
     return d - timedelta(days=d.weekday())
@@ -233,10 +248,15 @@ def patch_project(
     if p is None:
         raise HTTPException(404, "Project not found")
     data = payload.model_dump(exclude_unset=True)
+    expected = data.pop("expected_version", None)
+    _check_stale(expected, p.version, "project")
     if "status" in data:
         _check_status(data["status"])
     for field, value in data.items():
         setattr(p, field, value)
+    if "client" in data and data["client"]:
+        _ensure_client(db, data["client"], actor.id)
+    p.version = (p.version or 1) + 1
     p.updated_at = datetime.utcnow()
     db.flush()
     return p
@@ -298,12 +318,15 @@ def patch_assignment(
     if a is None:
         raise HTTPException(404, "Assignment not found")
     data = payload.model_dump(exclude_unset=True)
+    expected = data.pop("expected_version", None)
+    _check_stale(expected, a.version, "assignment")
     if "status" in data:
         _check_status(data["status"])
     for field, value in data.items():
         setattr(a, field, value)
     if a.end_date < a.start_date:
         raise HTTPException(422, "end_date must be on or after start_date")
+    a.version = (a.version or 1) + 1
     a.updated_at = datetime.utcnow()
     db.flush()
     return _assignment_out(a, db.get(TimelineProject, a.timeline_project_id))
@@ -394,6 +417,7 @@ def _assignment_out(a: TimelineAssignment, project: Optional[TimelineProject]) -
         status=a.status,
         label=a.label,
         order_index=a.order_index or 0,
+        version=a.version or 1,
         project_name=(project.name if project else None),
         client=(project.client if project else None),
         effective_status=eff,

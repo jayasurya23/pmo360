@@ -436,13 +436,13 @@ export const listTimelineProjects = () =>
   apiClient.get<TimelineProject[]>("/timeline/projects").then((r) => r.data);
 export const createTimelineProject = (body: Partial<TimelineProject>) =>
   apiClient.post<TimelineProject>("/timeline/projects", body).then((r) => r.data);
-export const patchTimelineProject = (id: number, body: Partial<TimelineProject>) =>
+export const patchTimelineProject = (id: number, body: Partial<TimelineProject> & { expected_version?: number }) =>
   apiClient.patch<TimelineProject>(`/timeline/projects/${id}`, body).then((r) => r.data);
 export const deleteTimelineProject = (id: number) =>
   apiClient.delete(`/timeline/projects/${id}`);
 export const createTimelineAssignment = (body: Partial<TimelineAssignment>) =>
   apiClient.post<TimelineAssignment>("/timeline/assignments", body).then((r) => r.data);
-export const patchTimelineAssignment = (id: number, body: Partial<TimelineAssignment>) =>
+export const patchTimelineAssignment = (id: number, body: Partial<TimelineAssignment> & { expected_version?: number }) =>
   apiClient.patch<TimelineAssignment>(`/timeline/assignments/${id}`, body).then((r) => r.data);
 export const deleteTimelineAssignment = (id: number) =>
   apiClient.delete(`/timeline/assignments/${id}`);

@@ -595,6 +595,7 @@ class TimelineProject(Base):
     client = Column(String(200))                            # free text, no FK
     status = Column(String(30), default="in_progress")
     notes = Column(Text)
+    version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic concurrency
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(
@@ -626,6 +627,7 @@ class TimelineAssignment(Base):
     status = Column(String(30))                             # overrides project status when set
     label = Column(String(200))                             # bar label override
     order_index = Column(Integer, default=0)
+    version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic concurrency
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(

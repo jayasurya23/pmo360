@@ -247,6 +247,7 @@ export default function Timeline() {
   const loadedRef = useRef(false);   // suppress the loading spinner after first load
   const busyRef = useRef(false);     // gate polling while editing/dragging
   const [lastSync, setLastSync] = useState(0);
+  const [conflict, setConflict] = useState<string | null>(null);  // 409 stale-write notice
 
   useEffect(() => {
     localStorage.setItem(
@@ -321,6 +322,26 @@ export default function Timeline() {
   const removeLocal = (id: number) =>
     setBoard((b) => (b ? { ...b, assignments: b.assignments.filter((x) => x.id !== id) } : b));
 
+  // ---- optimistic concurrency: send the version we last saw; a stale save
+  // is rejected with 409 instead of clobbering another PM's change. ----
+  async function saveAssign(
+    a: TimelineAssignment,
+    patch: Partial<TimelineAssignment>,
+    opts?: { force?: boolean },
+  ) {
+    const body: any = opts?.force ? { ...patch } : { ...patch, expected_version: a.version };
+    const res = await patchTimelineAssignment(a.id, body);
+    if (res && typeof (res as any).version === "number") patchLocal(a.id, { version: (res as any).version });
+    setConflict(null);
+    return res;
+  }
+  async function onWriteError(e: any) {
+    if (e?.response?.status === 409) {
+      setConflict("Another PM changed this item while you were editing — your change was discarded and the latest is shown.");
+    }
+    await reload();
+  }
+
   // ---- undo stack (direct-manipulation ops) ----
   const pushUndo = (label: string, run: () => Promise<void>) =>
     setUndoStack((s) => [...s.slice(-49), { label, run }]);
@@ -378,14 +399,14 @@ export default function Timeline() {
     (Object.keys(patch) as (keyof TimelineAssignment)[]).forEach((k) => ((before as any)[k] = a[k] ?? null));
     patchLocal(a.id, { ...patch, effective_status: "status" in patch ? (patch.status as string) : a.effective_status });
     try {
-      await patchTimelineAssignment(a.id, patch);
+      await saveAssign(a, patch);
       pushUndo(label, async () => {
         patchLocal(a.id, before);
-        await patchTimelineAssignment(a.id, before);
+        await saveAssign(a, before, { force: true });
         await reload();
       });
-    } catch {
-      await reload();
+    } catch (e) {
+      await onWriteError(e);
     }
   }
 
@@ -458,9 +479,9 @@ export default function Timeline() {
               resource_id: newResource,
             };
             patchLocal(a.id, patch);
-            await patchTimelineAssignment(a.id, patch);
+            await saveAssign(a, patch);
             const inv = { start_date: a.start_date, end_date: a.end_date, resource_id: a.resource_id ?? null };
-            pushUndo("move", async () => { patchLocal(a.id, inv); await patchTimelineAssignment(a.id, inv); });
+            pushUndo("move", async () => { patchLocal(a.id, inv); await saveAssign(a, inv, { force: true }); });
           } else if (d.mode === "l") {
             if (dx === 0) return;
             const os = a.start_date;
@@ -468,8 +489,8 @@ export default function Timeline() {
             if (parseISO(ns) > parseISO(a.end_date)) ns = a.end_date;
             if (ns === a.start_date) return;
             patchLocal(a.id, { start_date: ns });
-            await patchTimelineAssignment(a.id, { start_date: ns });
-            pushUndo("resize", async () => { patchLocal(a.id, { start_date: os }); await patchTimelineAssignment(a.id, { start_date: os }); });
+            await saveAssign(a, { start_date: ns });
+            pushUndo("resize", async () => { patchLocal(a.id, { start_date: os }); await saveAssign(a, { start_date: os }, { force: true }); });
           } else {
             if (dx === 0) return;
             const oe = a.end_date;
@@ -477,8 +498,8 @@ export default function Timeline() {
             if (parseISO(ne) < parseISO(a.start_date)) ne = a.start_date;
             if (ne === a.end_date) return;
             patchLocal(a.id, { end_date: ne });
-            await patchTimelineAssignment(a.id, { end_date: ne });
-            pushUndo("resize", async () => { patchLocal(a.id, { end_date: oe }); await patchTimelineAssignment(a.id, { end_date: oe }); });
+            await saveAssign(a, { end_date: ne });
+            pushUndo("resize", async () => { patchLocal(a.id, { end_date: oe }); await saveAssign(a, { end_date: oe }, { force: true }); });
           }
         } else {
           // row reorder within the same discipline
@@ -500,8 +521,8 @@ export default function Timeline() {
           );
           await reload();
         }
-      } catch {
-        await reload();
+      } catch (e) {
+        await onWriteError(e);
       }
     }
     window.addEventListener("pointermove", move);
@@ -545,14 +566,16 @@ export default function Timeline() {
 
   async function setProjectClient(projectId: number, client: string) {
     const c = client.trim() || null;
+    const ev = board?.projects.find((p) => p.id === projectId)?.version;
     setBoard((b) =>
       b ? { ...b, projects: b.projects.map((p) => (p.id === projectId ? { ...p, client: c } : p)) } : b,
     );
     try {
-      await patchTimelineProject(projectId, { client: c });
+      await patchTimelineProject(projectId, { client: c, expected_version: ev });
+      setConflict(null);
       await reload(); // refresh the client pick-list in case it's a new one
-    } catch {
-      await reload();
+    } catch (e) {
+      await onWriteError(e);
     }
   }
 
@@ -626,6 +649,12 @@ export default function Timeline() {
 
       {loading && <div className="text-sm text-brand-gray">Loading timeline…</div>}
       {error && <div className="text-sm text-brand-red">{error}</div>}
+      {conflict && (
+        <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          <span>⚠️ {conflict}</span>
+          <button className="ml-auto text-amber-800/70 hover:text-amber-900" onClick={() => setConflict(null)}>dismiss</button>
+        </div>
+      )}
 
       {board && !loading && (
         <div className="flex gap-4 items-start">
@@ -1402,7 +1431,7 @@ function AssignmentDialog({ board, assignment, projectId, presetResourceId, pres
     const body = { resource_id: resourceId ? Number(resourceId) : null, discipline, milestone: milestone || null, start_date: start, end_date: end, utilization: util, status: statusOverride || null };
     try {
       if (isEdit && assignment) {
-        await patchTimelineAssignment(assignment.id, body);
+        await patchTimelineAssignment(assignment.id, { ...body, expected_version: assignment.version });
       } else {
         let targetPid = Number(pid);
         if (combo) {
@@ -1413,7 +1442,13 @@ function AssignmentDialog({ board, assignment, projectId, presetResourceId, pres
         await createTimelineAssignment({ ...body, timeline_project_id: targetPid });
       }
       onSaved();
-    } catch (e: any) { setErr(e?.response?.data?.detail || e?.message || "Save failed"); setSaving(false); }
+    } catch (e: any) {
+      const d = e?.response?.data?.detail;
+      const msg = e?.response?.status === 409
+        ? "Someone else changed this assignment while you had it open. Close and reopen to see their version."
+        : (typeof d === "string" ? d : d?.message) || e?.message || "Save failed";
+      setErr(msg); setSaving(false);
+    }
   }
   return (
     <Modal title={isEdit ? "Edit assignment" : "Add assignment"} onClose={onClose}>
