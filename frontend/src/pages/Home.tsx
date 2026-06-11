@@ -4,6 +4,7 @@ import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import { StatusPill } from "@/components/StatusPill";
 import CalendarCard from "@/components/home/CalendarCard";
+import PlannerCard from "@/components/home/PlannerCard";
 import RisksCard from "@/components/home/RisksCard";
 import DraftResumeBanner from "@/components/DraftResumeBanner";
 import {
@@ -132,6 +133,9 @@ export default function Home() {
 
       {/* ----- Calendar v2: upcoming Outlook meetings with manual override ----- */}
       <CalendarCard />
+
+      {/* ----- Microsoft Planner: my open tasks, tick-to-complete ----- */}
+      <PlannerCard />
 
       {/* ----- Open risks rollup (signed-in only; auto-hides when empty) ----- */}
       <RisksCard />

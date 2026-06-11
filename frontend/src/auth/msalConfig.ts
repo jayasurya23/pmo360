@@ -137,6 +137,20 @@ export const GRAPH_DIRECTORY_REQUEST: RedirectRequest = {
 };
 
 /**
+ * Acquired on demand by the Home "My Planner tasks" card.
+ *
+ * `Tasks.ReadWrite` (delegated) lets us read the signed-in user's Microsoft
+ * Planner tasks (`/me/planner/tasks`) and mark them complete. Like
+ * `Calendars.Read`, it's user-consentable on standard consent in most
+ * tenants (no admin consent needed), so it lands via the silent flow or a
+ * one-time consent popup. If a tenant restricts user consent, an admin grants
+ * it once for the app registration.
+ */
+export const GRAPH_PLANNER_REQUEST: RedirectRequest = {
+  scopes: ["Tasks.ReadWrite"],
+};
+
+/**
  * The PublicClientApplication singleton.
  *
  * Construction itself can throw — invalid `redirectUri` format, sessionStorage

@@ -443,3 +443,86 @@ export function uint8ToBase64(bytes: Uint8Array): string {
   }
   return btoa(binary);
 }
+
+
+/* ============================================================
+ * /me/planner/tasks — Microsoft Planner (Tasks.ReadWrite scope)
+ * ============================================================ */
+export interface PlannerTask {
+  /** Planner task id. */
+  id: string;
+  title: string;
+  /** 0 = not started, 1–99 = in progress, 100 = completed. */
+  percentComplete: number;
+  /** ISO due date string (Graph stores it at UTC midnight) or null. */
+  dueDateTime: string | null;
+  planId: string;
+  bucketId: string;
+  /** Resolved plan title — best-effort; "" when the plan lookup failed
+   *  (e.g. a plan we don't have read access to). */
+  planTitle: string;
+  /** Concurrency token Graph REQUIRES in the `If-Match` header to update
+   *  the task (Planner uses optimistic concurrency on every write). */
+  etag: string;
+}
+
+/**
+ * List the signed-in user's INCOMPLETE Planner tasks across every plan, with
+ * plan titles resolved. Completed tasks are dropped — this card is "what's
+ * on my plate". Plan titles are looked up once per distinct plan and failures
+ * degrade gracefully (the task just shows no plan name).
+ */
+export async function listMyPlannerTasks(token: string): Promise<PlannerTask[]> {
+  const res = await graphFetch("/me/planner/tasks", token);
+  const data = await res.json();
+
+  const tasks: PlannerTask[] = [];
+  for (const t of data.value || []) {
+    if ((t.percentComplete ?? 0) >= 100) continue; // active tasks only
+    tasks.push({
+      id: t.id,
+      title: (t.title || "(untitled task)") as string,
+      percentComplete: t.percentComplete ?? 0,
+      dueDateTime: t.dueDateTime || null,
+      planId: t.planId || "",
+      bucketId: t.bucketId || "",
+      planTitle: "",
+      etag: (t["@odata.etag"] || "") as string,
+    });
+  }
+
+  // Resolve plan titles once per distinct plan (best-effort, in parallel).
+  const planTitles = new Map<string, string>();
+  const planIds = [...new Set(tasks.map((t) => t.planId).filter(Boolean))];
+  await Promise.all(
+    planIds.map(async (pid) => {
+      try {
+        const pr = await graphFetch(`/planner/plans/${pid}`, token);
+        const pd = await pr.json();
+        planTitles.set(pid, (pd.title || "") as string);
+      } catch {
+        /* a plan we can't read just shows no name — don't fail the card */
+      }
+    }),
+  );
+  for (const t of tasks) t.planTitle = planTitles.get(t.planId) || "";
+  return tasks;
+}
+
+/**
+ * Mark a Planner task complete (percentComplete = 100). Graph requires the
+ * task's current `etag` in the `If-Match` header for its optimistic-concurrency
+ * check — a stale etag returns 412 (the task changed elsewhere; caller should
+ * reload). Returns 204 No Content on success; throws via graphFetch otherwise.
+ */
+export async function completePlannerTask(
+  taskId: string,
+  etag: string,
+  token: string,
+): Promise<void> {
+  await graphFetch(`/planner/tasks/${taskId}`, token, {
+    method: "PATCH",
+    body: JSON.stringify({ percentComplete: 100 }),
+    headers: { "If-Match": etag },
+  });
+}

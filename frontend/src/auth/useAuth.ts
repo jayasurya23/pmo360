@@ -29,6 +29,7 @@ import {
   GRAPH_FILES_REQUEST,
   GRAPH_DIRECTORY_REQUEST,
   GRAPH_CALENDAR_REQUEST,
+  GRAPH_PLANNER_REQUEST,
   LOGIN_REQUEST,
 } from "./msalConfig";
 
@@ -137,5 +138,6 @@ export function useAuth() {
     getFilesToken: () => getGraphToken(GRAPH_FILES_REQUEST.scopes!),
     getDirectoryToken: () => getGraphToken(GRAPH_DIRECTORY_REQUEST.scopes!),
     getCalendarToken: () => getGraphToken(GRAPH_CALENDAR_REQUEST.scopes!),
+    getPlannerToken: () => getGraphToken(GRAPH_PLANNER_REQUEST.scopes!),
   };
 }
