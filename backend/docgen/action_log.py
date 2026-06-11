@@ -35,12 +35,12 @@ def generate_action_items_xlsx(project, actions, output_path: Optional[Path] = N
 
     # ---- Title block ----
     ws["A1"] = f"Action Items — {project.name}"
-    ws["A1"].font = Font(name="Helvetica", size=16, bold=True, color=BrandColors.RED.lstrip("#"))
+    ws["A1"].font = Font(name="Jost", size=16, bold=True, color=BrandColors.RED.lstrip("#"))
     ws.merge_cells("A1:G1")
 
     if project.client:
         ws["A2"] = f"Client: {project.client.name}"
-        ws["A2"].font = Font(name="Helvetica", size=10, color=BrandColors.DARK_GRAY.lstrip("#"))
+        ws["A2"].font = Font(name="Jost", size=10, color=BrandColors.DARK_GRAY.lstrip("#"))
         ws.merge_cells("A2:G2")
 
     # ---- Header row ----
@@ -48,7 +48,7 @@ def generate_action_items_xlsx(project, actions, output_path: Optional[Path] = N
     header_row = 4
     for col_idx, h in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col_idx, value=h)
-        cell.font = Font(name="Helvetica", size=10, bold=True, color="FFFFFF")
+        cell.font = Font(name="Jost", size=10, bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor=BrandColors.RED.lstrip("#"))
         cell.alignment = Alignment(horizontal="left", vertical="center")
 
@@ -69,7 +69,7 @@ def generate_action_items_xlsx(project, actions, output_path: Optional[Path] = N
         status_cell = ws.cell(row=row, column=5, value=action.status.capitalize())
         bg, fg = STATUS_FILLS.get(action.status, ("FFFFFF", "1A1A1A"))
         status_cell.fill = PatternFill("solid", fgColor=bg)
-        status_cell.font = Font(name="Helvetica", size=10, bold=True, color=fg)
+        status_cell.font = Font(name="Jost", size=10, bold=True, color=fg)
         ws.cell(row=row, column=6, value=action.originating_meeting.meeting_date.strftime("%m/%d/%Y") if action.originating_meeting else "")
         ws.cell(row=row, column=7, value=action.closed_in_meeting.meeting_date.strftime("%m/%d/%Y") if action.closed_in_meeting else "")
 
@@ -77,7 +77,7 @@ def generate_action_items_xlsx(project, actions, output_path: Optional[Path] = N
             c = ws.cell(row=row, column=col)
             c.border = thin_border
             if not c.font.bold:
-                c.font = Font(name="Helvetica", size=10)
+                c.font = Font(name="Jost", size=10)
             c.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
     # ---- Column widths ----

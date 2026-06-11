@@ -329,7 +329,7 @@ def _make_table(doc, headers: list[str], col_widths_in: Optional[list[float]] = 
         run = cell.paragraphs[0].add_run(label)
         run.bold = True
         run.font.color.rgb = WHITE
-        run.font.name = "Helvetica"
+        run.font.name = BODY_FONT
         _shade_cell(cell, BrandColors.RED)
     if col_widths_in:
         for i, w in enumerate(col_widths_in):
@@ -345,7 +345,7 @@ def _add_subheading(doc, text: str):
     run.bold = True
     run.font.size = Pt(11)
     run.font.color.rgb = NEAR_BLACK
-    run.font.name = "Helvetica"
+    run.font.name = BODY_FONT
     return p
 
 
@@ -406,7 +406,7 @@ def generate_premeeting_agenda_docx(
     title_run.bold = True
     title_run.font.size = Pt(18)
     title_run.font.color.rgb = RED
-    title_run.font.name = "Helvetica"
+    title_run.font.name = BODY_FONT
 
     date_p = doc.add_paragraph()
     date_run = date_p.add_run(meeting.meeting_date.strftime("%B %d, %Y"))
