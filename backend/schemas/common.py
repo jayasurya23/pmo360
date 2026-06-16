@@ -862,3 +862,135 @@ class SearchResponse(BaseModel):
 # Re-enable forward refs
 DiscussionPointOut.model_rebuild()
 ParsedDiscussionPointOut.model_rebuild()
+
+
+# ---------- Proposal builder ----------
+class ProposalItemNode(BaseModel):
+    """One node in the editable proposal schedule tree (recursive)."""
+    id: Optional[int] = None
+    name: str = ""
+    duration: int = 0
+    price: float = 0
+    start_date: str = ""
+    end_date: str = ""
+    is_milestone: bool = False
+    indent_level: int = 0
+    predecessor_id: Optional[int] = None
+    predecessor_type: str = "FS"
+    predecessor_type_user_set: bool = False
+    lag: int = 0
+    targeted_hours: Optional[float] = None
+    is_start_pinned: bool = False
+    enabled: bool = True
+    price_only: bool = False
+    show_start_date: bool = True
+    show_end_date: bool = True
+    task_utilization: Optional[float] = None
+    parent_id: Optional[int] = None
+    children: list[ProposalItemNode] = Field(default_factory=list)
+
+
+class ProposalOut(ORMModel):
+    id: int
+    title: str
+    customer_name: Optional[str] = None
+    project_location: Optional[str] = None
+    project_state: Optional[str] = None
+    project_size_mw: Optional[str] = None
+    portfolio_id: Optional[int] = None
+    linked_schedule_id: Optional[int] = None
+    current_version_id: Optional[int] = None
+    version: int = 1
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class ProposalListItem(ProposalOut):
+    """List-row shape: proposal meta + active-version label + portfolio name."""
+    current_label: Optional[str] = None
+    version_count: int = 0
+    portfolio_name: Optional[str] = None
+
+
+class ProposalVersionOut(ORMModel):
+    id: int
+    proposal_id: int
+    label: str
+    computed_start_date: Optional[date] = None
+    computed_end_date: Optional[date] = None
+    total_price: Optional[int] = None
+    source_filename: Optional[str] = None
+    source_format: Optional[str] = None
+    linked_schedule_id: Optional[int] = None
+    version: int = 1
+    created_at: Optional[datetime] = None
+
+
+class ProposalVersionDetail(ProposalVersionOut):
+    info: dict = Field(default_factory=dict)
+    config: dict = Field(default_factory=dict)
+    tree: list[ProposalItemNode] = Field(default_factory=list)
+
+
+class ProposalBoardResponse(BaseModel):
+    """Single aggregate GET: proposal meta + active version (with tree) + list."""
+    proposal: ProposalOut
+    version: ProposalVersionDetail
+    versions: list[ProposalVersionOut] = Field(default_factory=list)
+
+
+class ProposalPatch(BaseModel):
+    title: Optional[str] = None
+    customer_name: Optional[str] = None
+    project_location: Optional[str] = None
+    project_state: Optional[str] = None
+    project_size_mw: Optional[str] = None
+    expected_version: Optional[int] = None
+
+
+class ProposalTreePut(BaseModel):
+    tree: list[ProposalItemNode]
+    info: Optional[dict] = None
+    config: Optional[dict] = None
+    expected_version: Optional[int] = None
+
+
+class ProposalRecomputeRequest(BaseModel):
+    unpin_all: bool = False
+    config: Optional[dict] = None
+    expected_version: Optional[int] = None
+
+
+class ProposalLinkRequest(BaseModel):
+    portfolio_id: int
+
+
+class ProposalSyncRequest(BaseModel):
+    version_id: Optional[int] = None      # default = active version
+    seed_deliverables: bool = False
+
+
+class ProposalSyncResult(BaseModel):
+    schedule_id: int
+    schedule_version: str
+    item_count: int
+    deliverable_count: int = 0
+
+
+class DeliverableBatchItem(BaseModel):
+    task: str
+    project_segment: Optional[str] = None
+    delivery_date: Optional[date] = None
+    start_status: str = "Not Started"
+    source: str = "schedule"
+    schedule_version_added: Optional[str] = None
+
+
+class DeliverableBatchIn(BaseModel):
+    deliverables: list[DeliverableBatchItem] = Field(default_factory=list)
+
+
+ProposalItemNode.model_rebuild()
+ProposalVersionDetail.model_rebuild()
+ProposalBoardResponse.model_rebuild()
+ProposalTreePut.model_rebuild()

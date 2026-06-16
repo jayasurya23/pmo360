@@ -26,6 +26,7 @@ const PRIMARY_NAV: NavItem[] = [
   { to: "/history", label: "History" },
   { to: "/schedule", label: "Schedule" },
   { to: "/timeline", label: "📆 Timeline" },
+  { to: "/proposals", label: "📐 Proposals" },
 ];
 
 // Admin/lead-only — appended to the nav when the signed-in user is an admin.

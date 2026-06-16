@@ -444,6 +444,94 @@ export interface TimelineBoard {
   clients: string[];
 }
 
+// Proposals — Castillo proposal builder (ported desktop tool). The editable
+// schedule tree mirrors the Tkinter task tree; dates are server-computed.
+export interface ProposalItemNode {
+  id: number | null;
+  name: string;
+  duration: number;
+  price: number;
+  start_date: string;
+  end_date: string;
+  is_milestone: boolean;
+  indent_level: number;
+  predecessor_id: number | null;
+  predecessor_type: "FS" | "FF" | "SS" | "SF";
+  predecessor_type_user_set: boolean;
+  lag: number;
+  targeted_hours: number | null;
+  is_start_pinned: boolean;
+  enabled: boolean;
+  price_only: boolean;
+  show_start_date: boolean;
+  show_end_date: boolean;
+  task_utilization: number | null;
+  parent_id: number | null;
+  children: ProposalItemNode[];
+}
+export interface ProposalOut {
+  id: number;
+  title: string;
+  customer_name: string | null;
+  project_location: string | null;
+  project_state: string | null;
+  project_size_mw: string | null;
+  portfolio_id: number | null;
+  linked_schedule_id: number | null;
+  current_version_id: number | null;
+  version: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+export interface ProposalListItem extends ProposalOut {
+  current_label: string | null;
+  version_count: number;
+  portfolio_name: string | null;
+}
+export interface ProposalVersionOut {
+  id: number;
+  proposal_id: number;
+  label: string;
+  computed_start_date: string | null;
+  computed_end_date: string | null;
+  total_price: number | null;
+  source_filename: string | null;
+  source_format: string | null;
+  linked_schedule_id: number | null;
+  version: number;
+  created_at: string | null;
+}
+export interface ProposalVersionDetail extends ProposalVersionOut {
+  info: Record<string, any>;
+  config: Record<string, any>;
+  tree: ProposalItemNode[];
+}
+export interface ProposalBoard {
+  proposal: ProposalOut;
+  version: ProposalVersionDetail;
+  versions: ProposalVersionOut[];
+}
+
+// Split Deposit — persisted inside ProposalVersionDetail.info under the
+// `split_deposit_memory` key (info is Record<string, any> so arbitrary keys
+// round-trip). Mirrors the desktop tool's split-deposit memory blob 1:1.
+export interface SplitDepositMemory {
+  deposit_percentage: number; // default 30.0
+  split_mode: "percent_of_each" | "percent_of_deposit"; // default "percent_of_each"
+  deposit_target: "deposit" | "due_diligence"; // default "deposit"
+  has_been_applied: boolean; // default false
+  task_percentages: Record<string, number>;
+  original_task_prices: Record<string, number>;
+  original_target_prices: Record<string, number>;
+  selected_task_keys: string[];
+}
+// One undo snapshot — component state only, NOT persisted.
+export interface SplitHistoryEntry {
+  timestamp: string;
+  task_states: Record<string, number>;
+  target_states: Record<string, number>;
+}
+
 // Dashboard
 export interface DashboardAction {
   id: number;

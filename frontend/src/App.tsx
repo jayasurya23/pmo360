@@ -14,6 +14,7 @@ import Schedule from "./pages/Schedule";
 import Settings from "./pages/Settings";
 import LeadDashboard from "./pages/LeadDashboard";
 import Timeline from "./pages/Timeline";
+import Proposals from "./pages/Proposals";
 
 export default function App() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="/history" element={<History />} />
         <Route path="/schedule" element={<Schedule />} />
         <Route path="/timeline" element={<Timeline />} />
+        <Route path="/proposals" element={<Proposals />} />
         <Route path="/lead" element={<LeadDashboard />} />
         <Route path="/settings" element={<Settings />} />
       </Route>

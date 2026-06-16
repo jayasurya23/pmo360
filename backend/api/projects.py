@@ -3,13 +3,14 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import desc
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from core.deps import get_db
 from auth import get_current_db_user
 from db.models import (
     Project, Client, Meeting, ActionItem, Deliverable, Agenda,
+    Schedule, Proposal, ProposalVersion,
 )
 from db.repository import (
     list_projects, get_project, set_portfolio_sub_projects, list_deliverables,
@@ -115,6 +116,20 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
+    # Proposals are NOT cascade-children of a portfolio — they live on their own.
+    # Before the project (and its cascade-deleted schedules) goes away, null any
+    # proposal pointers into it so a standalone proposal survives intact and no
+    # dangling FK (proposals/proposal_versions.linked_schedule_id → schedules.id)
+    # is left behind.
+    sched_ids = select(Schedule.id).where(Schedule.project_id == project_id)
+    db.query(ProposalVersion).filter(
+        ProposalVersion.linked_schedule_id.in_(sched_ids)
+    ).update({ProposalVersion.linked_schedule_id: None}, synchronize_session=False)
+    db.query(Proposal).filter(
+        Proposal.linked_schedule_id.in_(sched_ids)
+    ).update({Proposal.linked_schedule_id: None}, synchronize_session=False)
+    db.query(Proposal).filter(Proposal.portfolio_id == project_id).update(
+        {Proposal.portfolio_id: None}, synchronize_session=False)
     db.delete(project)
     return None
 

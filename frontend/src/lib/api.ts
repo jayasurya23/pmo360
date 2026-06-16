@@ -29,6 +29,11 @@ import type {
   MeetingTemplateInput,
   MeResponse,
   ProjectMember,
+  ProposalBoard,
+  ProposalListItem,
+  ProposalOut,
+  ProposalVersionDetail,
+  ProposalItemNode,
 } from "./types";
 
 // Honor VITE_API_BASE at build-time so the same artefact can talk to
@@ -478,6 +483,146 @@ export const saveSchedule = (project_id: number, parsed: ParsedSchedule) =>
     .then((r) => r.data);
 export const deleteSchedule = (id: number) =>
   apiClient.delete(`/schedules/${id}`);
+
+// ---------- proposals ----------
+/** Upload a Castillo cost workbook (.xlsx/.xlsm). The backend parses it into
+ *  the editable schedule tree and returns the freshly-created proposal board
+ *  (V1 active). Optional portfolio link + project start + utilization seed
+ *  the first version's config. */
+export const uploadProposal = async (
+  file: File,
+  opts?: {
+    portfolio_id?: number;
+    project_start?: string;
+    utilization_percent?: number;
+  },
+) => {
+  const form = new FormData();
+  form.append("file", file);
+  if (opts?.portfolio_id != null)
+    form.append("portfolio_id", String(opts.portfolio_id));
+  if (opts?.project_start) form.append("project_start", opts.project_start);
+  if (opts?.utilization_percent != null)
+    form.append("utilization_percent", String(opts.utilization_percent));
+  const res = await apiClient.post<ProposalBoard>("/proposals/upload", form, {
+    // Let the browser set the multipart boundary.
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 5 * 60 * 1000,
+  });
+  return res.data;
+};
+export const listProposals = (portfolio_id?: number) =>
+  apiClient
+    .get<ProposalListItem[]>("/proposals", {
+      params: portfolio_id != null ? { portfolio_id } : {},
+    })
+    .then((r) => r.data);
+export const fetchProposalBoard = (id: number) =>
+  apiClient.get<ProposalBoard>(`/proposals/${id}/board`).then((r) => r.data);
+export const patchProposal = (
+  id: number,
+  body: Partial<ProposalOut> & { expected_version?: number },
+) => apiClient.patch<ProposalOut>(`/proposals/${id}`, body).then((r) => r.data);
+export const deleteProposal = (id: number) =>
+  apiClient.delete(`/proposals/${id}`);
+export const putProposalTree = (
+  id: number,
+  vid: number,
+  body: {
+    tree: ProposalItemNode[];
+    info?: Record<string, any>;
+    config?: Record<string, any>;
+    expected_version?: number;
+  },
+) =>
+  apiClient
+    .put<ProposalVersionDetail>(`/proposals/${id}/versions/${vid}/tree`, body)
+    .then((r) => r.data);
+export const recomputeProposal = (
+  id: number,
+  vid: number,
+  body: { unpin_all?: boolean; config?: Record<string, any>; expected_version?: number },
+) =>
+  apiClient
+    .post<ProposalVersionDetail>(
+      `/proposals/${id}/versions/${vid}/recompute`,
+      body,
+    )
+    .then((r) => r.data);
+export const createProposalVersion = (id: number) =>
+  apiClient
+    .post<ProposalBoard>(`/proposals/${id}/versions`)
+    .then((r) => r.data);
+export const activateProposalVersion = (id: number, vid: number) =>
+  apiClient
+    .post<ProposalBoard>(`/proposals/${id}/versions/${vid}/activate`)
+    .then((r) => r.data);
+export const generateProposalPdf = (id: number, vid: number) =>
+  apiClient
+    .post<{ document_id: number; filename: string; file_size_bytes: number }>(
+      `/proposals/${id}/versions/${vid}/pdf`,
+    )
+    .then((r) => r.data);
+/** Path of the serve-PDF endpoint. The endpoint requires a Bearer token, so
+ *  use `fetchProposalPdfBlob` (authed axios) to preview/download rather than
+ *  hitting this URL directly from an <iframe>/<a href> which can't carry the
+ *  token. Kept for callers that already have cookie-based auth. */
+export const proposalPdfUrl = (id: number, vid: number) =>
+  `${API_BASE}/proposals/${id}/versions/${vid}/pdf/file`;
+/** Authed blob fetch — the proposal PDF endpoint is behind require_db_user,
+ *  so we pull it through the axios client (Bearer attached) and hand back a
+ *  Blob the caller turns into an object URL for preview + download. */
+export const fetchProposalPdfBlob = async (id: number, vid: number) => {
+  const res = await apiClient.get(
+    `/proposals/${id}/versions/${vid}/pdf/file`,
+    { responseType: "blob" },
+  );
+  return res.data as Blob;
+};
+/** Authed blob fetch of the saved-template .xlsx (the desktop "Save Template").
+ *  Built server-side from the persisted version, so the caller must Save any
+ *  pending edits first (same contract the PDF serve relies on). */
+export const downloadProposalTemplate = async (id: number, vid: number) => {
+  const res = await apiClient.get(
+    `/proposals/${id}/versions/${vid}/template.xlsx`,
+    { responseType: "blob" },
+  );
+  return res.data as Blob;
+};
+/** Import a saved proposal template .xlsx -> creates a fresh Proposal + V1 and
+ *  returns the board (mirrors uploadProposal's multipart contract). */
+export const importProposalTemplate = async (
+  file: File,
+  opts?: { portfolio_id?: number },
+) => {
+  const form = new FormData();
+  form.append("file", file);
+  if (opts?.portfolio_id != null)
+    form.append("portfolio_id", String(opts.portfolio_id));
+  const res = await apiClient.post<ProposalBoard>("/proposals/template", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 5 * 60 * 1000,
+  });
+  return res.data;
+};
+export const linkProposal = (id: number, portfolio_id: number) =>
+  apiClient
+    .patch<ProposalOut>(`/proposals/${id}/link`, { portfolio_id })
+    .then((r) => r.data);
+export const unlinkProposal = (id: number) =>
+  apiClient.patch<ProposalOut>(`/proposals/${id}/unlink`).then((r) => r.data);
+export const syncProposal = (
+  id: number,
+  body: { version_id?: number; seed_deliverables: boolean },
+) =>
+  apiClient
+    .post<{
+      schedule_id: number;
+      schedule_version: string;
+      item_count: number;
+      deliverable_count: number;
+    }>(`/proposals/${id}/sync`, body)
+    .then((r) => r.data);
 
 // ---------- meeting templates ----------
 export const listTemplates = (projectId: number) =>

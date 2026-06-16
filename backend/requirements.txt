@@ -27,3 +27,9 @@ mammoth>=1.7.0                  # .docx → text for transcript parsing
 msal>=1.28.0
 requests>=2.31.0
 pyjwt[crypto]>=2.8.0            # JWT validation for Entra ID tokens
+
+# ---- Proposal / schedule builder (ported from the Castillo Proposal Generator) ----
+numpy>=1.26,<2                  # business-day vectorised counting (np.busday_count)
+holidays>=0.50                 # US federal holidays for schedule calendar math
+matplotlib>=3.8                # server-side Gantt chart rendering (Agg backend)
+pandas>=2.0                    # proposal Excel parsing (lazy-imported)

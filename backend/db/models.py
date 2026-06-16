@@ -669,3 +669,107 @@ class TimelineTimeOff(Base):
 
     resource = relationship("TimelineResource")
     created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+# ============================================================
+# Proposal builder (ported Castillo Proposal Generator)
+# ============================================================
+class Proposal(Base):
+    """A proposal document. Self-contained: usable with NO client/portfolio.
+
+    ``portfolio_id`` is the standalone↔tie-in hinge — NULL means a free-standing
+    proposal; setting it associates the proposal with a Project (portfolio).
+    Linking writes no schedule data; only an explicit Sync projects the active
+    version's tree into that portfolio's Schedule (see api/proposals.py).
+    Proposals are leaves: ``projects`` never relates back, so deleting a
+    portfolio never collateral-deletes a proposal (the project-delete handler
+    nulls the dangling pointer instead).
+    """
+    __tablename__ = "proposals"
+    id = Column(Integer, primary_key=True)
+    title = Column(String(300), nullable=False)
+    customer_name = Column(String(200))                  # free text, not a Client FK
+    project_location = Column(String(200))
+    project_state = Column(String(50))
+    project_size_mw = Column(String(50))
+    portfolio_id = Column(Integer, ForeignKey("projects.id"))      # nullable hinge
+    linked_schedule_id = Column(Integer, ForeignKey("schedules.id"))  # last synced schedule
+    # use_alter=True so create_all (fresh-DB path) can break the circular
+    # proposals↔proposal_versions FK by adding this one via a post-create ALTER.
+    current_version_id = Column(
+        Integer,
+        ForeignKey("proposal_versions.id", use_alter=True,
+                   name="fk_proposals_current_version"),
+    )
+    version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic lock
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    updated_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    versions = relationship(
+        "ProposalVersion", back_populates="proposal",
+        cascade="all, delete-orphan",
+        foreign_keys="ProposalVersion.proposal_id",
+        order_by="ProposalVersion.id",
+    )
+    # Active-version pointer. post_update=True so SQLAlchemy can resolve the
+    # circular proposals↔proposal_versions FK on flush.
+    current_version = relationship(
+        "ProposalVersion", foreign_keys=[current_version_id],
+        post_update=True,
+    )
+    portfolio = relationship("Project", foreign_keys=[portfolio_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+
+class ProposalVersion(Base):
+    """An immutable V1/V2… snapshot of a proposal's computed item tree.
+
+    The tree persists as JSON (``tree_json``) — we never re-run the one-shot,
+    non-idempotent build_tree on stored data; recompute is calculate_all_dates
+    only. ``config_json`` keeps the ScheduleConfig so recompute is deterministic.
+    """
+    __tablename__ = "proposal_versions"
+    id = Column(Integer, primary_key=True)
+    proposal_id = Column(Integer, ForeignKey("proposals.id"), nullable=False)
+    label = Column(String(20), nullable=False, default="V1")
+    tree_json = Column(JSON, nullable=False)             # serialized ProposalItem tree
+    info_json = Column(JSON, nullable=False)             # ProjectInfo + parser extras
+    config_json = Column(JSON)                           # ScheduleConfig
+    computed_start_date = Column(Date)
+    computed_end_date = Column(Date)
+    total_price = Column(Integer)                        # whole dollars
+    source_filename = Column(String(300))
+    source_format = Column(String(10))                   # "xlsx"
+    linked_schedule_id = Column(Integer, ForeignKey("schedules.id"))  # schedule THIS version synced into
+    version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic lock (tree edits)
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    proposal = relationship(
+        "Proposal", back_populates="versions", foreign_keys=[proposal_id],
+    )
+    documents = relationship(
+        "ProposalDocument", back_populates="version",
+        cascade="all, delete-orphan", order_by="ProposalDocument.id",
+    )
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+class ProposalDocument(Base):
+    """Generated-PDF audit trail for a proposal version (kind = 'proposal_pdf')."""
+    __tablename__ = "proposal_documents"
+    id = Column(Integer, primary_key=True)
+    proposal_version_id = Column(
+        Integer, ForeignKey("proposal_versions.id"), nullable=False,
+    )
+    kind = Column(String(30), default="proposal_pdf")
+    filename = Column(String(300), nullable=False)
+    storage_path = Column(String(500), nullable=False)
+    file_size_bytes = Column(Integer)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    version = relationship("ProposalVersion", back_populates="documents")
