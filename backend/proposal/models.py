@@ -18,7 +18,7 @@ class ProposalItem:
     name: str
     duration: int = 0
     price: float = 0.0
-    start_date: str = ""          # ISO yyyy-mm-dd ("" when unset)
+    start_date: str = ""          # runtime "%m/%d/%y" string ("" when unset)
     end_date: str = ""
     is_milestone: bool = False
     indent_level: int = 0

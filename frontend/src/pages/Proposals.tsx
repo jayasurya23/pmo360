@@ -84,11 +84,6 @@ const SCHEDULE_TABLE_MODES: { value: string; label: string }[] = [
   { value: "duration_only", label: "Duration only" },
 ];
 
-const PRICE_SOURCES: { value: string; label: string }[] = [
-  { value: "proposal", label: "Proposal" },
-  { value: "detail", label: "Detail" },
-];
-
 // US federal holiday names — drives the disabled-holidays checklist in the
 // Holidays modal (these are the names the backend scheduler recognizes).
 const US_FEDERAL_HOLIDAYS = [
@@ -158,7 +153,7 @@ function blankNode(
   const base: ProposalItemNode = {
     id: null,
     name: "New task",
-    duration: 1,
+    duration: 0,
     price: 0,
     start_date: "",
     end_date: "",
@@ -347,7 +342,15 @@ function milestoneRollup(flat: ProposalItemNode[], index: number): number {
  *  rows (id null) are NOT eligible — keeps memory round-trip-safe. */
 const memKey = (n: ProposalItemNode) => String(n.id);
 
-const round_half_to_int = (x: number) => Math.round(x);
+// Python round() semantics — round half to even ("banker's rounding") — to
+// match the desktop's int(round(...)) in the split-deposit math exactly.
+const round_half_to_int = (x: number) => {
+  const floor = Math.floor(x);
+  const diff = x - floor;
+  if (diff < 0.5) return floor;
+  if (diff > 0.5) return floor + 1;
+  return floor % 2 === 0 ? floor : floor + 1; // exactly .5 -> nearest even
+};
 const ceil10 = (x: number) => Math.ceil(x / 10) * 10;
 
 /** First node named exactly "deposit" or whose name includes "30% deposit"
@@ -378,22 +381,35 @@ function indentZeroAncestor(
  *  engineering") exists + is enabled. Returns at most one per discipline,
  *  civil first. */
 function findDueDiligenceItems(flat: ProposalItemNode[]): ProposalItemNode[] {
+  // Port of desktop find_due_diligence_items (Full_proposal_V9.py:6418-6473):
+  // a DD item is a valid allocation target iff the corresponding TOP-LEVEL
+  // engineering section ("Civil/Electrical Engineering") exists AND is enabled.
+  // The discipline is decided by the DD item's OWN name ("civil"/"electrical"),
+  // NOT by where it's nested — the canonical DD rows ("Civil Start - Civil Due
+  // Diligence") live under Project Initiation, not under the engineering
+  // sections, so an ancestor-walk would wrongly find nothing.
+  let civilSectionEnabled = false;
+  let electricalSectionEnabled = false;
+  for (const n of flat) {
+    if (n.indent_level !== 0 || !n.name) continue;
+    const top = n.name.trim().toLowerCase();
+    if (top === "civil engineering") civilSectionEnabled = !!n.enabled;
+    else if (top === "electrical engineering") electricalSectionEnabled = !!n.enabled;
+  }
   let civil: ProposalItemNode | null = null;
   let electrical: ProposalItemNode | null = null;
-  for (let i = 0; i < flat.length; i++) {
-    const n = flat[i];
-    if (!n.enabled) continue;
-    const name = (n.name || "").toLowerCase();
+  for (const n of flat) {
+    if (!n.enabled || !n.name) continue;
+    const name = n.name.toLowerCase();
     if (!name.includes("due diligence") && !name.includes("due dilligence"))
       continue;
-    const anc = indentZeroAncestor(flat, i);
-    if (!anc || !anc.enabled) continue;
-    const ancName = (anc.name || "").trim().toLowerCase();
-    if (ancName === "civil engineering") {
-      if (!civil) civil = n;
-    } else if (ancName === "electrical engineering") {
-      if (!electrical) electrical = n;
-    }
+    if (name.includes("civil") && civil === null && civilSectionEnabled) civil = n;
+    else if (
+      name.includes("electrical") &&
+      electrical === null &&
+      electricalSectionEnabled
+    )
+      electrical = n;
   }
   const out: ProposalItemNode[] = [];
   if (civil) out.push(civil);
@@ -850,6 +866,10 @@ export default function Proposals() {
   // duration onto every "client review" node, then persists the value in
   // infoDraft so it survives reloads (matches the desktop tool).
   function applyClientReviewDays(value: number) {
+    // Desktop _apply_client_review_change ignores values <= 0
+    // (Full_proposal_V9.py:2353-2355), so clearing/zeroing the field can't wipe
+    // the Client Review row durations.
+    if (value <= 0) return;
     setFlat((rows) =>
       rows.map((n) =>
         (n.name || "").toLowerCase().includes("client review")
@@ -1808,58 +1828,6 @@ export default function Proposals() {
                       </option>
                     ))}
                   </select>
-                </Field>
-                <Field label="Price source">
-                  <select
-                    className={inputCls}
-                    value={infoDraft.price_source ?? "proposal"}
-                    onChange={(e) => updateInfo({ price_source: e.target.value })}
-                  >
-                    {PRICE_SOURCES.map((m) => (
-                      <option key={m.value} value={m.value}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Deposit %">
-                  <input
-                    type="number"
-                    className={inputCls}
-                    value={infoDraft.deposit_percent ?? ""}
-                    onChange={(e) =>
-                      updateInfo({
-                        deposit_percent:
-                          e.target.value === "" ? null : Number(e.target.value),
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="PMO Adder %">
-                  <input
-                    type="number"
-                    className={inputCls}
-                    value={infoDraft.pmo_adder_percent ?? ""}
-                    onChange={(e) =>
-                      updateInfo({
-                        pmo_adder_percent:
-                          e.target.value === "" ? null : Number(e.target.value),
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="Insurance Adder %">
-                  <input
-                    type="number"
-                    className={inputCls}
-                    value={infoDraft.insurance_adder_percent ?? ""}
-                    onChange={(e) =>
-                      updateInfo({
-                        insurance_adder_percent:
-                          e.target.value === "" ? null : Number(e.target.value),
-                      })
-                    }
-                  />
                 </Field>
                 <div className="flex flex-col gap-2 pb-1">
                   <label className="flex items-center gap-2 text-sm text-brand-black">
@@ -3319,11 +3287,10 @@ function SplitDepositDialog({
 
   const proposalTotal = useMemo(() => proposalTotalOf(flat), [flat]);
   const ddItems = useMemo(() => findDueDiligenceItems(flat), [flat]);
-  const civilCount = ddItems.filter((n) => {
-    const idx = flat.indexOf(n);
-    const anc = indentZeroAncestor(flat, idx);
-    return (anc?.name || "").trim().toLowerCase() === "civil engineering";
-  }).length;
+  // Discipline is decided by the DD item's own name (matches findDueDiligenceItems).
+  const civilCount = ddItems.filter((n) =>
+    (n.name || "").toLowerCase().includes("civil"),
+  ).length;
   const electricalCount = ddItems.length - civilCount;
 
   const selectedTotal = selected.reduce((s, t) => s + (Number(t.price) || 0), 0);
@@ -3723,7 +3690,7 @@ function SplitDepositDialog({
               <button
                 className="btn-primary text-sm"
                 onClick={() => void doApply()}
-                disabled={busy}
+                disabled={busy || selected.length === 0}
               >
                 Apply Split
               </button>
@@ -3737,7 +3704,7 @@ function SplitDepositDialog({
               <button
                 className="btn-ghost text-sm"
                 onClick={() => void doResetOriginal()}
-                disabled={busy}
+                disabled={busy || selected.length === 0}
               >
                 Reset to Original
               </button>

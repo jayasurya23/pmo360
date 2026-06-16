@@ -234,8 +234,8 @@ def _create_table_data(styles, template_items, info, mode, milestones_only,
                   Paragraph("Price", th_right)]
     elif mode == "duration_only":
         header = [Paragraph("Project Schedule", th_left), Paragraph("Days", th_right)]
-    else:  # both — confirmed reference label
-        header = [Paragraph("Project Milestones", th_left), Paragraph("Days", th_left),
+    else:  # both — matches V9 desktop header label ("Project Schedule")
+        header = [Paragraph("Project Schedule", th_left), Paragraph("Days", th_left),
                   Paragraph("Start", th_left), Paragraph("Finish", th_left),
                   Paragraph("Price", th_right)]
     all_table_data.append(header)
@@ -260,7 +260,7 @@ def _create_table_data(styles, template_items, info, mode, milestones_only,
                  for d in (_parse(it.start_date), _parse(it.end_date)) if d]
         earliest = min(valid).strftime("%m/%d/%y") if valid else ""
         latest = max(valid).strftime("%m/%d/%y") if valid else ""
-        total_dur = business_days_inclusive(min(valid), max(valid), disabled) if valid else ""
+        total_dur = business_days_inclusive(min(valid), max(valid), disabled) if valid else 0
         if mode == "dates_only":
             all_table_data.append([
                 Paragraph("<b>TOTAL</b>", table_bold_white_style),
@@ -279,9 +279,9 @@ def _create_table_data(styles, template_items, info, mode, milestones_only,
                 Paragraph("<b>TOTAL</b>", table_bold_white_style),
                 Paragraph(f"{total_dur}", _price_style(table_bold_white_style)),
             ])
-        else:  # both — confirmed reference: project-name grand-total row
+        else:  # both — matches V9 desktop (literal "TOTAL" grand-total row)
             all_table_data.append([
-                Paragraph(f"<b>{info.project_title}</b>", table_bold_white_style),
+                Paragraph("<b>TOTAL</b>", table_bold_white_style),
                 Paragraph(f"{total_dur}", table_bold_white_style),
                 Paragraph(earliest, table_bold_white_style),
                 Paragraph(latest, table_bold_white_style),

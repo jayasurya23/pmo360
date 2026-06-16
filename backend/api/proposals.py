@@ -78,7 +78,7 @@ def _cfg_from_json(d: Optional[dict]) -> ScheduleConfig:
     return ScheduleConfig(
         project_start=d.get("project_start") or datetime.now().strftime("%m/%d/%y"),
         utilization_percent=float(d.get("utilization_percent", 100.0) or 100.0),
-        fs_start_next_day=bool(d.get("fs_start_next_day", False)),
+        fs_start_next_day=bool(d.get("fs_start_next_day", True)),
         disabled_holidays=frozenset(d.get("disabled_holidays") or ()),
         custom_holidays=frozenset(d.get("custom_holidays") or ()),
     )

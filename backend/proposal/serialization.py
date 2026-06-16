@@ -35,6 +35,10 @@ DEFAULT_REVIEW_PAIRS = {
     ("Electrical", "30%"), ("Electrical", "60%"),
 }
 HOURS_PER_DAY = 8.0  # desktop default (Full_proposal_V9.py:2036)
+# Castillo product default for the "Client Review Days" field (intentional
+# divergence from the desktop, whose field defaults to 0 / no-override). On a
+# fresh workbook parse every Client Review task is set to this many days.
+DEFAULT_CLIENT_REVIEW_DAYS = 5
 
 # Scalar ProposalItem fields persisted per node (everything except children/parent).
 _ITEM_FIELDS = (
@@ -67,6 +71,13 @@ def _to_mdy(value) -> str:
     try:
         return datetime.fromisoformat(s[:19]).strftime("%m/%d/%y")
     except ValueError:
+        pass
+    # Mirror the desktop's tolerant pandas parse (Full_proposal_V9.py:9105-9119)
+    # for oddly-formatted Date cells (e.g. "15-Jun-2026", "June 15, 2026").
+    try:
+        import pandas as _pd
+        return _pd.to_datetime(s).strftime("%m/%d/%y")
+    except Exception:
         return s
 
 
@@ -91,7 +102,7 @@ def parse_workbook_to_tree(
     *,
     project_start: Optional[str] = None,
     utilization_percent: float = 100.0,
-    fs_start_next_day: bool = False,
+    fs_start_next_day: bool = True,
     disabled_holidays: Optional[frozenset] = None,
     custom_holidays: Optional[frozenset] = None,
     price_source: str = "proposal",
@@ -110,6 +121,14 @@ def parse_workbook_to_tree(
         review_pairs=DEFAULT_REVIEW_PAIRS,
     )
     template_items, item_id_map, _task_counter = build_tree(rows_out)
+
+    # Apply the default Client Review Days override (5) to every Client Review
+    # task before scheduling, so a freshly parsed proposal starts with 5-day
+    # reviews (mirrors the desktop's _apply_client_review_change, but seeded by
+    # default rather than only on a manual field edit).
+    for _it in item_id_map.values():
+        if not _it.is_milestone and "client review" in (_it.name or "").lower():
+            _it.duration = DEFAULT_CLIENT_REVIEW_DAYS
 
     start = _to_mdy(project_start) if project_start else _to_mdy(info.get("date"))
     if not start:
@@ -163,6 +182,13 @@ def deserialize_tree(tree_json):
         return result
 
     items = build(tree_json)
+    # Re-assert the desktop's type defaults (electrical "study" -> FS) the same
+    # way calculate_all_dates does each run (Full_proposal_V9.py:6225,
+    # only_type_defaults=True). Without this, ProposalItem.__post_init__ would
+    # flip an electrical study task's stored FS back to FF on every reload
+    # (it isn't predecessor_type_user_set), corrupting Save-Excel / PDF output.
+    from .scheduling import apply_default_link_rules
+    apply_default_link_rules(items, only_type_defaults=True)
     return items, item_id_map
 
 
@@ -208,15 +234,17 @@ def build_info_json(info: dict, project_info: ProjectInfo) -> dict:
         "date": _to_mdy(info.get("date")) if info.get("date") else "",
         # financial (parsed from the workbook when available, else desktop defaults)
         "deposit_percent": _num("deposit_percent", 30.0),
-        "pmo_adder_percent": _num("pmo_adder_percent", 0.0),
-        "insurance_adder_percent": _num("insurance_adder_percent", 0.0),
         # PDF / export options (desktop defaults)
         "schedule_table_mode": info.get("schedule_table_mode", "both"),
         "include_gantt": bool(info.get("include_gantt", True)),
         "milestones_only_pdf": bool(info.get("milestones_only_pdf", False)),
         "price_source": info.get("price_source", "proposal"),
         # Client-Review days is a derived action value; persist last-used (OQ#1)
-        "client_review_days": int(info.get("client_review_days", 0) or 0),
+        "client_review_days": int(
+            info.get("client_review_days", DEFAULT_CLIENT_REVIEW_DAYS)
+            if info.get("client_review_days") not in (None, "")
+            else DEFAULT_CLIENT_REVIEW_DAYS
+        ),
         # logos (paths; upload is a follow-up — "" => bundled Castillo logo)
         "logo_path": info.get("logo_path", ""),
         "client_logo_path": info.get("client_logo_path", ""),

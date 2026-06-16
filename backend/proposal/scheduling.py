@@ -51,7 +51,9 @@ class ScheduleConfig:
     """Project-wide schedule inputs (the ``self.*`` tk vars from the desktop tool)."""
     project_start: str                       # "%m/%d/%y"
     utilization_percent: float = 100.0
-    fs_start_next_day: bool = False
+    # Desktop default is True (Full_proposal_V9.py:987): an FS successor starts
+    # the next working day after the predecessor finishes (fs_offset = 2).
+    fs_start_next_day: bool = True
     disabled_holidays: frozenset = frozenset()    # holiday NAMES to ignore
     custom_holidays: frozenset = frozenset()      # set[datetime.date]
 
