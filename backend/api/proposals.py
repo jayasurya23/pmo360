@@ -126,12 +126,27 @@ def _active_version(proposal: Proposal, db: Session) -> Optional[ProposalVersion
 
 
 def _next_label(proposal: Proposal) -> str:
-    n = 0
-    for v in proposal.versions:
-        m = re.match(r"[vV]?(\d+)", v.label or "")
+    """Next version label as ``V{N+1}``.
+
+    N is the highest numeric label seen — but floored at the version count and
+    guarded against collisions, so the label still increments cleanly when the
+    existing labels are non-numeric/custom (e.g. an uploaded workbook's version
+    cell like "Issued for Proposal" or a date). Without the floor a non-parseable
+    label left N at 0 and every new version came out "V1" (duplicate)."""
+    versions = list(proposal.versions)
+    existing = {(v.label or "").strip() for v in versions}
+    n = len(versions)
+    for v in versions:
+        # Only a clean "V12"/"12" label is treated as a version number — a label
+        # that merely starts with digits (e.g. a date "2024-11-12") is opaque.
+        m = re.fullmatch(r"[vV]?(\d+)", (v.label or "").strip())
         if m:
             n = max(n, int(m.group(1)))
-    return f"V{n + 1}"
+    candidate = f"V{n + 1}"
+    while candidate in existing:
+        n += 1
+        candidate = f"V{n + 1}"
+    return candidate
 
 
 def _version_detail(v: ProposalVersion) -> ProposalVersionDetail:
