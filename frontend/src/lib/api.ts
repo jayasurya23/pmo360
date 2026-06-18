@@ -34,6 +34,7 @@ import type {
   ProposalOut,
   ProposalVersionDetail,
   ProposalItemNode,
+  ProposalLogos,
 } from "./types";
 
 // Honor VITE_API_BASE at build-time so the same artefact can talk to
@@ -528,6 +529,16 @@ export const patchProposal = (
 ) => apiClient.patch<ProposalOut>(`/proposals/${id}`, body).then((r) => r.data);
 export const deleteProposal = (id: number) =>
   apiClient.delete(`/proposals/${id}`);
+/** Branding logos for the deliverable header (data URLs). Fetched on demand —
+ *  kept off the board/list responses to keep those lean. */
+export const fetchProposalLogos = (id: number) =>
+  apiClient.get<ProposalLogos>(`/proposals/${id}/logos`).then((r) => r.data);
+/** Set/replace/clear logos. Omit a field to leave it; pass null to clear it
+ *  (company => bundled Castillo default, client => none). */
+export const updateProposalLogos = (
+  id: number,
+  body: { company_logo?: string | null; client_logo?: string | null },
+) => apiClient.put<ProposalLogos>(`/proposals/${id}/logos`, body).then((r) => r.data);
 export const putProposalTree = (
   id: number,
   vid: number,

@@ -49,12 +49,15 @@ import {
   linkProposal,
   unlinkProposal,
   syncProposal,
+  fetchProposalLogos,
+  updateProposalLogos,
 } from "@/lib/api";
 import type {
   ProposalBoard,
   ProposalListItem,
   ProposalItemNode,
   ProposalOut,
+  ProposalLogos,
   SplitDepositMemory,
   SplitHistoryEntry,
 } from "@/lib/types";
@@ -531,6 +534,13 @@ export default function Proposals() {
   const [openInfo, setOpenInfo] = useState(true);
   const [openDrivers, setOpenDrivers] = useState(false);
   const [openPdfOpts, setOpenPdfOpts] = useState(false);
+  // Deliverable branding logos (data URLs) — loaded per proposal, not on the
+  // board/list responses. company_logo null => bundled Castillo default.
+  const [logos, setLogos] = useState<ProposalLogos>({
+    company_logo: null,
+    client_logo: null,
+  });
+  const [logoBusy, setLogoBusy] = useState(false);
 
   // Patch a single info/config field + mark dirty so Save lights up.
   const updateInfo = (patch: Record<string, any>) => {
@@ -603,6 +613,11 @@ export default function Proposals() {
       try {
         const b = await fetchProposalBoard(id);
         setBoard(b);
+        // Logos live off the board response — fetch them alongside, non-blocking.
+        setLogos({ company_logo: null, client_logo: null });
+        void fetchProposalLogos(id)
+          .then(setLogos)
+          .catch(() => setLogos({ company_logo: null, client_logo: null }));
         keyMap.current = new WeakMap();
         setFlat(flatten(b.version.tree, keyOf).map((f) => f.node));
         seedDrafts(b.version);
@@ -664,6 +679,24 @@ export default function Proposals() {
         );
       }
       await loadBoard(prev.id);
+    }
+  }
+
+  // ---- logos: upload / replace / clear (independent of the identity lock) ----
+  async function saveLogos(patch: {
+    company_logo?: string | null;
+    client_logo?: string | null;
+  }) {
+    if (!board) return;
+    setLogoBusy(true);
+    try {
+      const next = await updateProposalLogos(board.proposal.id, patch);
+      setLogos(next);
+      setToast("Logo updated");
+    } catch (e: any) {
+      setError(e?.message || "Failed to update logo");
+    } finally {
+      setLogoBusy(false);
     }
   }
 
@@ -1930,31 +1963,31 @@ export default function Proposals() {
               </div>
             </div>
 
-            {/* logos — read-only path display this pass */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2 mt-3">
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-brand-gray mb-0.5">
-                  Company Logo
-                </div>
-                <div className="text-sm text-brand-black truncate">
-                  {infoDraft.logo_path || (
-                    <span className="text-brand-gray italic">
-                      uses bundled Castillo logo when blank
-                    </span>
-                  )}
-                </div>
+            {/* logos — upload company + client images for the PDF header band */}
+            <div className="mt-4 border-t border-slate-100 pt-3">
+              <div className="text-[11px] uppercase tracking-wider text-brand-gray mb-2">
+                Deliverable logos
               </div>
-              <div>
-                <div className="text-[10px] uppercase tracking-wider text-brand-gray mb-0.5">
-                  Client Logo
-                </div>
-                <div className="text-sm text-brand-black truncate">
-                  {infoDraft.client_logo_path || (
-                    <span className="text-brand-gray italic">
-                      uses bundled Castillo logo when blank
-                    </span>
-                  )}
-                </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-4">
+                <LogoUploader
+                  label="Company logo"
+                  value={logos.company_logo}
+                  defaultSrc="/assets/logo/Castillo_logo_color.png"
+                  emptyHint="Using the Castillo logo by default"
+                  clearLabel="Reset to Castillo default"
+                  busy={logoBusy}
+                  onPick={(dataUrl) => void saveLogos({ company_logo: dataUrl })}
+                  onClear={() => void saveLogos({ company_logo: null })}
+                />
+                <LogoUploader
+                  label="Client logo"
+                  value={logos.client_logo}
+                  emptyHint="Optional — shown only if uploaded"
+                  clearLabel="Remove client logo"
+                  busy={logoBusy}
+                  onPick={(dataUrl) => void saveLogos({ client_logo: dataUrl })}
+                  onClear={() => void saveLogos({ client_logo: null })}
+                />
               </div>
             </div>
           </CollapsibleCard>
@@ -2324,6 +2357,104 @@ function CollapsibleCard({
       </button>
       {open && <div className="px-4 pb-4">{children}</div>}
     </section>
+  );
+}
+
+/** One logo slot: thumbnail preview + Upload/Replace + clear. `value` is the
+ *  uploaded data URL (null => show `defaultSrc` dimmed, or an empty box). Reads
+ *  the picked file to a data URL client-side and hands it to `onPick`. */
+function LogoUploader({
+  label,
+  value,
+  defaultSrc,
+  emptyHint,
+  clearLabel,
+  busy,
+  onPick,
+  onClear,
+}: {
+  label: string;
+  value: string | null;
+  defaultSrc?: string;
+  emptyHint: string;
+  clearLabel: string;
+  busy?: boolean;
+  onPick: (dataUrl: string) => void;
+  onClear: () => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const onFile = (file?: File) => {
+    setErr(null);
+    if (!file) return;
+    if (!/^image\/(png|jpe?g)$/.test(file.type)) {
+      setErr("PNG or JPEG only");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      setErr("Max 2 MB");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => onPick(String(reader.result));
+    reader.onerror = () => setErr("Could not read file");
+    reader.readAsDataURL(file);
+  };
+  const preview = value || defaultSrc || "";
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider text-brand-gray mb-1">
+        {label}
+      </div>
+      <div className="flex items-center gap-3">
+        <div className="flex h-16 w-28 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white p-1">
+          {preview ? (
+            <img
+              src={preview}
+              alt={label}
+              className={clsx(
+                "max-h-full max-w-full object-contain",
+                !value && "opacity-40",
+              )}
+            />
+          ) : (
+            <span className="px-1 text-center text-[10px] italic text-brand-gray">
+              none
+            </span>
+          )}
+        </div>
+        <div className="flex flex-col items-start gap-1">
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/png,image/jpeg"
+            className="hidden"
+            onChange={(e) => onFile(e.target.files?.[0])}
+          />
+          <button
+            type="button"
+            className="btn-ghost text-xs py-1"
+            disabled={busy}
+            onClick={() => inputRef.current?.click()}
+          >
+            {value ? "Replace…" : "Upload…"}
+          </button>
+          {value ? (
+            <button
+              type="button"
+              className="text-left text-xs text-brand-red hover:underline disabled:opacity-50"
+              disabled={busy}
+              onClick={onClear}
+            >
+              {clearLabel}
+            </button>
+          ) : (
+            <span className="text-[10px] text-brand-gray">{emptyHint}</span>
+          )}
+          {err && <span className="text-[10px] text-brand-red">{err}</span>}
+        </div>
+      </div>
+    </div>
   );
 }
 

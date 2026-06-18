@@ -485,6 +485,12 @@ export interface ProposalOut {
   created_at: string | null;
   updated_at: string | null;
 }
+/** Deliverable branding logos as data URLs. company_logo null => bundled
+ *  Castillo logo; client_logo null => no client logo. */
+export interface ProposalLogos {
+  company_logo: string | null;
+  client_logo: string | null;
+}
 export interface ProposalListItem extends ProposalOut {
   current_label: string | null;
   version_count: number;

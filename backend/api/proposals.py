@@ -11,6 +11,7 @@ Works fully standalone: a proposal needs no client/portfolio. ``portfolio_id``
 """
 from __future__ import annotations
 
+import base64
 import copy
 import io
 import os
@@ -32,6 +33,7 @@ from schemas.common import (
     ProposalOut, ProposalListItem, ProposalVersionOut, ProposalVersionDetail,
     ProposalBoardResponse, ProposalPatch, ProposalTreePut, ProposalRecomputeRequest,
     ProposalLinkRequest, ProposalSyncRequest, ProposalSyncResult,
+    ProposalLogos, ProposalLogosUpdate,
     ScheduleSaveRequest, ParsedScheduleOut, ParsedScheduleItemOut,
 )
 from storage.backend import get_storage
@@ -176,6 +178,52 @@ def _merge_pdfs(table_bytes: bytes, gantt_bytes: Optional[bytes]) -> bytes:
         gantt.close()
 
 
+# Branding logos (#7) — uploaded as data URLs, stored on the Proposal, rendered
+# onto the deliverable header. Raster only (ReportLab/matplotlib render these).
+_LOGO_MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg"}
+_LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2 MB decoded — logos are small
+_LOGO_DATA_URL_RE = re.compile(r"^data:(image/[a-zA-Z.+-]+);base64,(.+)$", re.DOTALL)
+
+
+def _validate_logo_data_url(data_url: "str | None") -> "str | None":
+    """Validate an uploaded logo data URL; return it as-is, or None to clear.
+    Raises HTTPException(400) on a non-image / malformed / oversized payload."""
+    if not data_url:
+        return None  # clear
+    m = _LOGO_DATA_URL_RE.match(data_url)
+    if not m or m.group(1).lower() not in _LOGO_MIME_EXT:
+        raise HTTPException(400, "Logo must be a base64 PNG or JPEG image data URL.")
+    try:
+        raw = base64.b64decode(m.group(2), validate=True)
+    except Exception:
+        raise HTTPException(400, "Logo image is not valid base64.")
+    if not raw:
+        raise HTTPException(400, "Logo image is empty.")
+    if len(raw) > _LOGO_MAX_BYTES:
+        raise HTTPException(400, "Logo image is too large (max 2 MB).")
+    return data_url
+
+
+def _materialize_logo(data_url: "str | None", tmp_paths: "list[str]") -> str:
+    """Decode a logo data URL to a temp file (tracked in ``tmp_paths`` for later
+    cleanup) and return its path; "" when there is nothing to render."""
+    if not data_url:
+        return ""
+    m = _LOGO_DATA_URL_RE.match(data_url)
+    if not m:
+        return ""
+    ext = _LOGO_MIME_EXT.get(m.group(1).lower(), ".png")
+    try:
+        raw = base64.b64decode(m.group(2))
+        fd, path = tempfile.mkstemp(suffix=ext, prefix="proposal_logo_")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(raw)
+        tmp_paths.append(path)
+        return path
+    except Exception:
+        return ""
+
+
 def _build_proposal_pdf(
     v: ProposalVersion,
     proposal: "Proposal | None" = None,
@@ -190,12 +238,21 @@ def _build_proposal_pdf(
     items, id_map = deserialize_tree(v.tree_json)
     cfg = _cfg_from_json(v.config_json)
     info = project_info_from_json(v.info_json)
+    tmp_logo_paths: "list[str]" = []
     if proposal is not None:
         info.project_title = proposal.title or info.project_title
         info.customer_name = proposal.customer_name or info.customer_name
         info.project_location = proposal.project_location or info.project_location
         info.project_state = proposal.project_state or info.project_state
         info.project_size_mw = proposal.project_size_mw or info.project_size_mw
+        # Uploaded branding logos (#7): company overrides the bundled default;
+        # client renders only when present. Stored as data URLs → temp files.
+        company_path = _materialize_logo(getattr(proposal, "company_logo", None), tmp_logo_paths)
+        client_path = _materialize_logo(getattr(proposal, "client_logo", None), tmp_logo_paths)
+        if company_path:
+            info.logo_path = company_path
+        if client_path:
+            info.client_logo_path = client_path
     opts = v.info_json or {}
 
     # PDF export options (desktop parity): table mode, milestones-only, gantt toggle.
@@ -207,34 +264,41 @@ def _build_proposal_pdf(
     milestones_only = bool(opts.get("milestones_only_pdf", False))
     include_gantt = bool(opts.get("include_gantt", True))
 
-    # Brand the deliverable with the Castillo logo (top-right of both pages),
-    # falling back to any logo stored on the version's info.
+    # Company logo on both pages: an uploaded company_logo (set above) wins, else
+    # any logo stored on the version's info, else the bundled Castillo default.
     logo = info.logo_path or brand_logo_path()
     info.logo_path = logo
 
-    table_bytes = render_schedule_table_bytes(
-        items, info, disabled_holidays=cfg.disabled_holidays,
-        mode=mode, milestones_only=milestones_only,
-        project_utilization=cfg.utilization_percent,
-    )
-
-    gantt_bytes = None
-    if include_gantt:
-        rows = build_gantt_rows(
-            items,
+    try:
+        table_bytes = render_schedule_table_bytes(
+            items, info, disabled_holidays=cfg.disabled_holidays,
+            mode=mode, milestones_only=milestones_only,
             project_utilization=cfg.utilization_percent,
-            project_end_date=get_project_end_date(id_map),
-            project_start_date=cfg.project_start,
         )
-        if rows:
-            gantt_bytes = render_gantt_bytes(
-                rows, title="Project Schedule",
-                project_title=info.project_title, customer_name=info.customer_name,
-                version=info.version, project_location=info.project_location,
-                project_state=info.project_state, project_size_mw=info.project_size_mw,
-                logo_path=logo,
+
+        gantt_bytes = None
+        if include_gantt:
+            rows = build_gantt_rows(
+                items,
+                project_utilization=cfg.utilization_percent,
+                project_end_date=get_project_end_date(id_map),
+                project_start_date=cfg.project_start,
             )
-    return _merge_pdfs(table_bytes, gantt_bytes)
+            if rows:
+                gantt_bytes = render_gantt_bytes(
+                    rows, title="Project Schedule",
+                    project_title=info.project_title, customer_name=info.customer_name,
+                    version=info.version, project_location=info.project_location,
+                    project_state=info.project_state, project_size_mw=info.project_size_mw,
+                    logo_path=logo,
+                )
+        return _merge_pdfs(table_bytes, gantt_bytes)
+    finally:
+        for _p in tmp_logo_paths:
+            try:
+                os.remove(_p)
+            except OSError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +413,33 @@ def patch_proposal(
     p.version = (p.version or 1) + 1
     db.flush()
     return p
+
+
+@router.get("/{pid}/logos", response_model=ProposalLogos)
+def get_proposal_logos(pid: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
+    """The proposal's branding logos (data URLs) for the editor's upload widgets.
+    Kept off the list/board responses to keep those lean."""
+    p = _get_proposal(pid, db)
+    return ProposalLogos(company_logo=p.company_logo, client_logo=p.client_logo)
+
+
+@router.put("/{pid}/logos", response_model=ProposalLogos)
+def put_proposal_logos(
+    pid: int, payload: ProposalLogosUpdate,
+    db: Session = Depends(get_db), actor=Depends(require_db_user),
+):
+    """Set/replace/clear the deliverable's branding logos. Only fields present in
+    the body are touched; an explicit null clears that logo (company => bundled
+    Castillo default, client => none)."""
+    p = _get_proposal(pid, db)
+    fields = payload.model_fields_set
+    if "company_logo" in fields:
+        p.company_logo = _validate_logo_data_url(payload.company_logo)
+    if "client_logo" in fields:
+        p.client_logo = _validate_logo_data_url(payload.client_logo)
+    p.updated_by_id = actor.id
+    db.flush()
+    return ProposalLogos(company_logo=p.company_logo, client_logo=p.client_logo)
 
 
 @router.delete("/{pid}", status_code=204)

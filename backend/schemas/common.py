@@ -948,6 +948,24 @@ class ProposalPatch(BaseModel):
     expected_version: Optional[int] = None
 
 
+class ProposalLogos(BaseModel):
+    """The two branding logos for a proposal's deliverable, as data URLs.
+
+    ``company_logo`` None => the PDF uses the bundled Castillo logo; ``client_logo``
+    None => no client logo. Kept off ``ProposalOut``/list rows (potentially tens of
+    KB each) — fetched on demand via GET /{id}/logos."""
+    company_logo: Optional[str] = None
+    client_logo: Optional[str] = None
+
+
+class ProposalLogosUpdate(BaseModel):
+    """Set/replace/clear logos. Only fields actually present in the request are
+    applied (Pydantic ``model_fields_set``), so PUT-ing just ``client_logo``
+    leaves ``company_logo`` untouched; an explicit null clears that logo."""
+    company_logo: Optional[str] = None
+    client_logo: Optional[str] = None
+
+
 class ProposalTreePut(BaseModel):
     tree: list[ProposalItemNode]
     info: Optional[dict] = None

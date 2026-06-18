@@ -692,6 +692,11 @@ class Proposal(Base):
     project_location = Column(String(200))
     project_state = Column(String(50))
     project_size_mw = Column(String(50))
+    # Branding logos on the generated deliverable, stored as data URLs
+    # ("data:image/png;base64,…"). company_logo NULL => fall back to the bundled
+    # Castillo logo; client_logo NULL => no client logo. Set via PUT /{id}/logos.
+    company_logo = Column(Text)
+    client_logo = Column(Text)
     portfolio_id = Column(Integer, ForeignKey("projects.id"))      # nullable hinge
     linked_schedule_id = Column(Integer, ForeignKey("schedules.id"))  # last synced schedule
     # use_alter=True so create_all (fresh-DB path) can break the circular
