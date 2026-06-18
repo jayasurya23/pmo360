@@ -224,8 +224,22 @@ export default function Timeline() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set(prefs.collapsed || []));
   const [discFilter, setDiscFilter] = useState<Set<string>>(new Set());
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
-  const [winStart, setWinStart] = useState("");
-  const [winEnd, setWinEnd] = useState("");
+  // Seed the date window from ?start=&end= (the proposal import deep-links here
+  // focused on the imported project's span, so its bars are visible on arrival).
+  const [winStart, setWinStart] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("start") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [winEnd, setWinEnd] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("end") || "";
+    } catch {
+      return "";
+    }
+  });
   const weekW = ZOOMS[zoom];
 
   // dialogs

@@ -995,6 +995,21 @@ class ProposalSyncResult(BaseModel):
     deliverable_count: int = 0
 
 
+class ProposalToTimelineRequest(BaseModel):
+    version_id: Optional[int] = None      # default = active version
+    replace_existing: bool = True         # replace the prior import for this proposal
+
+
+class ProposalToTimelineResult(BaseModel):
+    timeline_project_id: int
+    project_name: str
+    assignment_count: int
+    replaced_existing: bool = False       # whether a prior import was deleted
+    skipped_no_dates: int = 0             # phases dropped for missing start/finish
+    start_date: Optional[date] = None     # span of the imported bars — lets the
+    end_date: Optional[date] = None       # UI open the board focused on them
+
+
 class DeliverableBatchItem(BaseModel):
     task: str
     project_segment: Optional[str] = None

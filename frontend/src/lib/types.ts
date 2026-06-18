@@ -491,6 +491,16 @@ export interface ProposalLogos {
   company_logo: string | null;
   client_logo: string | null;
 }
+/** Result of sending a proposal version's schedule to the Timeline module. */
+export interface ProposalToTimelineResult {
+  timeline_project_id: number;
+  project_name: string;
+  assignment_count: number;
+  replaced_existing: boolean;
+  skipped_no_dates: number;
+  start_date: string | null;
+  end_date: string | null;
+}
 export interface ProposalListItem extends ProposalOut {
   current_label: string | null;
   version_count: number;

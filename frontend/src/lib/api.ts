@@ -35,6 +35,7 @@ import type {
   ProposalVersionDetail,
   ProposalItemNode,
   ProposalLogos,
+  ProposalToTimelineResult,
 } from "./types";
 
 // Honor VITE_API_BASE at build-time so the same artefact can talk to
@@ -644,6 +645,15 @@ export const syncProposal = (
       item_count: number;
       deliverable_count: number;
     }>(`/proposals/${id}/sync`, body)
+    .then((r) => r.data);
+/** Project a proposal version's schedule into the Timeline module as one
+ *  project + unassigned phase bars. Re-import replaces the prior import. */
+export const sendProposalToTimeline = (
+  id: number,
+  body?: { version_id?: number; replace_existing?: boolean },
+) =>
+  apiClient
+    .post<ProposalToTimelineResult>(`/proposals/${id}/send-to-timeline`, body ?? {})
     .then((r) => r.data);
 
 // ---------- meeting templates ----------

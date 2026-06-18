@@ -24,6 +24,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import PdfPagePreview from "@/components/PdfPagePreview";
@@ -49,6 +50,7 @@ import {
   linkProposal,
   unlinkProposal,
   syncProposal,
+  sendProposalToTimeline,
   fetchProposalLogos,
   updateProposalLogos,
 } from "@/lib/api";
@@ -489,6 +491,7 @@ const SPLIT_DEFAULTS: SplitDepositMemory = {
 // ---------------- main ----------------
 export default function Proposals() {
   const confirm = useConfirm();
+  const navigate = useNavigate();
   const { isAuthenticated } = useAuth();
   const { currentProject } = useApp();
 
@@ -541,6 +544,7 @@ export default function Proposals() {
     client_logo: null,
   });
   const [logoBusy, setLogoBusy] = useState(false);
+  const [sendingToTimeline, setSendingToTimeline] = useState(false);
 
   // Patch a single info/config field + mark dirty so Save lights up.
   const updateInfo = (patch: Record<string, any>) => {
@@ -1425,6 +1429,37 @@ export default function Proposals() {
     }
   }
 
+  // ---- send schedule to the Timeline capacity module ----
+  async function sendToTimeline() {
+    if (!proposalId || !activeVersionId || !board || sendingToTimeline) return;
+    const ok = await confirm({
+      title: "Send to Timeline?",
+      body:
+        "Adds this proposal's schedule to the Timeline as unassigned phase bars you can drag onto engineers. Re-importing this proposal later replaces these bars — any engineer assignments or tweaks you made to them are lost.",
+      confirmLabel: "Send to Timeline",
+      destructive: true,
+    });
+    if (!ok) return;
+    setSendingToTimeline(true);
+    try {
+      if (dirty) await save();
+      const r = await sendProposalToTimeline(proposalId, {
+        version_id: activeVersionId,
+        replace_existing: true,
+      });
+      // Jump to the board focused on the imported span so the bars are visible
+      // (the board's default window is only the next 8 weeks).
+      const qs = new URLSearchParams();
+      if (r.start_date) qs.set("start", r.start_date);
+      if (r.end_date) qs.set("end", r.end_date);
+      navigate(`/timeline${qs.toString() ? `?${qs}` : ""}`);
+    } catch (e: any) {
+      setError(e?.message || "Could not send to the Timeline");
+    } finally {
+      setSendingToTimeline(false);
+    }
+  }
+
   // ---- portfolio link / unlink ----
   async function doLink() {
     if (!proposalId || !currentProject) return;
@@ -2050,6 +2085,14 @@ export default function Proposals() {
             </button>
             <button className="btn-ghost text-xs py-1" onClick={openPdf}>
               📄 PDF
+            </button>
+            <button
+              className="btn-ghost text-xs py-1 disabled:opacity-50"
+              onClick={() => void sendToTimeline()}
+              disabled={sendingToTimeline}
+              title="Add this schedule to the Timeline capacity board as unassigned phase bars"
+            >
+              {sendingToTimeline ? "Sending…" : "📊 Send to Timeline"}
             </button>
           </section>
 
