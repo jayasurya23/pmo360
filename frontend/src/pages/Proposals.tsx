@@ -44,6 +44,7 @@ import {
   generateProposalPdf,
   fetchProposalPdfBlob,
   downloadProposalTemplate,
+  downloadProposalBundle,
   importProposalTemplate,
   linkProposal,
   unlinkProposal,
@@ -77,10 +78,10 @@ const INFO_FIELDS: { key: keyof ProposalOut; label: string }[] = [
 // Schedule-table render modes (info_json.schedule_table_mode) — values must
 // match the backend exactly.
 const SCHEDULE_TABLE_MODES: { value: string; label: string }[] = [
-  { value: "both", label: "Both (price + dates)" },
-  { value: "price_only", label: "Price only" },
-  { value: "dates_only", label: "Dates only" },
-  { value: "no_dates", label: "No dates" },
+  { value: "price_only", label: "Schedule of Values (Price Only)" },
+  { value: "dates_only", label: "Project Schedule (Dates Only)" },
+  { value: "both", label: "Both (Dates + Prices)" },
+  { value: "no_dates", label: "No Dates" },
   { value: "duration_only", label: "Duration only" },
 ];
 
@@ -526,6 +527,10 @@ export default function Proposals() {
   const [infoDraft, setInfoDraft] = useState<Record<string, any>>({});
   const [configDraft, setConfigDraft] = useState<Record<string, any>>({});
   const [showHolidays, setShowHolidays] = useState(false);
+  // Collapsible header sections (Project Information open by default).
+  const [openInfo, setOpenInfo] = useState(true);
+  const [openDrivers, setOpenDrivers] = useState(false);
+  const [openPdfOpts, setOpenPdfOpts] = useState(false);
 
   // Patch a single info/config field + mark dirty so Save lights up.
   const updateInfo = (patch: Record<string, any>) => {
@@ -1351,6 +1356,24 @@ export default function Proposals() {
     }
   }
 
+  // ---- ZIP bundle (branded PDF + Excel template) ----
+  async function saveZip() {
+    if (!proposalId || !activeVersionId || !board) return;
+    try {
+      if (dirty) await save();
+      const blob = await downloadProposalBundle(proposalId, activeVersionId);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${board.proposal.title || "Proposal"}_${
+        activeVersion?.label || "V1"
+      }.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e: any) {
+      setError(e?.message || "Could not build the ZIP bundle");
+    }
+  }
+
   // ---- portfolio link / unlink ----
   async function doLink() {
     if (!proposalId || !currentProject) return;
@@ -1733,18 +1756,19 @@ export default function Proposals() {
 
       {board && !boardLoading && (
         <>
-          {/* project information panel */}
-          <section className="card p-5">
-            <div className="flex items-center gap-2 mb-3">
-              <h3 className="section-title">Project Information</h3>
-              {dirty && (
+          {/* project information (collapsible) */}
+          <CollapsibleCard
+            title="Project Information"
+            open={openInfo}
+            onToggle={() => setOpenInfo((o) => !o)}
+            right={
+              dirty ? (
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
                   unsaved edits
                 </span>
-              )}
-            </div>
-
-            {/* row 1 — proposal-row fields (PATCH, optimistic + 409) */}
+              ) : null
+            }
+          >
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3">
               {INFO_FIELDS.map((f) => (
                 <InfoField
@@ -1757,194 +1781,225 @@ export default function Proposals() {
                 />
               ))}
             </div>
+          </CollapsibleCard>
 
-            {/* row 2 — config drivers (recompute on save) */}
-            <div className="mt-4 border-t border-brand-lightgray/60 pt-3">
-              <div className="text-[10px] uppercase tracking-wider text-brand-gray mb-2">
-                Schedule drivers <span className="normal-case text-brand-gray/80">— Save / Recompute to apply</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-x-5 gap-y-3 items-end">
-                <Field label="Start Date">
+          {/* schedule drivers (collapsible) */}
+          <CollapsibleCard
+            title="Schedule drivers"
+            open={openDrivers}
+            onToggle={() => setOpenDrivers((o) => !o)}
+            right={
+              <span className="text-[11px] text-brand-gray">
+                Save / Recompute to apply
+              </span>
+            }
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-x-5 gap-y-3 items-end">
+              <Field label="Start Date">
+                <input
+                  type="date"
+                  className={inputCls}
+                  value={mdyToIso(configDraft.project_start ?? "")}
+                  onChange={(e) =>
+                    updateConfig({
+                      project_start: e.target.value ? isoToMdy(e.target.value) : "",
+                    })
+                  }
+                />
+              </Field>
+              <Field label="Utilization %">
+                <input
+                  type="number"
+                  className={inputCls}
+                  value={configDraft.utilization_percent ?? ""}
+                  onChange={(e) =>
+                    updateConfig({
+                      utilization_percent:
+                        e.target.value === "" ? null : Number(e.target.value),
+                    })
+                  }
+                />
+              </Field>
+              <Field label="Client Review Days">
+                <input
+                  type="number"
+                  className={inputCls}
+                  value={infoDraft.client_review_days ?? ""}
+                  onChange={(e) =>
+                    applyClientReviewDays(Number(e.target.value) || 0)
+                  }
+                  title="Stamps this duration onto every “client review” task"
+                />
+              </Field>
+              <div className="flex flex-col gap-2 pb-1">
+                <label className="flex items-center gap-2 text-sm text-brand-black">
                   <input
-                    type="date"
-                    className={inputCls}
-                    value={mdyToIso(configDraft.project_start ?? "")}
+                    type="checkbox"
+                    checked={!!configDraft.fs_start_next_day}
                     onChange={(e) =>
-                      updateConfig({
-                        project_start: e.target.value ? isoToMdy(e.target.value) : "",
-                      })
+                      updateConfig({ fs_start_next_day: e.target.checked })
                     }
                   />
-                </Field>
-                <Field label="Utilization %">
-                  <input
-                    type="number"
-                    className={inputCls}
-                    value={configDraft.utilization_percent ?? ""}
-                    onChange={(e) =>
-                      updateConfig({
-                        utilization_percent:
-                          e.target.value === "" ? null : Number(e.target.value),
-                      })
-                    }
-                  />
-                </Field>
-                <Field label="Client Review Days">
-                  <input
-                    type="number"
-                    className={inputCls}
-                    value={infoDraft.client_review_days ?? ""}
-                    onChange={(e) =>
-                      applyClientReviewDays(Number(e.target.value) || 0)
-                    }
-                    title="Stamps this duration onto every “client review” task"
-                  />
-                </Field>
-                <div className="flex flex-col gap-2 pb-1">
-                  <label className="flex items-center gap-2 text-sm text-brand-black">
-                    <input
-                      type="checkbox"
-                      checked={!!configDraft.fs_start_next_day}
-                      onChange={(e) =>
-                        updateConfig({ fs_start_next_day: e.target.checked })
-                      }
-                    />
-                    FS Start Next Day
-                  </label>
-                  <button
-                    type="button"
-                    className="btn-ghost text-xs py-1 self-start"
-                    onClick={() => setShowHolidays(true)}
-                  >
-                    🗓 Holidays
-                    <span className="ml-1 text-brand-gray">
-                      ({(configDraft.disabled_holidays?.length ?? 0)} off ·{" "}
-                      {(configDraft.custom_holidays?.length ?? 0)} custom)
-                    </span>
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* row 3 — info_json (save-only PDF rendering options) */}
-            <div className="mt-4 border-t border-brand-lightgray/60 pt-3">
-              <div className="text-[10px] uppercase tracking-wider text-brand-gray mb-2">
-                PDF + pricing options
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-x-5 gap-y-3 items-end">
-                <Field label="Version">
-                  <input
-                    type="text"
-                    className={inputCls}
-                    value={infoDraft.version ?? ""}
-                    onChange={(e) => updateInfo({ version: e.target.value })}
-                  />
-                </Field>
-                <Field label="Schedule table mode">
-                  <select
-                    className={inputCls}
-                    value={infoDraft.schedule_table_mode ?? "both"}
-                    onChange={(e) =>
-                      updateInfo({ schedule_table_mode: e.target.value })
-                    }
-                  >
-                    {SCHEDULE_TABLE_MODES.map((m) => (
-                      <option key={m.value} value={m.value}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                <div className="flex flex-col gap-2 pb-1">
-                  <label className="flex items-center gap-2 text-sm text-brand-black">
-                    <input
-                      type="checkbox"
-                      checked={!!infoDraft.include_gantt}
-                      onChange={(e) => updateInfo({ include_gantt: e.target.checked })}
-                    />
-                    Include Gantt
-                  </label>
-                  <label className="flex items-center gap-2 text-sm text-brand-black">
-                    <input
-                      type="checkbox"
-                      checked={!!infoDraft.milestones_only_pdf}
-                      onChange={(e) =>
-                        updateInfo({ milestones_only_pdf: e.target.checked })
-                      }
-                    />
-                    Milestones Only (PDF)
-                  </label>
-                </div>
-              </div>
-
-              {/* logos — read-only path display this pass */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2 mt-3">
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-brand-gray mb-0.5">
-                    Company Logo
-                  </div>
-                  <div className="text-sm text-brand-black truncate">
-                    {infoDraft.logo_path || (
-                      <span className="text-brand-gray italic">
-                        uses bundled Castillo logo when blank
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[10px] uppercase tracking-wider text-brand-gray mb-0.5">
-                    Client Logo
-                  </div>
-                  <div className="text-sm text-brand-black truncate">
-                    {infoDraft.client_logo_path || (
-                      <span className="text-brand-gray italic">
-                        uses bundled Castillo logo when blank
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* version row */}
-            <div className="mt-4 border-t border-brand-lightgray/60 pt-3 flex flex-wrap items-center gap-3 text-sm">
-              <label className="flex items-center gap-2">
-                <span className="text-[11px] uppercase tracking-wider text-brand-gray">
-                  Version
-                </span>
-                <select
-                  className="rounded-md border border-slate-200 px-2.5 py-1 text-sm"
-                  value={activeVersionId ?? ""}
-                  onChange={(e) => void switchVersion(Number(e.target.value))}
+                  FS Start Next Day
+                </label>
+                <button
+                  type="button"
+                  className="btn-ghost text-xs py-1 self-start"
+                  onClick={() => setShowHolidays(true)}
                 >
-                  {board.versions.map((v) => (
-                    <option key={v.id} value={v.id}>
-                      {v.label}
-                      {v.id === board.proposal.current_version_id ? " (active)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button className="btn-ghost text-xs py-1" onClick={() => void newVersion()}>
-                + New version
-              </button>
-              <span className="text-brand-gray">
-                Start <b className="text-brand-black">{fmtDate(activeVersion?.computed_start_date)}</b>
-              </span>
-              <span className="text-brand-gray">
-                Finish <b className="text-brand-black">{fmtDate(activeVersion?.computed_end_date)}</b>
-              </span>
-              <span className="text-brand-gray">
-                Total <b className="text-brand-black">{fmtPrice(activeVersion?.total_price)}</b>
-              </span>
-              <div className="flex-1" />
-              <button className="btn-ghost text-xs py-1" onClick={() => void saveExcel()}>
-                ⬇ Save Excel
-              </button>
-              <button className="btn-ghost text-xs py-1" onClick={openPdf}>
-                📄 PDF
-              </button>
+                  🗓 Holidays
+                  <span className="ml-1 text-brand-gray">
+                    ({(configDraft.disabled_holidays?.length ?? 0)} off ·{" "}
+                    {(configDraft.custom_holidays?.length ?? 0)} custom)
+                  </span>
+                </button>
+              </div>
             </div>
+          </CollapsibleCard>
+
+          {/* pdf + pricing options (collapsible) */}
+          <CollapsibleCard
+            title="PDF + pricing options"
+            open={openPdfOpts}
+            onToggle={() => setOpenPdfOpts((o) => !o)}
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-x-5 gap-y-4 items-start">
+              <Field label="Version">
+                <input
+                  type="text"
+                  className={inputCls}
+                  value={infoDraft.version ?? ""}
+                  onChange={(e) => updateInfo({ version: e.target.value })}
+                />
+              </Field>
+              {/* schedule table mode — multi-select checkboxes; every checked
+                  mode gets its own PDF, all bundled together in the ZIP. */}
+              <div className="sm:col-span-2">
+                <div className="text-[11px] uppercase tracking-wider text-brand-gray mb-1">
+                  Schedule table mode{" "}
+                  <span className="normal-case text-brand-gray/70">
+                    — each checked mode is a separate PDF in the ZIP
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  {SCHEDULE_TABLE_MODES.map((m) => {
+                    const modes: string[] =
+                      infoDraft.schedule_table_modes ?? ["price_only", "dates_only", "both"];
+                    const checked = modes.includes(m.value);
+                    return (
+                      <label
+                        key={m.value}
+                        className="flex items-center gap-2 text-sm text-brand-black"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() =>
+                            updateInfo({
+                              schedule_table_modes: checked
+                                ? modes.filter((x) => x !== m.value)
+                                : [...modes, m.value],
+                            })
+                          }
+                        />
+                        {m.label}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex flex-col gap-2 pb-1">
+                <label className="flex items-center gap-2 text-sm text-brand-black">
+                  <input
+                    type="checkbox"
+                    checked={!!infoDraft.include_gantt}
+                    onChange={(e) => updateInfo({ include_gantt: e.target.checked })}
+                  />
+                  Include Gantt
+                </label>
+                <label className="flex items-center gap-2 text-sm text-brand-black">
+                  <input
+                    type="checkbox"
+                    checked={!!infoDraft.milestones_only_pdf}
+                    onChange={(e) =>
+                      updateInfo({ milestones_only_pdf: e.target.checked })
+                    }
+                  />
+                  Milestones Only (PDF)
+                </label>
+              </div>
+            </div>
+
+            {/* logos — read-only path display this pass */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2 mt-3">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-brand-gray mb-0.5">
+                  Company Logo
+                </div>
+                <div className="text-sm text-brand-black truncate">
+                  {infoDraft.logo_path || (
+                    <span className="text-brand-gray italic">
+                      uses bundled Castillo logo when blank
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-brand-gray mb-0.5">
+                  Client Logo
+                </div>
+                <div className="text-sm text-brand-black truncate">
+                  {infoDraft.client_logo_path || (
+                    <span className="text-brand-gray italic">
+                      uses bundled Castillo logo when blank
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </CollapsibleCard>
+
+          {/* version + actions bar */}
+          <section className="card flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
+            <label className="flex items-center gap-2">
+              <span className="text-[11px] uppercase tracking-wider text-brand-gray">
+                Version
+              </span>
+              <select
+                className="rounded-md border border-slate-200 px-2.5 py-1 text-sm"
+                value={activeVersionId ?? ""}
+                onChange={(e) => void switchVersion(Number(e.target.value))}
+              >
+                {board.versions.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.label}
+                    {v.id === board.proposal.current_version_id ? " (active)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="btn-ghost text-xs py-1" onClick={() => void newVersion()}>
+              + New version
+            </button>
+            <span className="text-brand-gray">
+              Start <b className="text-brand-black">{fmtDate(activeVersion?.computed_start_date)}</b>
+            </span>
+            <span className="text-brand-gray">
+              Finish <b className="text-brand-black">{fmtDate(activeVersion?.computed_end_date)}</b>
+            </span>
+            <span className="text-brand-gray">
+              Total <b className="text-brand-black">{fmtPrice(activeVersion?.total_price)}</b>
+            </span>
+            <div className="flex-1" />
+            <button className="btn-ghost text-xs py-1" onClick={() => void saveExcel()}>
+              ⬇ Save Excel
+            </button>
+            <button className="btn-ghost text-xs py-1" onClick={() => void saveZip()}>
+              🗜 ZIP
+            </button>
+            <button className="btn-ghost text-xs py-1" onClick={openPdf}>
+              📄 PDF
+            </button>
           </section>
 
           {/* project summary (collapsible) */}
@@ -2001,11 +2056,11 @@ export default function Proposals() {
               </button>
               <button
                 className="btn-ghost text-xs py-1"
-                onClick={() => void recompute(true)}
+                onClick={() => void recompute()}
                 disabled={saving}
-                title="Re-run the scheduler, unpinning all manually-pinned starts"
+                title="Re-run the scheduler from the project start date"
               >
-                ↻ Recompute (unpin all)
+                ↻ Recompute
               </button>
               <button
                 className="btn-primary text-sm"
@@ -2042,7 +2097,6 @@ export default function Proposals() {
                     <th className="px-2 py-2" title="Show start date">St</th>
                     <th className="px-2 py-2" title="Show end date">Fn</th>
                     <th className="px-2 py-2" title="Task utilization %">Util</th>
-                    <th className="px-2 py-2" title="Pinned start">📌</th>
                     <th className="px-2 py-2">Actions</th>
                   </tr>
                 </thead>
@@ -2097,6 +2151,7 @@ export default function Proposals() {
                             onDelete={deleteRow}
                             onMove={moveRow}
                             onIndent={indentRow}
+                            projectUtil={Number(configDraft.utilization_percent) || 100}
                           />
                         );
                       })}
@@ -2238,6 +2293,37 @@ function InfoField({
         </button>
       )}
     </div>
+  );
+}
+
+// ---------------- collapsible section card (header + body) ----------------
+function CollapsibleCard({
+  title,
+  open,
+  onToggle,
+  right,
+  children,
+}: {
+  title: string;
+  open: boolean;
+  onToggle: () => void;
+  right?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="card p-0">
+      <button
+        type="button"
+        className="w-full flex items-center gap-2 px-4 py-3 text-left"
+        onClick={onToggle}
+      >
+        <h3 className="section-title">{title}</h3>
+        <span className="text-brand-gray text-xs">{open ? "▾" : "▸"}</span>
+        <div className="flex-1" />
+        {right}
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
+    </section>
   );
 }
 
@@ -2463,6 +2549,7 @@ function Row({
   onDelete,
   onMove,
   onIndent,
+  projectUtil,
 }: {
   rowKey: string;
   node: ProposalItemNode;
@@ -2487,6 +2574,7 @@ function Row({
   onDelete: (key: string) => void;
   onMove: (key: string, dir: -1 | 1) => void;
   onIndent: (key: string, delta: -1 | 1) => void;
+  projectUtil: number;
 }) {
   const {
     attributes,
@@ -2788,8 +2876,14 @@ function Row({
       <td className="px-1 py-1.5 text-center">
         <input
           type="number"
-          className="w-12 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums"
+          className="w-12 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums placeholder:text-slate-400"
           value={node.task_utilization ?? ""}
+          placeholder={String(projectUtil)}
+          title={
+            node.task_utilization == null
+              ? `Inheriting project utilization (${projectUtil}%). Type a number to override just this task.`
+              : "Per-task utilization override"
+          }
           disabled={isLocked}
           onChange={(e) =>
             onUpdate(rowKey, {
@@ -2798,10 +2892,6 @@ function Row({
           }
         />
       </td>
-      <ToggleCell
-        on={node.is_start_pinned}
-        onToggle={() => onUpdate(rowKey, { is_start_pinned: !node.is_start_pinned })}
-      />
       <td className="px-1 py-1.5 whitespace-nowrap">
         <div className="flex items-center gap-0.5 text-brand-gray">
           <IconBtn title="Move up" onClick={() => onMove(rowKey, -1)}>↑</IconBtn>

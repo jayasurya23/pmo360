@@ -592,6 +592,14 @@ export const downloadProposalTemplate = async (id: number, vid: number) => {
   );
   return res.data as Blob;
 };
+/** Authed blob fetch of a ZIP bundling this version's PDF + Excel template. */
+export const downloadProposalBundle = async (id: number, vid: number) => {
+  const res = await apiClient.get(
+    `/proposals/${id}/versions/${vid}/bundle.zip`,
+    { responseType: "blob" },
+  );
+  return res.data as Blob;
+};
 /** Import a saved proposal template .xlsx -> creates a fresh Proposal + V1 and
  *  returns the board (mirrors uploadProposal's multipart contract). */
 export const importProposalTemplate = async (

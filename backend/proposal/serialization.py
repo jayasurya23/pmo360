@@ -236,6 +236,11 @@ def build_info_json(info: dict, project_info: ProjectInfo) -> dict:
         "deposit_percent": _num("deposit_percent", 30.0),
         # PDF / export options (desktop defaults)
         "schedule_table_mode": info.get("schedule_table_mode", "both"),
+        # Multi-select set of table modes bundled into the ZIP (the single PDF
+        # picks "both" when selected, else the first). Defaults: Price Only +
+        # Dates Only + Both, all bundled together.
+        "schedule_table_modes": info.get("schedule_table_modes")
+        or ["price_only", "dates_only", "both"],
         "include_gantt": bool(info.get("include_gantt", True)),
         "milestones_only_pdf": bool(info.get("milestones_only_pdf", False)),
         "price_source": info.get("price_source", "proposal"),

@@ -176,7 +176,11 @@ def _merge_pdfs(table_bytes: bytes, gantt_bytes: Optional[bytes]) -> bytes:
         gantt.close()
 
 
-def _build_proposal_pdf(v: ProposalVersion, proposal: "Proposal | None" = None) -> bytes:
+def _build_proposal_pdf(
+    v: ProposalVersion,
+    proposal: "Proposal | None" = None,
+    mode: "str | None" = None,
+) -> bytes:
     """Render page-1 milestones table + page-2 Gantt and merge → PDF bytes.
 
     When ``proposal`` is given, its live identity fields (title/customer/etc.)
@@ -195,7 +199,11 @@ def _build_proposal_pdf(v: ProposalVersion, proposal: "Proposal | None" = None) 
     opts = v.info_json or {}
 
     # PDF export options (desktop parity): table mode, milestones-only, gantt toggle.
-    mode = (opts.get("schedule_table_mode") or "both")
+    # `schedule_table_modes` is the multi-select set bundled in the ZIP; an explicit
+    # `mode` arg overrides it (used per-mode by export_bundle). The single PDF
+    # prefers "both" when selected, else the first selected mode.
+    sel_modes = opts.get("schedule_table_modes") or [opts.get("schedule_table_mode") or "both"]
+    mode = mode or ("both" if "both" in sel_modes else (sel_modes[0] if sel_modes else "both"))
     milestones_only = bool(opts.get("milestones_only_pdf", False))
     include_gantt = bool(opts.get("include_gantt", True))
 
@@ -523,6 +531,51 @@ def export_template(
     return Response(
         content=content, media_type=XLSX_MEDIA,
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@router.get("/{pid}/versions/{vid}/bundle.zip")
+def export_bundle(
+    pid: int, vid: int,
+    db: Session = Depends(get_db), actor=Depends(require_db_user),
+):
+    """Stream a ZIP bundling one branded PDF per selected schedule table mode +
+    the editable Excel template — one download for the full deliverable set."""
+    import io
+    import zipfile
+    p = _get_proposal(pid, db)
+    v = _get_version(p, vid, db)
+    xlsx_bytes = write_template_xlsx(
+        tree_json=v.tree_json or [],
+        info_json=v.info_json or {},
+        config_json=v.config_json or {},
+    )
+    title = (v.info_json or {}).get("project_title") or p.title
+    base = _safe_filename(f"{title}_{v.label}")
+    modes = (v.info_json or {}).get("schedule_table_modes") or ["price_only", "dates_only", "both"]
+    # Human-readable filename suffix per table mode.
+    mode_suffix = {
+        "price_only": "Schedule-of-Values",
+        "dates_only": "Project-Schedule",
+        "both": "Schedule-with-Prices",
+        "no_dates": "No-Dates",
+        "duration_only": "Durations",
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        seen: set = set()
+        for m in modes:
+            if m in seen:
+                continue
+            seen.add(m)
+            zf.writestr(
+                f"{base}_{mode_suffix.get(m, m)}.pdf",
+                _build_proposal_pdf(v, p, mode=m),
+            )
+        zf.writestr(f"{base}.xlsx", xlsx_bytes)
+    return Response(
+        content=buf.getvalue(), media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{base}.zip"'},
     )
 
 
