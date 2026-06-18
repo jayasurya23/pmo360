@@ -77,11 +77,18 @@ jobs:
         # Pointing the app at the SHA-tagged image creates a new revision and
         # rolls traffic to it. Migrations run automatically via the container
         # entrypoint before the server accepts traffic.
+        #
+        # We also (re)assert compute + scale every deploy so they're codified
+        # here, not just live-edited: min-replicas 1 keeps one replica warm
+        # (no scale-to-zero cold start); 1 vCPU / 2 GiB gives PDF/Gantt
+        # generation headroom.
         run: |
           az containerapp update \
             --name "${{ vars.CONTAINER_APP_NAME }}" \
             --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
-            --image "${{ vars.ACR_NAME }}.azurecr.io/${IMAGE_REPO}:${{ github.sha }}"
+            --image "${{ vars.ACR_NAME }}.azurecr.io/${IMAGE_REPO}:${{ github.sha }}" \
+            --cpu 1.0 --memory 2.0Gi \
+            --min-replicas 1 --max-replicas 2
 
       - name: Show rollout
         run: |

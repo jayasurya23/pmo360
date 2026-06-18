@@ -1,7 +1,7 @@
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useApp } from "@/lib/state";
 import { useAuth } from "@/auth/useAuth";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, Suspense } from "react";
 import clsx from "clsx";
 import NewClientDialog from "@/components/admin/NewClientDialog";
 import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
@@ -75,7 +75,15 @@ export default function Layout() {
       />
       <MeetingStepper currentPath={location.pathname} />
       <main className="flex-1 px-6 md:px-10 py-8 max-w-screen-2xl w-full mx-auto">
-        <Outlet />
+        <Suspense
+          fallback={
+            <div className="flex items-center justify-center py-24 text-sm text-brand-gray">
+              Loading…
+            </div>
+          }
+        >
+          <Outlet />
+        </Suspense>
       </main>
       <Footer />
 

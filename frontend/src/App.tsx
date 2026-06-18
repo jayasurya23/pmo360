@@ -1,20 +1,26 @@
+import { lazy } from "react";
 import { Routes, Route } from "react-router-dom";
 import Layout from "./components/Layout";
-import Home from "./pages/Home";
-import PortfolioDashboard from "./pages/PortfolioDashboard";
-import Capture from "./pages/Capture";
-import Review from "./pages/Review";
-import Preview from "./pages/Preview";
-import Send from "./pages/Send";
-import NextAgenda from "./pages/NextAgenda";
-import Actions from "./pages/Actions";
-import Notes from "./pages/Notes";
-import History from "./pages/History";
-import Schedule from "./pages/Schedule";
-import Settings from "./pages/Settings";
-import LeadDashboard from "./pages/LeadDashboard";
-import Timeline from "./pages/Timeline";
-import Proposals from "./pages/Proposals";
+
+// Pages are code-split (one chunk each) so the initial load only pulls Home +
+// shared vendor — heavy deps (pdfjs, matplotlib-free Gantt, dnd-kit, recharts)
+// load on demand when their route is first visited. Suspense lives in Layout,
+// around <Outlet/>, so the nav shell stays put while a page chunk streams in.
+const Home = lazy(() => import("./pages/Home"));
+const PortfolioDashboard = lazy(() => import("./pages/PortfolioDashboard"));
+const Capture = lazy(() => import("./pages/Capture"));
+const Review = lazy(() => import("./pages/Review"));
+const Preview = lazy(() => import("./pages/Preview"));
+const Send = lazy(() => import("./pages/Send"));
+const NextAgenda = lazy(() => import("./pages/NextAgenda"));
+const Actions = lazy(() => import("./pages/Actions"));
+const Notes = lazy(() => import("./pages/Notes"));
+const History = lazy(() => import("./pages/History"));
+const Schedule = lazy(() => import("./pages/Schedule"));
+const Settings = lazy(() => import("./pages/Settings"));
+const LeadDashboard = lazy(() => import("./pages/LeadDashboard"));
+const Timeline = lazy(() => import("./pages/Timeline"));
+const Proposals = lazy(() => import("./pages/Proposals"));
 
 export default function App() {
   return (

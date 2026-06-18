@@ -19,6 +19,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -55,6 +56,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Gzip responses (the SPA's JS/CSS bundles especially — ~1.4 MB JS drops to
+    # ~400 KB on the wire). Container Apps' Envoy ingress doesn't compress for
+    # us, so do it here. minimum_size skips tiny payloads where it wouldn't pay.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     # ---- Routers ----
     app.include_router(dashboard.router)
