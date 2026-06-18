@@ -1134,6 +1134,12 @@ export default function Proposals() {
     const { active, over } = event;
     if (!over || active.id === over.id) return;
 
+    // dnd-kit restores focus to the drag-handle button when the drag ends, and
+    // .focus() scrolls that element into view — which yanked the window to the
+    // top on every drop. Capture the scroll position and restore it on the next
+    // frame (after dnd-kit's focus + React's re-render, before paint).
+    const prevScrollY = window.scrollY;
+
     setFlat((rows) => {
       const fromIdx = rows.findIndex((n) => keyOf(n) === active.id);
       const overIdx = rows.findIndex((n) => keyOf(n) === over.id);
@@ -1214,6 +1220,7 @@ export default function Proposals() {
       return rebuilt;
     });
     setDirty(true);
+    requestAnimationFrame(() => window.scrollTo({ top: prevScrollY }));
   }
 
   // ---- save (PUT full tree + info + config) + recompute ----
@@ -2729,6 +2736,20 @@ function Row({
     isOver,
   } = useSortable({ id: rowKey });
 
+  // dnd-kit refocuses the drag handle when a drag ends; the browser's default
+  // focus-scroll then yanked the page to the top on every drop. Patch this
+  // node's focus() to preventScroll so the restore never moves the viewport.
+  const setActivatorRef = useCallback(
+    (node: HTMLElement | null) => {
+      setActivatorNodeRef(node);
+      if (node) {
+        const orig = node.focus.bind(node);
+        node.focus = (opts?: FocusOptions) => orig({ ...opts, preventScroll: true });
+      }
+    },
+    [setActivatorNodeRef],
+  );
+
   // Faithful to the desktop tree tags (classification precedence):
   //   disabled milestone → dark gray bold
   //   disabled task      → mid gray
@@ -2822,7 +2843,7 @@ function Row({
       <td className="px-1 py-1.5 text-center align-middle">
         <button
           type="button"
-          ref={setActivatorNodeRef}
+          ref={setActivatorRef}
           {...attributes}
           {...listeners}
           aria-label="Drag to reorder"
