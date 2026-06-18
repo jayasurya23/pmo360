@@ -465,6 +465,8 @@ export interface ProposalItemNode {
   price_only: boolean;
   show_start_date: boolean;
   show_end_date: boolean;
+  /** UI-only: protect this row's editable fields from accidental edits. */
+  locked?: boolean;
   task_utilization: number | null;
   parent_id: number | null;
   children: ProposalItemNode[];

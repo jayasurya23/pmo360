@@ -979,6 +979,32 @@ export default function Proposals() {
     setDirty(true);
   }
 
+  // One-click canonical structure: each discipline as a section with the
+  // standard 30/60/IFP/90/IFC delivery milestones + a disabled Record Drawings
+  // final deliverable. Lets a PM start a proposal without a workbook (#4).
+  function seedStandardStructure() {
+    const PHASES = ["30%", "60%", "IFP", "90%", "IFC"];
+    const DISCIPLINES = ["Civil Engineering", "Electrical Engineering"];
+    setFlat((rows) => {
+      const next = [...rows];
+      for (const disc of DISCIPLINES) {
+        const section = { ...blankNode(0, "section"), name: disc };
+        keyOf(section);
+        next.push(section);
+        for (const ph of PHASES) {
+          const ms = { ...blankNode(1, "milestone"), name: `${disc} — ${ph} Design` };
+          keyOf(ms);
+          next.push(ms);
+        }
+        const rec = { ...blankNode(1, "milestone"), name: "Record Drawings", enabled: false };
+        keyOf(rec);
+        next.push(rec);
+      }
+      return next;
+    });
+    setDirty(true);
+  }
+
   async function deleteRow(key: string) {
     const target = flat.find((n) => keyOf(n) === key);
     if (!target) return;
@@ -1965,7 +1991,7 @@ export default function Proposals() {
                 </span>
               )}
               <div className="flex-1" />
-              <AddMenu onAdd={(type) => addTyped(type, selectedKey)} />
+              <AddMenu onAdd={(type) => addTyped(type, selectedKey)} onSeed={seedStandardStructure} />
               <button
                 className="btn-ghost text-xs py-1"
                 onClick={() => setShowSplit(true)}
@@ -2543,6 +2569,8 @@ function Row({
   // predecessor, duration + lag. Milestones / sections show read-only roll-ups.
   const isLeaf = !node.is_milestone;
   const rollupCost = isLeaf ? 0 : milestoneRollup(flat, rowIndex);
+  // Protected row: editable data cells become read-only until unlocked (#6/#8).
+  const isLocked = !!node.locked;
 
   return (
     <tr
@@ -2611,6 +2639,7 @@ function Row({
                 (disabled ? "text-[#3d3d3d] font-bold" : "text-[#991f2b] font-bold"),
             )}
             value={node.name}
+            disabled={isLocked}
             onChange={(e) => onUpdate(rowKey, { name: e.target.value })}
           />
         </div>
@@ -2621,6 +2650,7 @@ function Row({
             type="number"
             className={cellNum}
             value={node.duration}
+            disabled={isLocked}
             onChange={(e) =>
               onUpdate(rowKey, { duration: Number(e.target.value) || 0 })
             }
@@ -2636,6 +2666,7 @@ function Row({
           type="number"
           className={cellNum}
           value={node.targeted_hours ?? ""}
+          disabled={isLocked}
           onChange={(e) =>
             onUpdate(rowKey, {
               targeted_hours: e.target.value === "" ? null : Number(e.target.value),
@@ -2649,6 +2680,7 @@ function Row({
             type="number"
             className="w-20 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums"
             value={node.price}
+            disabled={isLocked}
             onChange={(e) => onUpdate(rowKey, { price: Number(e.target.value) || 0 })}
           />
         ) : (
@@ -2672,6 +2704,7 @@ function Row({
           <select
             className="w-full rounded border border-slate-200 px-1 py-0.5 text-xs"
             value={node.predecessor_id ?? ""}
+            disabled={isLocked}
             onChange={(e) =>
               onUpdate(rowKey, {
                 predecessor_id: e.target.value ? Number(e.target.value) : null,
@@ -2699,6 +2732,7 @@ function Row({
           <select
             className="rounded border border-slate-200 px-1 py-0.5 text-xs"
             value={node.predecessor_type}
+            disabled={isLocked}
             onChange={(e) =>
               onUpdate(rowKey, {
                 predecessor_type: e.target.value as PredType,
@@ -2722,6 +2756,7 @@ function Row({
             type="number"
             className="w-12 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums"
             value={node.lag}
+            disabled={isLocked}
             onChange={(e) => onUpdate(rowKey, { lag: Number(e.target.value) || 0 })}
           />
         ) : (
@@ -2755,6 +2790,7 @@ function Row({
           type="number"
           className="w-12 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums"
           value={node.task_utilization ?? ""}
+          disabled={isLocked}
           onChange={(e) =>
             onUpdate(rowKey, {
               task_utilization: e.target.value === "" ? null : Number(e.target.value),
@@ -2774,6 +2810,12 @@ function Row({
           <IconBtn title="Indent" onClick={() => onIndent(rowKey, 1)}>⇥</IconBtn>
           <IconBtn title="Add sibling" onClick={() => onAdd(rowKey, "sibling")}>＋</IconBtn>
           <IconBtn title="Add child" onClick={() => onAdd(rowKey, "child")}>↳</IconBtn>
+          <IconBtn
+            title={isLocked ? "Unlock row (allow edits)" : "Lock row (protect edits)"}
+            onClick={() => onUpdate(rowKey, { locked: !node.locked })}
+          >
+            {isLocked ? "🔒" : "🔓"}
+          </IconBtn>
           <IconBtn title="Delete" destructive onClick={() => onDelete(rowKey)}>🗑</IconBtn>
         </div>
       </td>
@@ -2784,8 +2826,10 @@ function Row({
 // ---------------- typed-add dropdown menu ----------------
 function AddMenu({
   onAdd,
+  onSeed,
 }: {
   onAdd: (type: "section" | "milestone" | "task") => void;
+  onSeed?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -2834,6 +2878,22 @@ function AddMenu({
           >
             Task
           </button>
+          {onSeed && (
+            <>
+              <div className="my-1 border-t border-slate-200" />
+              <button
+                type="button"
+                className="block w-full text-left px-3 py-1.5 hover:bg-slate-100 text-brand-black"
+                onClick={() => {
+                  onSeed();
+                  setOpen(false);
+                }}
+                title="Add Civil + Electrical sections with standard 30/60/IFP/90/IFC milestones + Record Drawings"
+              >
+                Standard structure…
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

@@ -18,19 +18,19 @@ interface NavItem {
 
 const PRIMARY_NAV: NavItem[] = [
   { to: "/", label: "Home" },
-  { to: "/portfolio", label: "📊 Dashboard" },
+  { to: "/portfolio", label: "Dashboard" },
   { to: "/capture", label: "Capture" },
   { to: "/next-agenda", label: "Next Agenda" },
   { to: "/actions", label: "Actions" },
   { to: "/notes", label: "Notes" },
   { to: "/history", label: "History" },
   { to: "/schedule", label: "Schedule" },
-  { to: "/timeline", label: "📆 Timeline" },
-  { to: "/proposals", label: "📐 Proposals" },
+  { to: "/timeline", label: "Timeline" },
+  { to: "/proposals", label: "Proposals" },
 ];
 
 // Admin/lead-only — appended to the nav when the signed-in user is an admin.
-const LEAD_NAV: NavItem = { to: "/lead", label: "👑 Lead" };
+const LEAD_NAV: NavItem = { to: "/lead", label: "Lead" };
 
 // The "this meeting" minutes flow — Capture → Review → Preview → Send.
 const MEETING_FLOW: NavItem[] = [
@@ -132,7 +132,7 @@ function TopNav() {
                 to={item.to}
                 end={item.to === "/"}
                 className={clsx(
-                  "px-3.5 py-1.5 rounded-full text-sm font-medium transition",
+                  "inline-flex items-center justify-center text-center px-3.5 py-1.5 rounded-full text-sm font-medium transition",
                   active
                     ? "bg-brand-red text-white shadow-sm"
                     : "text-slate-700 hover:text-slate-900 hover:bg-slate-100"
@@ -226,7 +226,7 @@ function MobileNav() {
               to={item.to}
               end={item.to === "/"}
               className={clsx(
-                "px-3 py-1.5 text-xs font-semibold rounded-full whitespace-nowrap",
+                "inline-flex items-center justify-center text-center px-3 py-1.5 text-xs font-semibold rounded-full whitespace-nowrap",
                 active ? "bg-brand-red text-white" : "text-slate-600"
               )}
             >

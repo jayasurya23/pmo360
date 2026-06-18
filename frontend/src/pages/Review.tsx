@@ -70,6 +70,9 @@ export default function Review() {
   const [showDeliverablesPreview, setShowDeliverablesPreview] = useState(false);
   const [showActionsPreview, setShowActionsPreview] = useState(false);
   const [showClosingPreview, setShowClosingPreview] = useState(false);
+  // Original captured notes/transcript — read-only source, always preserved.
+  const [showOriginalNotes, setShowOriginalNotes] = useState(false);
+  const [originalNotesText, setOriginalNotesText] = useState<string | null>(null);
 
   // ---- Schedule picker modal ----
   // The button label shows a live count of available items in the most
@@ -130,12 +133,16 @@ export default function Review() {
   useEffect(() => {
     if (!draftMeetingId) {
       setExecutiveSummary(null);
+      setOriginalNotesText(null);
       return;
     }
     let cancelled = false;
     getMeeting(draftMeetingId)
       .then((m) => {
-        if (!cancelled) setExecutiveSummary(m.executive_summary || null);
+        if (!cancelled) {
+          setExecutiveSummary(m.executive_summary || null);
+          setOriginalNotesText(m.raw_notes || null);
+        }
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -294,6 +301,14 @@ export default function Review() {
     {}
   );
 
+  // The original captured notes/transcript — prefer the live store (fresh
+  // Capture→Review), else the persisted raw_notes (meeting opened from History).
+  // Always surfaced read-only so the source is never lost or obscured.
+  const liveOriginalNotes = [rawNotes?.minutes, rawNotes?.agenda, rawNotes?.actions]
+    .filter(Boolean)
+    .join("\n\n=== SECTION BREAK ===\n\n");
+  const originalNotes = (liveOriginalNotes || originalNotesText || "").trim();
+
   return (
     <div className="space-y-6 max-w-6xl">
       <PageHeader
@@ -373,6 +388,27 @@ export default function Review() {
                 : "No summary yet. Click Regenerate, or just save the meeting — the first save auto-generates one."}
             </p>
           )}
+        </section>
+      )}
+
+      {/* ---------- Original notes / transcript (read-only source) ---------- */}
+      {originalNotes && (
+        <section className="card p-5 space-y-2">
+          <h3 className="section-title">
+            Original notes / transcript
+            <span className="text-xs font-normal text-brand-gray ml-2">
+              · the source you captured — read-only, always preserved
+            </span>
+          </h3>
+          <PreviewDisclosure
+            open={showOriginalNotes}
+            onToggle={() => setShowOriginalNotes(!showOriginalNotes)}
+            label={`View original (${originalNotes.length.toLocaleString()} chars)`}
+          >
+            <pre className="text-[13px] text-slate-800 whitespace-pre-wrap font-sans leading-relaxed max-h-96 overflow-auto bg-slate-50 rounded p-3 border border-slate-200">
+              {originalNotes}
+            </pre>
+          </PreviewDisclosure>
         </section>
       )}
 

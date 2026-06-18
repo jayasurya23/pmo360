@@ -283,7 +283,10 @@ export const parseTranscriptFile = async (file: File) => {
 // Note: helper returns a URL the browser can hit directly (img/iframe/a[href]).
 // We deliberately use `${API_BASE}` so production builds pick up an absolute
 // backend URL when VITE_API_BASE is set.
-export const meetingDocUrl = (meetingId: number, kind: "pdf" | "docx" | "xlsx") =>
+export const meetingDocUrl = (
+  meetingId: number,
+  kind: "pdf" | "docx" | "xlsx" | "zip",
+) =>
   `${API_BASE}/documents/meeting/${meetingId}?kind=${kind}`;
 export const finalizeMeeting = (meetingId: number) =>
   apiClient

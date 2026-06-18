@@ -176,11 +176,22 @@ def _merge_pdfs(table_bytes: bytes, gantt_bytes: Optional[bytes]) -> bytes:
         gantt.close()
 
 
-def _build_proposal_pdf(v: ProposalVersion) -> bytes:
-    """Render page-1 milestones table + page-2 Gantt and merge → PDF bytes."""
+def _build_proposal_pdf(v: ProposalVersion, proposal: "Proposal | None" = None) -> bytes:
+    """Render page-1 milestones table + page-2 Gantt and merge → PDF bytes.
+
+    When ``proposal`` is given, its live identity fields (title/customer/etc.)
+    overlay the version's persisted info_json, so ANY version's PDF reflects the
+    current proposal identity without needing that version re-saved first (#2).
+    """
     items, id_map = deserialize_tree(v.tree_json)
     cfg = _cfg_from_json(v.config_json)
     info = project_info_from_json(v.info_json)
+    if proposal is not None:
+        info.project_title = proposal.title or info.project_title
+        info.customer_name = proposal.customer_name or info.customer_name
+        info.project_location = proposal.project_location or info.project_location
+        info.project_state = proposal.project_state or info.project_state
+        info.project_size_mw = proposal.project_size_mw or info.project_size_mw
     opts = v.info_json or {}
 
     # PDF export options (desktop parity): table mode, milestones-only, gantt toggle.
@@ -446,7 +457,7 @@ def generate_pdf(
 ):
     p = _get_proposal(pid, db)
     v = _get_version(p, vid, db)
-    merged = _build_proposal_pdf(v)
+    merged = _build_proposal_pdf(v, p)
     title = (v.info_json or {}).get("project_title") or p.title
     fname = _safe_filename(f"{title}-{v.label}-Project-Schedule") + ".pdf"
     rel = f"proposals/{p.id}/{v.id}/{fname}"
@@ -482,7 +493,7 @@ def serve_pdf(
         except Exception:  # noqa: BLE001 — fall back to building on the fly
             content = None
     if content is None:
-        content = _build_proposal_pdf(v)
+        content = _build_proposal_pdf(v, p)
         title = (v.info_json or {}).get("project_title") or p.title
         fname = _safe_filename(f"{title}-{v.label}-Project-Schedule") + ".pdf"
     return Response(

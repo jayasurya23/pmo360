@@ -42,6 +42,10 @@ class ProposalItem:
     price_only: bool = False
     show_start_date: bool = True
     show_end_date: bool = True
+    # Protect a row's editable fields (price/duration/hours/predecessor/etc.)
+    # from accidental edits in the UI. Pure UI flag — no effect on scheduling
+    # or PDF output; round-trips through serialization + template export.
+    locked: bool = False
 
     # Per-task utilization override. None = inherit project-wide utilization.
     # Client-Review tasks always ignore utilization (see calendar.adjusted_duration).

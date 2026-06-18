@@ -45,7 +45,7 @@ _ITEM_FIELDS = (
     "name", "duration", "price", "start_date", "end_date", "is_milestone",
     "indent_level", "id", "predecessor_id", "predecessor_type",
     "predecessor_type_user_set", "lag", "targeted_hours", "is_start_pinned",
-    "enabled", "price_only", "show_start_date", "show_end_date",
+    "enabled", "price_only", "show_start_date", "show_end_date", "locked",
     "task_utilization", "parent_id",
 )
 

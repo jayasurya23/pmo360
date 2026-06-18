@@ -156,6 +156,15 @@ export default function Send() {
               rel="noreferrer"
             >
               XLSX
+            </a>{" "}
+            ·{" "}
+            <a
+              className="text-brand-red font-semibold"
+              href={meetingDocUrl(draftMeetingId!, "zip")}
+              target="_blank"
+              rel="noreferrer"
+            >
+              ZIP (all)
             </a>
           </div>
         </section>

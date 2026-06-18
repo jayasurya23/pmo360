@@ -14,16 +14,34 @@ router = APIRouter(prefix="/api/documents", tags=["documents"])
 @router.get("/meeting/{meeting_id}")
 def download_meeting_doc(
     meeting_id: int,
-    kind: str = Query("pdf", pattern="^(pdf|docx|xlsx)$"),
+    kind: str = Query("pdf", pattern="^(pdf|docx|xlsx|zip)$"),
     draft: bool = Query(True),
     db: Session = Depends(get_db),
 ):
-    """Stream the generated minutes PDF / DOCX or the action-items XLSX for
-    this meeting. The file is built in memory each call — no disk write."""
+    """Stream the generated minutes PDF / DOCX or the action-items XLSX for this
+    meeting — or a ZIP bundling all of them (kind=zip). Built in memory each
+    call; no disk write."""
     m = db.get(Meeting, meeting_id)
     if not m:
         raise HTTPException(404, "Meeting not found")
     docs = build_meeting_docs(db, m, draft=draft)
+    if kind == "zip":
+        import io
+        import re
+        import zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for d in docs.values():
+                zf.writestr(d["filename"], d["bytes"])
+        base = (
+            re.sub(r"[^A-Za-z0-9._-]+", "_", (m.title or f"meeting-{m.id}").strip())
+            or f"meeting-{m.id}"
+        )
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{base}.zip"'},
+        )
     doc = docs.get(kind)
     if doc is None:
         raise HTTPException(400, f"Unsupported kind: {kind}")
