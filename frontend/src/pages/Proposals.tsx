@@ -1187,9 +1187,12 @@ export default function Proposals() {
         }
       }
 
-      // rebuild → recompute parent_id from indent, then validate
+      // rebuild → recompute parent_id from indent, then validate.
+      // NB: rebuild() clones every node into a fresh object, so keyOf() mints
+      // NEW keys — we can't find the moved node by its (now-stale) drag key.
+      // flatten preserves order, so the moved block starts at blockStart.
       const rebuilt = flatten(rebuild(next), keyOf).map((f) => f.node);
-      const movedNow = rebuilt.find((n) => keyOf(n) === active.id);
+      const movedNow = rebuilt[blockStart];
       if (!movedNow) return snapshot;
 
       if (dragged.is_milestone) {
