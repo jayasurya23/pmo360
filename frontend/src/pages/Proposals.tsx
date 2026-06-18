@@ -1164,6 +1164,12 @@ export default function Proposals() {
       if (overIdx > fromIdx) insertAt += 1;
       const next = [...without];
       next.splice(insertAt, 0, ...block);
+      // Capture each row's key from the ORIGINAL node objects (in the new
+      // order) before the indent shift / rebuild below clone them. We re-bind
+      // these onto the rebuilt nodes so React reorders the existing rows in
+      // place rather than remounting the whole table — a full remount dropped
+      // scroll position (page jumped to top) and input focus on every drop.
+      const orderedKeys = next.map((n) => keyOf(n));
 
       // re-derive the moved block's indent from the new neighbour above it
       // (desktop "drop onto X" semantics)
@@ -1187,11 +1193,13 @@ export default function Proposals() {
         }
       }
 
-      // rebuild → recompute parent_id from indent, then validate.
-      // NB: rebuild() clones every node into a fresh object, so keyOf() mints
-      // NEW keys — we can't find the moved node by its (now-stale) drag key.
-      // flatten preserves order, so the moved block starts at blockStart.
+      // rebuild → recompute parent_id from indent. rebuild() clones every node
+      // into a fresh object, so re-bind each rebuilt node to its original key
+      // (flatten preserves order → positions line up 1:1 with orderedKeys). This
+      // both keeps row identity stable (no remount/scroll-jump) AND lets us find
+      // the moved node by position (its old drag key is on a stale object).
       const rebuilt = flatten(rebuild(next), keyOf).map((f) => f.node);
+      rebuilt.forEach((n, i) => keyMap.current.set(n, orderedKeys[i]));
       const movedNow = rebuilt[blockStart];
       if (!movedNow) return snapshot;
 
