@@ -1010,6 +1010,40 @@ class ProposalToTimelineResult(BaseModel):
     end_date: Optional[date] = None       # UI open the board focused on them
 
 
+class ProposalTimelineMilestoneOut(BaseModel):
+    """One draggable design-phase milestone for the Timeline palette."""
+    discipline: str
+    milestone: Optional[str] = None
+    start_date: date
+    end_date: date
+
+
+class ProposalTimelineMilestonesOut(BaseModel):
+    proposal_id: int
+    project_name: str
+    version_id: int
+    version_label: str
+    # the proposal's Timeline project, if one already exists (drops route to it)
+    timeline_project_id: Optional[int] = None
+    milestones: list[ProposalTimelineMilestoneOut] = Field(default_factory=list)
+
+
+class ProposalTimelineBarRequest(BaseModel):
+    """Place one proposal milestone onto the board (palette drag-drop)."""
+    version_id: Optional[int] = None
+    resource_id: Optional[int] = None     # the engineer dropped on (None = unassigned)
+    discipline: Optional[str] = None
+    milestone: Optional[str] = None
+    start_date: date                      # the dropped week
+    end_date: date                        # start + the milestone's span
+    utilization: Optional[float] = None
+
+
+class ProposalTimelineBarResult(BaseModel):
+    timeline_project_id: int
+    assignment_id: int
+
+
 class DeliverableBatchItem(BaseModel):
     task: str
     project_segment: Optional[str] = None

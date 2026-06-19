@@ -596,10 +596,12 @@ class TimelineProject(Base):
     status = Column(String(30), default="in_progress")
     notes = Column(Text)
     # When this project was imported from a proposal, the source proposal id —
-    # the exact, edit-proof key the import uses to find+replace its prior import
-    # (a loose reference, NOT a FK: deleting the proposal must not touch the
-    # timeline project; NULL for hand-built projects).
-    source_proposal_id = Column(Integer, index=True)
+    # the exact, edit-proof key tying ONE timeline project to its proposal (a
+    # loose reference, NOT a FK: deleting the proposal must not touch the
+    # timeline project; NULL for hand-built projects). Unique so the bulk import
+    # and the milestone palette always resolve the same single project (multiple
+    # NULLs are allowed for hand-built projects).
+    source_proposal_id = Column(Integer, unique=True, index=True)
     version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic concurrency
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)

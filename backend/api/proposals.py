@@ -28,13 +28,15 @@ from auth import require_db_user
 from core.deps import get_db
 from db.models import (
     Proposal, ProposalVersion, ProposalDocument, Project, Deliverable, Schedule,
-    TimelineProject, TimelineAssignment,
+    TimelineProject, TimelineAssignment, TimelineResource,
 )
 from schemas.common import (
     ProposalOut, ProposalListItem, ProposalVersionOut, ProposalVersionDetail,
     ProposalBoardResponse, ProposalPatch, ProposalTreePut, ProposalRecomputeRequest,
     ProposalLinkRequest, ProposalSyncRequest, ProposalSyncResult,
     ProposalToTimelineRequest, ProposalToTimelineResult,
+    ProposalTimelineMilestonesOut, ProposalTimelineMilestoneOut,
+    ProposalTimelineBarRequest, ProposalTimelineBarResult,
     ProposalLogos, ProposalLogosUpdate,
     ScheduleSaveRequest, ParsedScheduleOut, ParsedScheduleItemOut,
 )
@@ -871,104 +873,210 @@ def _timeline_milestone_label(phase: "str | None", task: "str | None", disciplin
     return ms[:60] or None
 
 
-@router.post("/{pid}/send-to-timeline", response_model=ProposalToTimelineResult)
-def send_to_timeline(
-    pid: int, payload: ProposalToTimelineRequest,
-    db: Session = Depends(get_db), actor=Depends(require_db_user),
-):
-    """Project a proposal version's computed schedule into the standalone Timeline
-    capacity module: one TimelineProject + one unassigned bar per design-phase
-    milestone (30%/60%/IFP/90%/IFC), reusing the same tree→rows projection as the
-    portfolio sync. Re-import replaces the prior import for this proposal (keyed
-    off the exact source_proposal_id, not a free-text marker)."""
-    p = _get_proposal(pid, db)
-    v = _get_version(p, payload.version_id, db) if payload.version_id else _active_version(p, db)
-    if v is None:
-        raise HTTPException(422, "No version to send to the Timeline")
+def _proposal_display(p: Proposal, v: ProposalVersion) -> "tuple[str, str | None]":
+    """(project_name, client) for a Timeline project derived from a proposal."""
+    info = project_info_from_json(v.info_json)
+    return (
+        info.project_title or p.title or "Untitled Proposal",
+        info.customer_name or p.customer_name,
+    )
 
+
+def _proposal_timeline_bars(v: ProposalVersion) -> "tuple[list[dict], int]":
+    """Project a version's tree into Timeline bars: one per indent-1 design-phase
+    milestone with a real (non-zero) span, plus a fallback bar for any dated
+    discipline section that produced no phase. Returns (bars, skipped); each bar
+    is {discipline, milestone, start_date, end_date, order_index} with discipline
+    already normalized to the Timeline enum. Shared by the bulk send-to-timeline
+    import and the milestone palette."""
     items, _ = deserialize_tree(v.tree_json or [])   # NULL tree → empty, not a 500
     rows = tree_to_schedule_rows(items)
-    info = project_info_from_json(v.info_json)
-    project_name = info.project_title or p.title or "Untitled Proposal"
-    client = info.customer_name or p.customer_name
 
     def _dated(r: dict) -> bool:
         # a real, non-degenerate span — skip zero-duration point milestones
         # (Project Initiation / Closeout etc.), which carry no capacity.
         return bool(r["start_date"] and r["finish_date"] and r["finish_date"] > r["start_date"])
 
-    # Build the bars FIRST — before deleting the prior import or creating
-    # anything — so a no-op import can neither destroy a good prior import nor
-    # leave an orphan empty project. All bars are unassigned (resource_id NULL)
-    # at utilization 1.0; unassigned bars add zero resource load, so importing
-    # never false-flags over-allocation.
-    bars = []   # (discipline_raw, milestone, start_date, end_date, order_index)
+    bars: "list[dict]" = []
     skipped = 0
     seen: set = set()
-    # phase granularity: indent-1 design-phase milestones with a real span
-    for r in rows:
+    for r in rows:                       # indent-1 design-phase milestones
         if r["indent_level"] == 1 and r["is_milestone"]:
             if _dated(r):
-                bars.append((
-                    r["discipline"],
-                    _timeline_milestone_label(r["phase"], r["task"], r["discipline"]),
-                    r["start_date"], r["finish_date"], r["order_index"],
-                ))
+                bars.append({
+                    "discipline": _timeline_discipline(r["discipline"]),
+                    "milestone": _timeline_milestone_label(r["phase"], r["task"], r["discipline"]),
+                    "start_date": r["start_date"], "end_date": r["finish_date"],
+                    "order_index": r["order_index"],
+                })
                 seen.add(r["discipline"])
             else:
                 skipped += 1
-    # fallback: a dated discipline section (indent 0) with no emitted phase, so
-    # every scheduled discipline appears (still skips zero-duration markers).
-    for r in rows:
+    for r in rows:                       # fallback: dated section with no phase
         if r["indent_level"] == 0 and _dated(r) and r["discipline"] not in seen:
-            bars.append((r["discipline"], None, r["start_date"], r["finish_date"], r["order_index"]))
+            bars.append({
+                "discipline": _timeline_discipline(r["discipline"]),
+                "milestone": None,
+                "start_date": r["start_date"], "end_date": r["finish_date"],
+                "order_index": r["order_index"],
+            })
             seen.add(r["discipline"])
+    return bars, skipped
 
+
+def _proposal_timeline_project(p: Proposal, v: ProposalVersion, db: Session, actor) -> TimelineProject:
+    """Get-or-create the Timeline project for a proposal (keyed on
+    source_proposal_id), without creating any bars. Used by the palette drop."""
+    proj = (
+        db.query(TimelineProject)
+        .filter(TimelineProject.source_proposal_id == p.id)
+        .order_by(TimelineProject.id)
+        .first()
+    )
+    if proj is None:
+        project_name, client = _proposal_display(p, v)
+        proj = TimelineProject(
+            name=project_name, client=client, status="in_progress",
+            source_proposal_id=p.id, notes=f"From proposal {v.label}",
+            created_by_id=actor.id,
+        )
+        db.add(proj)
+        db.flush()
+    return proj
+
+
+@router.post("/{pid}/send-to-timeline", response_model=ProposalToTimelineResult)
+def send_to_timeline(
+    pid: int, payload: ProposalToTimelineRequest,
+    db: Session = Depends(get_db), actor=Depends(require_db_user),
+):
+    """Bulk-project a proposal version's schedule into the Timeline: one
+    TimelineProject + one UNASSIGNED bar per design-phase milestone, at the
+    schedule's dates. Re-import replaces the prior import (keyed off the exact
+    source_proposal_id)."""
+    p = _get_proposal(pid, db)
+    v = _get_version(p, payload.version_id, db) if payload.version_id else _active_version(p, db)
+    if v is None:
+        raise HTTPException(422, "No version to send to the Timeline")
+    project_name, client = _proposal_display(p, v)
+
+    bars, skipped = _proposal_timeline_bars(v)
     if not bars:
         raise HTTPException(
             422, "This version has no dated design-phase milestones to send to the Timeline."
         )
 
-    # Replace the prior import for THIS proposal — keyed off the exact
-    # source_proposal_id (never matches a hand-built project). Cascade drops the
-    # old project's bars.
+    # One Timeline project per proposal (get-or-create on the unique
+    # source_proposal_id). The refresh is NON-DESTRUCTIVE of a PM's work: when
+    # replace_existing, we remove only the prior auto-generated UNASSIGNED bars
+    # and re-add the schedule's phases — bars staffed onto an engineer
+    # (resource_id set, e.g. dragged from the milestone palette) are kept, and we
+    # don't re-add an unassigned duplicate of a phase already staffed. So "Send
+    # to Timeline" can never wipe palette/manual placements.
+    proj = _proposal_timeline_project(p, v, db, actor)
+    proj.name = project_name
+    proj.client = client
+    proj.notes = f"Imported from proposal {v.label}"
+
+    existing = (
+        db.query(TimelineAssignment)
+        .filter(TimelineAssignment.timeline_project_id == proj.id)
+        .all()
+    )
+    staffed = {(a.discipline, a.milestone) for a in existing if a.resource_id is not None}
+    kept = sum(1 for a in existing if a.resource_id is not None)
     replaced = False
     if payload.replace_existing:
-        for old in (
-            db.query(TimelineProject)
-            .filter(TimelineProject.source_proposal_id == p.id)
-            .all()
-        ):
-            db.delete(old)
-            replaced = True
+        for a in existing:
+            if a.resource_id is None:
+                db.delete(a)
+                replaced = True
 
-    proj = TimelineProject(
-        name=project_name, client=client, status="in_progress",
-        source_proposal_id=p.id,
-        notes=f"Imported from proposal {v.label}",
-        created_by_id=actor.id,
-    )
-    db.add(proj)
-    db.flush()  # need proj.id for the assignments
-
-    for disc_raw, milestone, start, end, order_index in bars:
+    added = 0
+    for b in bars:
+        if (b["discipline"], b["milestone"]) in staffed:
+            continue   # already placed onto someone — leave it as-is
         db.add(TimelineAssignment(
-            timeline_project_id=proj.id,
-            resource_id=None,
-            discipline=_timeline_discipline(disc_raw),
-            milestone=milestone,
-            start_date=start, end_date=end,
-            utilization=1.0,
-            status=None, label=None,
-            order_index=order_index,
-            created_by_id=actor.id,
+            timeline_project_id=proj.id, resource_id=None,
+            discipline=b["discipline"], milestone=b["milestone"],
+            start_date=b["start_date"], end_date=b["end_date"],
+            utilization=1.0, status=None, label=None,
+            order_index=b["order_index"], created_by_id=actor.id,
         ))
+        added += 1
 
     db.flush()
     return ProposalToTimelineResult(
         timeline_project_id=proj.id, project_name=project_name,
-        assignment_count=len(bars), replaced_existing=replaced,
+        assignment_count=added + kept, replaced_existing=replaced,
         skipped_no_dates=skipped,
-        start_date=min(b[2] for b in bars),
-        end_date=max(b[3] for b in bars),
+        start_date=min(b["start_date"] for b in bars),
+        end_date=max(b["end_date"] for b in bars),
     )
+
+
+@router.get("/{pid}/timeline-milestones", response_model=ProposalTimelineMilestonesOut)
+def timeline_milestones(
+    pid: int, version_id: Optional[int] = Query(None),
+    db: Session = Depends(get_db), actor=Depends(require_db_user),
+):
+    """A proposal version's design-phase milestones as a draggable Timeline
+    palette (read-only, no persistence). Includes the linked Timeline project id
+    when one already exists, so the board can route drops to it."""
+    p = _get_proposal(pid, db)
+    v = _get_version(p, version_id, db) if version_id else _active_version(p, db)
+    if v is None:
+        raise HTTPException(422, "No version on this proposal")
+    project_name, _client = _proposal_display(p, v)
+    bars, _ = _proposal_timeline_bars(v)
+    existing = (
+        db.query(TimelineProject.id)
+        .filter(TimelineProject.source_proposal_id == p.id)
+        .order_by(TimelineProject.id)
+        .first()
+    )
+    return ProposalTimelineMilestonesOut(
+        proposal_id=p.id, project_name=project_name,
+        version_id=v.id, version_label=v.label,
+        timeline_project_id=(existing[0] if existing else None),
+        milestones=[
+            ProposalTimelineMilestoneOut(
+                discipline=b["discipline"], milestone=b["milestone"],
+                start_date=b["start_date"], end_date=b["end_date"],
+            )
+            for b in bars
+        ],
+    )
+
+
+@router.post("/{pid}/timeline-bar", response_model=ProposalTimelineBarResult, status_code=201)
+def place_timeline_bar(
+    pid: int, payload: ProposalTimelineBarRequest,
+    db: Session = Depends(get_db), actor=Depends(require_db_user),
+):
+    """Place ONE proposal milestone onto the board as an assignment (palette
+    drag-drop). Ensures the proposal's Timeline project exists (get-or-create, no
+    bulk bars), then creates the assignment for the dropped resource + dates."""
+    p = _get_proposal(pid, db)
+    v = _get_version(p, payload.version_id, db) if payload.version_id else _active_version(p, db)
+    if v is None:
+        raise HTTPException(422, "No version on this proposal")
+    if payload.end_date < payload.start_date:
+        raise HTTPException(422, "end_date is before start_date")
+    if payload.resource_id is not None and not db.get(TimelineResource, payload.resource_id):
+        raise HTTPException(404, "Resource not found")
+
+    proj = _proposal_timeline_project(p, v, db, actor)
+    a = TimelineAssignment(
+        timeline_project_id=proj.id,
+        resource_id=payload.resource_id,
+        discipline=(_timeline_discipline(payload.discipline) if payload.discipline else "Electrical"),
+        milestone=((payload.milestone or "")[:60] or None),
+        start_date=payload.start_date, end_date=payload.end_date,
+        utilization=(payload.utilization if payload.utilization is not None else 1.0),
+        status=None, label=None, order_index=0,
+        created_by_id=actor.id,
+    )
+    db.add(a)
+    db.flush()
+    return ProposalTimelineBarResult(timeline_project_id=proj.id, assignment_id=a.id)

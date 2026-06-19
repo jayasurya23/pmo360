@@ -1435,9 +1435,8 @@ export default function Proposals() {
     const ok = await confirm({
       title: "Send to Timeline?",
       body:
-        "Adds this proposal's schedule to the Timeline as unassigned phase bars you can drag onto engineers. Re-importing this proposal later replaces these bars — any engineer assignments or tweaks you made to them are lost.",
+        "Adds this proposal's design phases to the Timeline as unassigned bars you can drag onto engineers. Re-importing refreshes those unassigned bars to the latest schedule and keeps any phases you've already staffed onto people.",
       confirmLabel: "Send to Timeline",
-      destructive: true,
     });
     if (!ok) return;
     setSendingToTimeline(true);

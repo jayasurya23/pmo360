@@ -501,6 +501,21 @@ export interface ProposalToTimelineResult {
   start_date: string | null;
   end_date: string | null;
 }
+/** A draggable design-phase milestone for the Timeline palette. */
+export interface ProposalTimelineMilestone {
+  discipline: string;
+  milestone: string | null;
+  start_date: string;
+  end_date: string;
+}
+export interface ProposalTimelineMilestones {
+  proposal_id: number;
+  project_name: string;
+  version_id: number;
+  version_label: string;
+  timeline_project_id: number | null;
+  milestones: ProposalTimelineMilestone[];
+}
 export interface ProposalListItem extends ProposalOut {
   current_label: string | null;
   version_count: number;

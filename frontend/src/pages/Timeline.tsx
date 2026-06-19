@@ -26,6 +26,9 @@ import {
   deleteTimelineResource,
   createTimelineTimeOff,
   deleteTimelineTimeOff,
+  listProposals,
+  fetchProposalTimelineMilestones,
+  placeProposalMilestone,
 } from "@/lib/api";
 import type {
   TimelineBoard,
@@ -34,6 +37,8 @@ import type {
   TimelineAssignment,
   TimelineTimeOff,
   GlobalAttendee,
+  ProposalListItem,
+  ProposalTimelineMilestone,
 } from "@/lib/types";
 import { format, parseISO, startOfWeek, addDays } from "date-fns";
 import clsx from "clsx";
@@ -102,6 +107,21 @@ function addWorkdays(iso: string, n: number): string {
     if (dow !== 0 && dow !== 6) remaining--;
   }
   return format(d, "yyyy-MM-dd");
+}
+/** Work-day (Mon–Fri) delta between two ISO dates, so addWorkdays(a, n)
+ *  reproduces b's offset from a — used to re-anchor a dragged proposal milestone
+ *  at the dropped week while keeping its work-day length (matches the bar the
+ *  bulk import / the chip would produce, not raw calendar days). */
+function workdaysBetween(aIso: string, bIso: string): number {
+  let cur = parseISO(aIso);
+  const end = parseISO(bIso);
+  let n = 0;
+  while (cur < end) {
+    const dow = cur.getDay();
+    if (dow !== 0 && dow !== 6) n++;
+    cur = addDays(cur, 1);
+  }
+  return n;
 }
 /** Faint vertical line every work-day (weekW/5 px) so the 5-day grid + the
  *  day-snapping of drags is legible. */
@@ -200,6 +220,9 @@ interface Ctx {
   onCellAdd: (resourceId: number | null, weekIso: string) => void;
   onCellMenu: (e: React.MouseEvent, resourceId: number | null, weekIso: string) => void;
   onTimeOffMenu: (e: React.MouseEvent, t: TimelineTimeOff) => void;
+  // proposal-milestone palette drag-drop (drop a phase chip onto an engineer)
+  milestoneDragging: boolean;
+  onMilestoneDrop: (resourceId: number | null, weekIso: string) => void;
 }
 
 const LS = "pmo360_timeline_prefs";
@@ -259,6 +282,17 @@ export default function Timeline() {
   const [drag, setDrag] = useState<DragVis | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // proposal-milestone palette (pick a proposal → drag its phase chips onto engineers)
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [proposals, setProposals] = useState<ProposalListItem[]>([]);
+  const [paletteProposalId, setPaletteProposalId] = useState<number | null>(null);
+  const [paletteVersionId, setPaletteVersionId] = useState<number | null>(null);
+  const [paletteMilestones, setPaletteMilestones] = useState<ProposalTimelineMilestone[]>([]);
+  const [paletteLoading, setPaletteLoading] = useState(false);
+  const [milestoneDragging, setMilestoneDragging] = useState(false);
+  const draggedMsRef = useRef<{ pid: number; versionId: number | null; ms: ProposalTimelineMilestone } | null>(null);
+  const placingRef = useRef(false);   // gates the auto-poll while a drop is saving
+
   // live auto-refresh bookkeeping
   const loadedRef = useRef(false);   // suppress the loading spinner after first load
   const busyRef = useRef(false);     // gate polling while editing/dragging
@@ -298,7 +332,8 @@ export default function Timeline() {
   // yanks an in-progress drag or an open editor out from under the user.
   busyRef.current = !!(
     dragRef.current || drag || editing || addingToProject !== null ||
-    addPreset || timeOffPreset || showResources || menu
+    addPreset || timeOffPreset || showResources || menu ||
+    milestoneDragging || placingRef.current
   );
   useEffect(() => {
     const POLL_MS = 12000;
@@ -565,6 +600,55 @@ export default function Timeline() {
     });
   }, [board, statusFilter, discFilter]);
 
+  // ---- proposal-milestone palette ----
+  useEffect(() => {
+    if (!paletteOpen || proposals.length) return;
+    void listProposals().then(setProposals).catch(() => {});
+  }, [paletteOpen, proposals.length]);
+
+  useEffect(() => {
+    if (paletteProposalId == null) {
+      setPaletteMilestones([]);
+      setPaletteVersionId(null);
+      return;
+    }
+    let live = true;
+    setPaletteLoading(true);
+    void fetchProposalTimelineMilestones(paletteProposalId)
+      .then((r) => {
+        if (!live) return;
+        setPaletteMilestones(r.milestones);
+        setPaletteVersionId(r.version_id);
+      })
+      .catch(() => { if (live) setPaletteMilestones([]); })
+      .finally(() => { if (live) setPaletteLoading(false); });
+    return () => { live = false; };
+  }, [paletteProposalId]);
+
+  async function onMilestoneDrop(resourceId: number | null, weekIso: string) {
+    const d = draggedMsRef.current;
+    if (!d) return;
+    // re-anchor at the dropped week, preserving the milestone's WORK-day length
+    // so the bar matches the chip + the bulk import (not raw calendar days).
+    const wd = Math.max(1, workdaysBetween(d.ms.start_date, d.ms.end_date));
+    placingRef.current = true;
+    try {
+      await placeProposalMilestone(d.pid, {
+        version_id: d.versionId ?? undefined,
+        resource_id: resourceId,
+        discipline: d.ms.discipline,
+        milestone: d.ms.milestone,
+        start_date: weekIso,
+        end_date: addWorkdays(weekIso, wd),
+      });
+    } catch (e: any) {
+      setError(e?.message || "Could not place the milestone on the timeline");
+    } finally {
+      placingRef.current = false;
+      await reload();   // reflect truth on both success and failure
+    }
+  }
+
   const ctx: Ctx = {
     weeks,
     weekW,
@@ -577,6 +661,8 @@ export default function Timeline() {
     onCellAdd: (resourceId, weekIso) => setAddPreset({ resourceId, start: weekIso }),
     onCellMenu: (e, resourceId, weekIso) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, resourceId, weekIso }); },
     onTimeOffMenu: (e, t) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY, timeoff: t }); },
+    milestoneDragging,
+    onMilestoneDrop,
   };
   const gridWidth = LABEL_W + weeks.length * weekW;
 
@@ -682,6 +768,84 @@ export default function Timeline() {
         <LiveDot lastSync={lastSync} onRefresh={() => void reload()} />
         <Divider />
         <LegendMenu />
+      </div>
+
+      {/* Proposal milestone palette — pick a proposal, drag its phase chips onto engineers */}
+      <div className="rounded-md border border-brand-lightgray bg-white">
+        <button
+          type="button"
+          className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm"
+          onClick={() => setPaletteOpen((o) => !o)}
+        >
+          <span className="text-brand-gray text-xs">{paletteOpen ? "▾" : "▸"}</span>
+          <span className="font-medium">📋 From a proposal</span>
+          <span className="text-brand-gray text-xs hidden sm:inline">
+            — pick a proposal, then drag its engineering milestones onto an engineer
+          </span>
+        </button>
+        {paletteOpen && (
+          <div className="flex flex-col gap-2 px-3 pb-3">
+            <select
+              className="max-w-md rounded-md border border-slate-300 px-2 py-1 text-sm"
+              value={paletteProposalId ?? ""}
+              onChange={(e) => setPaletteProposalId(e.target.value ? Number(e.target.value) : null)}
+            >
+              <option value="">Choose a proposal…</option>
+              {proposals.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.title}
+                  {p.customer_name ? ` — ${p.customer_name}` : ""}
+                </option>
+              ))}
+            </select>
+            {paletteProposalId != null &&
+              (paletteLoading ? (
+                <div className="text-xs text-brand-gray">Loading milestones…</div>
+              ) : paletteMilestones.length === 0 ? (
+                <div className="text-xs text-brand-gray">
+                  No dated design-phase milestones in this proposal.
+                </div>
+              ) : view !== "engineer" ? (
+                <div className="text-xs text-brand-gray">
+                  Switch to the <b>By engineer</b> view (top-left) to drag these milestones onto people.
+                </div>
+              ) : (
+                <>
+                  <div className="text-[11px] text-brand-gray">
+                    Drag a phase onto an engineer's row — it lands at the week under your cursor,
+                    keeping the phase's length.
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {paletteMilestones.map((ms) => (
+                      <div
+                        key={`${ms.discipline}|${ms.milestone}|${ms.start_date}|${ms.end_date}`}
+                        draggable
+                        onDragStart={() => {
+                          draggedMsRef.current = { pid: paletteProposalId, versionId: paletteVersionId, ms };
+                          setMilestoneDragging(true);
+                        }}
+                        onDragEnd={() => {
+                          draggedMsRef.current = null;
+                          setMilestoneDragging(false);
+                        }}
+                        className="flex items-center gap-1.5 rounded border border-brand-lightgray bg-slate-50 px-2 py-1 text-xs cursor-grab active:cursor-grabbing hover:bg-slate-100"
+                        title={`${ms.discipline}${ms.milestone ? " · " + ms.milestone : ""} · ${ms.start_date} → ${ms.end_date} — drag onto an engineer`}
+                      >
+                        <DiscTag d={ms.discipline} />
+                        <span className="font-medium text-brand-black">{ms.milestone || ms.discipline}</span>
+                        <span className="text-brand-gray">{format(parseISO(ms.start_date), "d-MMM")}</span>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ))}
+            {milestoneDragging && (
+              <div className="text-[11px] text-brand-red">
+                Drop on an engineer's row to assign it.
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {loading && <div className="text-sm text-brand-gray">Loading timeline…</div>}
@@ -1144,6 +1308,8 @@ function EngineerView({
                     style={{ width: weeks.length * weekW, height: rowH }}
                     onDoubleClick={(e) => { const w = weekAt(e); if (w) ctx.onCellAdd(r.id, w); }}
                     onContextMenu={(e) => { const w = weekAt(e); if (w) ctx.onCellMenu(e, r.id, w); }}
+                    onDragOver={(e) => { if (ctx.milestoneDragging) e.preventDefault(); }}
+                    onDrop={(e) => { e.preventDefault(); const w = weekAt(e); if (w) ctx.onMilestoneDrop(r.id, w); }}
                     title="Double-click an empty cell to add a project · right-click for options"
                   >
                     {/* utilization heat behind the bars (hover a cell for the %) */}
@@ -1253,6 +1419,8 @@ function EngineerView({
                   style={{ width: weeks.length * weekW, height: rowH }}
                   onDoubleClick={(e) => { const w = weekAt(e); if (w) ctx.onCellAdd(null, w); }}
                   onContextMenu={(e) => { const w = weekAt(e); if (w) ctx.onCellMenu(e, null, w); }}
+                  onDragOver={(e) => { if (ctx.milestoneDragging) e.preventDefault(); }}
+                  onDrop={(e) => { e.preventDefault(); const w = weekAt(e); if (w) ctx.onMilestoneDrop(null, w); }}
                 >
                   {weeks.map((w, i) => (
                     <div key={w} className="absolute top-0 border-r border-brand-lightgray/60" style={{ left: i * weekW, width: weekW, height: rowH }} />

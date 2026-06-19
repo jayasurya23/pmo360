@@ -36,6 +36,7 @@ import type {
   ProposalItemNode,
   ProposalLogos,
   ProposalToTimelineResult,
+  ProposalTimelineMilestones,
 } from "./types";
 
 // Honor VITE_API_BASE at build-time so the same artefact can talk to
@@ -654,6 +655,33 @@ export const sendProposalToTimeline = (
 ) =>
   apiClient
     .post<ProposalToTimelineResult>(`/proposals/${id}/send-to-timeline`, body ?? {})
+    .then((r) => r.data);
+/** A proposal version's design-phase milestones, as a draggable Timeline palette. */
+export const fetchProposalTimelineMilestones = (id: number, versionId?: number) =>
+  apiClient
+    .get<ProposalTimelineMilestones>(`/proposals/${id}/timeline-milestones`, {
+      params: versionId ? { version_id: versionId } : undefined,
+    })
+    .then((r) => r.data);
+/** Place ONE proposal milestone onto the board (palette drag-drop) — ensures the
+ *  proposal's Timeline project exists, then creates the assignment. */
+export const placeProposalMilestone = (
+  id: number,
+  body: {
+    version_id?: number;
+    resource_id?: number | null;
+    discipline?: string | null;
+    milestone?: string | null;
+    start_date: string;
+    end_date: string;
+    utilization?: number;
+  },
+) =>
+  apiClient
+    .post<{ timeline_project_id: number; assignment_id: number }>(
+      `/proposals/${id}/timeline-bar`,
+      body,
+    )
     .then((r) => r.data);
 
 // ---------- meeting templates ----------
