@@ -123,6 +123,11 @@ function workdaysBetween(aIso: string, bIso: string): number {
   }
   return n;
 }
+/** Stable identity for a palette milestone chip — also its React key and the
+ *  bucket we count placements into. */
+function msKey(ms: ProposalTimelineMilestone): string {
+  return `${ms.discipline}|${ms.milestone}|${ms.start_date}|${ms.end_date}`;
+}
 /** Faint vertical line every work-day (weekW/5 px) so the 5-day grid + the
  *  day-snapping of drags is legible. */
 const dayGridBg = (weekW: number) =>
@@ -290,6 +295,10 @@ export default function Timeline() {
   const [paletteMilestones, setPaletteMilestones] = useState<ProposalTimelineMilestone[]>([]);
   const [paletteLoading, setPaletteLoading] = useState(false);
   const [milestoneDragging, setMilestoneDragging] = useState(false);
+  // how many times each palette chip has been dropped onto the grid this session
+  // (keyed by msKey). Reset whenever the picked proposal changes. Chips with a
+  // count > 0 dim + show a ✓ but stay draggable (a phase can be split across people).
+  const [placedCounts, setPlacedCounts] = useState<Record<string, number>>({});
   const draggedMsRef = useRef<{ pid: number; versionId: number | null; ms: ProposalTimelineMilestone } | null>(null);
   const placingRef = useRef(false);   // gates the auto-poll while a drop is saving
 
@@ -607,6 +616,7 @@ export default function Timeline() {
   }, [paletteOpen, proposals.length]);
 
   useEffect(() => {
+    setPlacedCounts({});   // a different proposal → forget what was staffed from the last one
     if (paletteProposalId == null) {
       setPaletteMilestones([]);
       setPaletteVersionId(null);
@@ -641,6 +651,10 @@ export default function Timeline() {
         start_date: weekIso,
         end_date: addWorkdays(weekIso, wd),
       });
+      // mark this chip as placed (dim + ✓) — it stays draggable so the same
+      // phase can be split across more than one engineer.
+      const k = msKey(d.ms);
+      setPlacedCounts((c) => ({ ...c, [k]: (c[k] || 0) + 1 }));
     } catch (e: any) {
       setError(e?.message || "Could not place the milestone on the timeline");
     } finally {
@@ -816,9 +830,11 @@ export default function Timeline() {
                     keeping the phase's length.
                   </div>
                   <div className="flex flex-wrap gap-1.5">
-                    {paletteMilestones.map((ms) => (
+                    {paletteMilestones.map((ms) => {
+                      const placed = placedCounts[msKey(ms)] || 0;
+                      return (
                       <div
-                        key={`${ms.discipline}|${ms.milestone}|${ms.start_date}|${ms.end_date}`}
+                        key={msKey(ms)}
                         draggable
                         onDragStart={() => {
                           draggedMsRef.current = { pid: paletteProposalId, versionId: paletteVersionId, ms };
@@ -828,14 +844,24 @@ export default function Timeline() {
                           draggedMsRef.current = null;
                           setMilestoneDragging(false);
                         }}
-                        className="flex items-center gap-1.5 rounded border border-brand-lightgray bg-slate-50 px-2 py-1 text-xs cursor-grab active:cursor-grabbing hover:bg-slate-100"
-                        title={`${ms.discipline}${ms.milestone ? " · " + ms.milestone : ""} · ${ms.start_date} → ${ms.end_date} — drag onto an engineer`}
+                        className={`flex items-center gap-1.5 rounded border px-2 py-1 text-xs cursor-grab active:cursor-grabbing ${
+                          placed
+                            ? "border-brand-green/40 bg-brand-green/5 opacity-60 hover:opacity-100"
+                            : "border-brand-lightgray bg-slate-50 hover:bg-slate-100"
+                        }`}
+                        title={
+                          `${ms.discipline}${ms.milestone ? " · " + ms.milestone : ""} · ${ms.start_date} → ${ms.end_date}` +
+                          (placed ? ` — placed on ${placed} engineer${placed > 1 ? "s" : ""}; drag again to add another` : " — drag onto an engineer")
+                        }
                       >
+                        {placed > 0 && <span className="text-brand-green font-semibold" aria-hidden>✓</span>}
                         <DiscTag d={ms.discipline} />
                         <span className="font-medium text-brand-black">{ms.milestone || ms.discipline}</span>
                         <span className="text-brand-gray">{format(parseISO(ms.start_date), "d-MMM")}</span>
+                        {placed > 1 && <span className="text-brand-green font-semibold">×{placed}</span>}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </>
               ))}
