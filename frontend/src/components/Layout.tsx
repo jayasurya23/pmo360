@@ -67,7 +67,9 @@ export default function Layout() {
   }, [settings]);
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
+    <div className="min-h-screen bg-slate-50 text-slate-900 flex">
+      <Sidebar />
+      <div className="flex-1 flex flex-col min-w-0">
       <TopNav />
       <ContextBar
         onNewClient={() => setShowNewClient(true)}
@@ -90,6 +92,7 @@ export default function Layout() {
         </Suspense>
       </main>
       <Footer />
+      </div>
 
       <NewClientDialog
         open={showNewClient}
@@ -116,6 +119,98 @@ export default function Layout() {
 
       <CommandPalette />
     </div>
+  );
+}
+
+/**
+ * Collapsible left-side navigation (desktop only — `hidden md:flex`).
+ *
+ * Runs ALONGSIDE the top tab bar so the two can be compared; the top nav can
+ * be retired later once the sidebar is the chosen home. Collapse state
+ * persists in localStorage. Labels carry no emojis (matches the no-emoji nav
+ * rule); collapsed mode shows a letter badge + tooltip per item.
+ */
+const SIDEBAR_LS_KEY = "pmo360_sidebar_collapsed";
+
+function Sidebar() {
+  const location = useLocation();
+  const { me, settings } = useApp();
+  const brandName = settings?.app.title || "PMO 360";
+  const navItems = me?.is_admin ? [...PRIMARY_NAV, LEAD_NAV] : PRIMARY_NAV;
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem(SIDEBAR_LS_KEY) === "1",
+  );
+  const toggle = () =>
+    setCollapsed((c) => {
+      const next = !c;
+      localStorage.setItem(SIDEBAR_LS_KEY, next ? "1" : "0");
+      return next;
+    });
+
+  return (
+    <aside
+      className={clsx(
+        "hidden md:flex flex-col shrink-0 border-r border-slate-200 bg-white sticky top-0 h-screen transition-[width] duration-150",
+        collapsed ? "w-16" : "w-56",
+      )}
+    >
+      <div className="h-16 flex items-center gap-2 px-3 border-b border-slate-200 shrink-0">
+        <span className="h-8 w-8 shrink-0 rounded-lg bg-brand-red text-white flex items-center justify-center font-bold text-sm">
+          {brandName.slice(0, 1)}
+        </span>
+        {!collapsed && (
+          <span className="font-semibold text-slate-900 truncate">
+            {brandName}
+          </span>
+        )}
+      </div>
+
+      <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
+        {navItems.map((item) => {
+          const active =
+            location.pathname === item.to ||
+            (item.to === "/capture" &&
+              ["/capture", "/review", "/preview", "/send"].includes(
+                location.pathname,
+              ));
+          return (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === "/"}
+              title={item.label}
+              className={clsx(
+                "flex items-center gap-3 rounded-lg px-2 py-2 text-sm font-medium transition",
+                active
+                  ? "bg-brand-red text-white shadow-sm"
+                  : "text-slate-700 hover:bg-slate-100",
+                collapsed && "justify-center",
+              )}
+            >
+              <span
+                className={clsx(
+                  "h-6 w-6 shrink-0 rounded-md flex items-center justify-center text-[11px] font-semibold",
+                  active ? "bg-white/20 text-white" : "bg-slate-100 text-slate-600",
+                )}
+              >
+                {item.label.slice(0, 1)}
+              </span>
+              {!collapsed && <span className="truncate">{item.label}</span>}
+            </NavLink>
+          );
+        })}
+      </nav>
+
+      <button
+        type="button"
+        onClick={toggle}
+        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        className="h-10 shrink-0 border-t border-slate-200 text-slate-400 hover:text-slate-700 hover:bg-slate-50 flex items-center justify-center text-xs font-medium"
+      >
+        {collapsed ? "»" : "« Collapse"}
+      </button>
+    </aside>
   );
 }
 
