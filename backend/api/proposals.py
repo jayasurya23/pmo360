@@ -470,6 +470,48 @@ def delete_proposal(pid: int, db: Session = Depends(get_db), actor=Depends(requi
 # ---------------------------------------------------------------------------
 # Versions: edit tree / recompute / snapshot / activate
 # ---------------------------------------------------------------------------
+# Fields a per-row "lock" protects from edits — mirrors the inputs the UI
+# disables when a row is locked. The lock toggle (`locked`) itself, structure,
+# and the on/milestone/price-only toggles stay editable.
+_LOCKED_PROTECTED_FIELDS = (
+    "name", "duration", "price", "targeted_hours", "task_utilization",
+    "predecessor_id", "predecessor_type", "lag",
+)
+
+
+def _locked_nodes_by_id(tree_json) -> dict:
+    """Map id -> stored node dict for every node persisted as locked."""
+    out: dict = {}
+
+    def walk(nodes):
+        for n in nodes or []:
+            if n.get("locked") and n.get("id") is not None:
+                out[n["id"]] = n
+            walk(n.get("children"))
+
+    walk(tree_json)
+    return out
+
+
+def _enforce_locked_fields(items, locked_map: dict) -> None:
+    """Restore protected fields on any incoming row that is locked in BOTH the
+    stored version and the payload, so a tampered/stale client request can't
+    change a locked row's price/duration/etc. (closes the API-level gap behind
+    the UI's disabled inputs). Unlocking a row in the same save lets edits
+    through. Applied before date calc so schedules recompute from locked inputs.
+    """
+    def walk(nodes):
+        for it in nodes:
+            if getattr(it, "locked", False) and it.id in locked_map:
+                stored = locked_map[it.id]
+                for f in _LOCKED_PROTECTED_FIELDS:
+                    if f in stored:
+                        setattr(it, f, stored[f])
+            walk(it.children)
+
+    walk(items)
+
+
 @router.put("/{pid}/versions/{vid}/tree", response_model=ProposalVersionDetail)
 def put_tree(
     pid: int, vid: int, payload: ProposalTreePut,
@@ -479,7 +521,10 @@ def put_tree(
     v = _get_version(p, vid, db)
     _check_stale(payload.expected_version, v.version, "proposal version")
 
+    # Lock guard must read the STORED tree before we overwrite it below.
+    locked_map = _locked_nodes_by_id(v.tree_json)
     items, id_map = deserialize_tree([n.model_dump() for n in payload.tree])
+    _enforce_locked_fields(items, locked_map)
     cfg = _cfg_from_json(payload.config or v.config_json)
     try:
         calculate_all_dates(items, id_map, cfg)

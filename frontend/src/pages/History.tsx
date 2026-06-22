@@ -357,6 +357,24 @@ export default function History() {
                           >
                             DOCX
                           </a>
+                          <a
+                            className="btn-ghost"
+                            href={meetingDocUrl(m.id, "xlsx")}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="Action-log spreadsheet"
+                          >
+                            XLSX
+                          </a>
+                          <a
+                            className="btn-ghost"
+                            href={meetingDocUrl(m.id, "zip")}
+                            target="_blank"
+                            rel="noreferrer"
+                            title="All deliverables (PDF + DOCX + XLSX) zipped"
+                          >
+                            ZIP
+                          </a>
                           <button
                             className="btn-danger"
                             onClick={() => handleDeleteMeeting(m)}
