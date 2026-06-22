@@ -74,6 +74,13 @@ class ClientCreate(BaseModel):
     email_domain: Optional[str] = None
 
 
+class ClientUpdate(BaseModel):
+    """Partial update for renaming a client / changing its email domain.
+    Omitted fields are left untouched."""
+    name: Optional[str] = None
+    email_domain: Optional[str] = None
+
+
 class ProjectOut(ORMModel):
     id: int
     client_id: int

@@ -7,6 +7,7 @@ import NewClientDialog from "@/components/admin/NewClientDialog";
 import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
 import DeletePortfolioDialog from "@/components/admin/DeletePortfolioDialog";
 import ManageTeamDialog from "@/components/admin/ManageTeamDialog";
+import RenameDialog from "@/components/admin/RenameDialog";
 import { listProjectMembers } from "@/lib/api";
 import type { ProjectMember } from "@/lib/types";
 import CommandPalette from "./CommandPalette";
@@ -58,6 +59,7 @@ export default function Layout() {
   const [showNewPortfolio, setShowNewPortfolio] = useState(false);
   const [showDeletePortfolio, setShowDeletePortfolio] = useState(false);
   const [showManageTeam, setShowManageTeam] = useState(false);
+  const [renameKind, setRenameKind] = useState<"client" | "portfolio" | null>(null);
 
   useEffect(() => {
     if (settings)
@@ -72,6 +74,8 @@ export default function Layout() {
         onNewPortfolio={() => setShowNewPortfolio(true)}
         onDeletePortfolio={() => setShowDeletePortfolio(true)}
         onManageTeam={() => setShowManageTeam(true)}
+        onRenameClient={() => setRenameKind("client")}
+        onRenamePortfolio={() => setRenameKind("portfolio")}
       />
       <MeetingStepper currentPath={location.pathname} />
       <main className="flex-1 px-6 md:px-10 py-8 max-w-screen-2xl w-full mx-auto">
@@ -103,6 +107,11 @@ export default function Layout() {
         open={showManageTeam}
         onClose={() => setShowManageTeam(false)}
         project={currentProject}
+      />
+      <RenameDialog
+        open={renameKind !== null}
+        kind={renameKind ?? "client"}
+        onClose={() => setRenameKind(null)}
       />
 
       <CommandPalette />
@@ -252,6 +261,8 @@ interface ContextBarProps {
   onNewPortfolio: () => void;
   onDeletePortfolio: () => void;
   onManageTeam: () => void;
+  onRenameClient: () => void;
+  onRenamePortfolio: () => void;
 }
 
 function ContextBar({
@@ -259,6 +270,8 @@ function ContextBar({
   onNewPortfolio,
   onDeletePortfolio,
   onManageTeam,
+  onRenameClient,
+  onRenamePortfolio,
 }: ContextBarProps) {
   const { clients, projects, selectedClientId, selectedProjectId } = useApp();
   const client = clients.find((c) => c.id === selectedClientId);
@@ -269,11 +282,14 @@ function ContextBar({
       <div className="max-w-screen-2xl mx-auto px-6 md:px-10 py-3 flex items-center gap-2">
         <ContextSwitcher />
         <ContextAdminGear
+          hasClient={!!client}
           hasProject={!!project}
           onNewClient={onNewClient}
           onNewPortfolio={onNewPortfolio}
           onDeletePortfolio={onDeletePortfolio}
           onManageTeam={onManageTeam}
+          onRenameClient={onRenameClient}
+          onRenamePortfolio={onRenamePortfolio}
         />
         <div className="flex-1" />
         {project?.schedule_version && (
@@ -311,17 +327,23 @@ function ContextBar({
  * Uses the same click-outside dismiss pattern as ContextSwitcher above.
  */
 function ContextAdminGear({
+  hasClient,
   hasProject,
   onNewClient,
   onNewPortfolio,
   onDeletePortfolio,
   onManageTeam,
+  onRenameClient,
+  onRenamePortfolio,
 }: {
+  hasClient: boolean;
   hasProject: boolean;
   onNewClient: () => void;
   onNewPortfolio: () => void;
   onDeletePortfolio: () => void;
   onManageTeam: () => void;
+  onRenameClient: () => void;
+  onRenamePortfolio: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
@@ -381,6 +403,35 @@ function ContextAdminGear({
             className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 flex items-center gap-2"
           >
             <span className="text-slate-400">+</span> New portfolio
+          </button>
+          <div className="my-1 border-t border-slate-100" />
+          <button
+            type="button"
+            onClick={() => hasClient && fire(onRenameClient)}
+            disabled={!hasClient}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasClient
+                ? "text-slate-700 hover:bg-slate-50"
+                : "text-slate-400 cursor-not-allowed",
+            )}
+            title={hasClient ? "Rename the selected client" : "Pick a client first"}
+          >
+            <span aria-hidden="true">✏️</span> Rename client
+          </button>
+          <button
+            type="button"
+            onClick={() => hasProject && fire(onRenamePortfolio)}
+            disabled={!hasProject}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasProject
+                ? "text-slate-700 hover:bg-slate-50"
+                : "text-slate-400 cursor-not-allowed",
+            )}
+            title={hasProject ? "Rename the selected portfolio" : "Pick a portfolio first"}
+          >
+            <span aria-hidden="true">✏️</span> Rename portfolio
           </button>
           <div className="my-1 border-t border-slate-100" />
           <button

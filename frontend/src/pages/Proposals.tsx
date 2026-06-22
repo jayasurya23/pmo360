@@ -80,6 +80,23 @@ const INFO_FIELDS: { key: keyof ProposalOut; label: string }[] = [
   { key: "project_size_mw", label: "Size (MW)" },
 ];
 
+// Standard engineering delivery-milestone names offered as a datalist on
+// milestone rows (the client flagged these as dropdown candidates, esp. for
+// electrical). A datalist keeps it a *suggestion* list — custom names still
+// type freely, satisfying "open text boxes where custom entries are required".
+const STANDARD_MILESTONE_NAMES = [
+  "30% Design",
+  "60% Design",
+  "90% Design",
+  "IFP (Issued for Permit)",
+  "IFC (Issued for Construction)",
+  "Record Drawings",
+  "Studies",
+  "Stage A",
+  "Stage B",
+  "Final Deliverables",
+];
+
 // Schedule-table render modes (info_json.schedule_table_mode) — values must
 // match the backend exactly.
 const SCHEDULE_TABLE_MODES: { value: string; label: string }[] = [
@@ -2170,6 +2187,14 @@ export default function Proposals() {
               💡 Shortcuts: Ctrl+Click = Multi-select · Shift+Click = Range select · Alt+Click = Link predecessor · Delete = Remove selected
             </div>
 
+            {/* Standard milestone-name suggestions (datalist) — referenced by
+                the name input on milestone rows; custom names still type freely. */}
+            <datalist id="ms-name-options">
+              {STANDARD_MILESTONE_NAMES.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+
             <div className="overflow-x-auto">
               <table className="min-w-full text-xs">
                 <thead className="bg-brand-red text-white">
@@ -2933,6 +2958,7 @@ function Row({
             )}
             value={node.name}
             disabled={isLocked}
+            list={milestone ? "ms-name-options" : undefined}
             onChange={(e) => onUpdate(rowKey, { name: e.target.value })}
           />
         </div>

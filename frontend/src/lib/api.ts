@@ -99,6 +99,10 @@ export const listClients = () =>
   apiClient.get<Client[]>("/clients").then((r) => r.data);
 export const createClient = (payload: { name: string; email_domain?: string }) =>
   apiClient.post<Client>("/clients", payload).then((r) => r.data);
+export const updateClient = (
+  id: number,
+  payload: { name?: string; email_domain?: string },
+) => apiClient.patch<Client>(`/clients/${id}`, payload).then((r) => r.data);
 export const deleteClient = (id: number) => apiClient.delete(`/clients/${id}`);
 
 /**
