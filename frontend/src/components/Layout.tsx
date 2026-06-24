@@ -8,6 +8,7 @@ import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
 import DeletePortfolioDialog from "@/components/admin/DeletePortfolioDialog";
 import ManageTeamDialog from "@/components/admin/ManageTeamDialog";
 import RenameDialog from "@/components/admin/RenameDialog";
+import ProjectDialog, { type ProjectMode } from "@/components/admin/ProjectDialog";
 import { listProjectMembers } from "@/lib/api";
 import type { ProjectMember } from "@/lib/types";
 import CommandPalette from "./CommandPalette";
@@ -60,6 +61,7 @@ export default function Layout() {
   const [showDeletePortfolio, setShowDeletePortfolio] = useState(false);
   const [showManageTeam, setShowManageTeam] = useState(false);
   const [renameKind, setRenameKind] = useState<"client" | "portfolio" | null>(null);
+  const [projectMode, setProjectMode] = useState<ProjectMode | null>(null);
 
   useEffect(() => {
     if (settings)
@@ -76,6 +78,9 @@ export default function Layout() {
         onManageTeam={() => setShowManageTeam(true)}
         onRenameClient={() => setRenameKind("client")}
         onRenamePortfolio={() => setRenameKind("portfolio")}
+        onNewProject={() => setProjectMode("new")}
+        onRenameProject={() => setProjectMode("rename")}
+        onDeleteProject={() => setProjectMode("delete")}
       />
       <MeetingStepper currentPath={location.pathname} />
       <main className="flex-1 px-6 md:px-10 py-8 max-w-screen-2xl w-full mx-auto">
@@ -113,6 +118,7 @@ export default function Layout() {
         kind={renameKind ?? "client"}
         onClose={() => setRenameKind(null)}
       />
+      <ProjectDialog mode={projectMode} onClose={() => setProjectMode(null)} />
 
       <CommandPalette />
     </div>
@@ -263,6 +269,9 @@ interface ContextBarProps {
   onManageTeam: () => void;
   onRenameClient: () => void;
   onRenamePortfolio: () => void;
+  onNewProject: () => void;
+  onRenameProject: () => void;
+  onDeleteProject: () => void;
 }
 
 function ContextBar({
@@ -272,8 +281,12 @@ function ContextBar({
   onManageTeam,
   onRenameClient,
   onRenamePortfolio,
+  onNewProject,
+  onRenameProject,
+  onDeleteProject,
 }: ContextBarProps) {
-  const { clients, projects, selectedClientId, selectedProjectId } = useApp();
+  const { clients, projects, selectedClientId, selectedProjectId, selectedSubProject } =
+    useApp();
   const client = clients.find((c) => c.id === selectedClientId);
   const project = projects.find((p) => p.id === selectedProjectId);
 
@@ -284,12 +297,16 @@ function ContextBar({
         <ContextAdminGear
           hasClient={!!client}
           hasProject={!!project}
+          hasSubProject={!!selectedSubProject}
           onNewClient={onNewClient}
           onNewPortfolio={onNewPortfolio}
           onDeletePortfolio={onDeletePortfolio}
           onManageTeam={onManageTeam}
           onRenameClient={onRenameClient}
           onRenamePortfolio={onRenamePortfolio}
+          onNewProject={onNewProject}
+          onRenameProject={onRenameProject}
+          onDeleteProject={onDeleteProject}
         />
         <div className="flex-1" />
         {project?.schedule_version && (
@@ -329,21 +346,29 @@ function ContextBar({
 function ContextAdminGear({
   hasClient,
   hasProject,
+  hasSubProject,
   onNewClient,
   onNewPortfolio,
   onDeletePortfolio,
   onManageTeam,
   onRenameClient,
   onRenamePortfolio,
+  onNewProject,
+  onRenameProject,
+  onDeleteProject,
 }: {
   hasClient: boolean;
   hasProject: boolean;
+  hasSubProject: boolean;
   onNewClient: () => void;
   onNewPortfolio: () => void;
   onDeletePortfolio: () => void;
   onManageTeam: () => void;
   onRenameClient: () => void;
   onRenamePortfolio: () => void;
+  onNewProject: () => void;
+  onRenameProject: () => void;
+  onDeleteProject: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
@@ -404,6 +429,24 @@ function ContextAdminGear({
           >
             <span className="text-slate-400">+</span> New portfolio
           </button>
+          <button
+            type="button"
+            onClick={() => hasProject && fire(onNewProject)}
+            disabled={!hasProject}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasProject
+                ? "text-slate-700 hover:bg-slate-50"
+                : "text-slate-400 cursor-not-allowed",
+            )}
+            title={
+              hasProject
+                ? "Add a project to the selected portfolio"
+                : "Pick a portfolio first"
+            }
+          >
+            <span className="text-slate-400">+</span> New project
+          </button>
           <div className="my-1 border-t border-slate-100" />
           <button
             type="button"
@@ -432,6 +475,24 @@ function ContextAdminGear({
             title={hasProject ? "Rename the selected portfolio" : "Pick a portfolio first"}
           >
             <span aria-hidden="true">✏️</span> Rename portfolio
+          </button>
+          <button
+            type="button"
+            onClick={() => hasSubProject && fire(onRenameProject)}
+            disabled={!hasSubProject}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasSubProject
+                ? "text-slate-700 hover:bg-slate-50"
+                : "text-slate-400 cursor-not-allowed",
+            )}
+            title={
+              hasSubProject
+                ? "Rename the selected project"
+                : "Pick a project first"
+            }
+          >
+            <span aria-hidden="true">✏️</span> Rename project
           </button>
           <div className="my-1 border-t border-slate-100" />
           <button
@@ -470,6 +531,24 @@ function ContextAdminGear({
             }
           >
             <span aria-hidden="true">🗑️</span> Delete portfolio
+          </button>
+          <button
+            type="button"
+            onClick={() => hasSubProject && fire(onDeleteProject)}
+            disabled={!hasSubProject}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasSubProject
+                ? "text-rose-600 hover:bg-rose-50"
+                : "text-slate-400 cursor-not-allowed",
+            )}
+            title={
+              hasSubProject
+                ? "Remove the selected project from this portfolio"
+                : "Pick a project first to delete it"
+            }
+          >
+            <span aria-hidden="true">🗑️</span> Delete project
           </button>
         </div>
       )}
