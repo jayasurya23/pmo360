@@ -96,6 +96,9 @@ function classifyInternal(emails: string[]): boolean {
  *  in sync. */
 const HORIZON_DAYS = 7;
 
+/** localStorage key for the persisted minimized state of the card. */
+const MINIMIZED_KEY = "pmo360.calendarCard.minimized";
+
 
 export default function CalendarCard() {
   const { isAuthenticated, user, getCalendarToken } = useAuth();
@@ -113,6 +116,26 @@ export default function CalendarCard() {
   // a picker (saves a request on the cold-start render).
   const [portfolios, setPortfolios] = useState<Project[] | null>(null);
   const [pendingLinkFor, setPendingLinkFor] = useState<string | null>(null);
+
+  // Card collapse + day-range. `minimized` hides the body and persists across
+  // sessions (a PM who keeps it collapsed shouldn't have to re-collapse every
+  // visit). `expandedWeek` switches the body between today-only (default) and
+  // the full Mon–Fri week; it's per-view, not persisted.
+  const [minimized, setMinimized] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(MINIMIZED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [expandedWeek, setExpandedWeek] = useState(false);
+  useEffect(() => {
+    try {
+      localStorage.setItem(MINIMIZED_KEY, minimized ? "1" : "0");
+    } catch {
+      /* private mode / quota — non-fatal, just don't persist */
+    }
+  }, [minimized]);
 
   // Reset to signed-out when the user signs out mid-session
   useEffect(() => {
@@ -255,34 +278,61 @@ export default function CalendarCard() {
   }, [load]);
 
   const groups = useMemo(() => groupByDay(rows), [rows]);
+  // Today-only by default (groups[0] is today, or the next workday on a
+  // weekend); the toggle reveals the rest of the week.
+  const visibleGroups = expandedWeek ? groups : groups.slice(0, 1);
+  const laterMeetingCount = expandedWeek
+    ? 0
+    : groups.slice(1).reduce((n, g) => n + g.rows.length, 0);
+  const todayCount = groups[0]?.rows.length ?? 0;
+  const weekCount = groups.reduce((n, g) => n + g.rows.length, 0);
 
   // ============================================================
   // Render
   // ============================================================
   return (
-    <div className="card p-5 border-l-4 border-l-[#185fa5] bg-gradient-to-r from-sky-50/40 to-white">
+    <div className="card p-4 border-l-4 border-l-[#185fa5] bg-gradient-to-r from-sky-50/40 to-white">
       <div className="flex items-center justify-between gap-3">
         <div>
           <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
             Upcoming meetings
           </div>
           <div className="text-base font-semibold text-brand-black mt-1">
-            📅 The week ahead from Outlook · Mon–Fri
+            📅 {minimized ? "From Outlook" : "The week ahead from Outlook · Mon–Fri"}
           </div>
         </div>
-        {phase !== "signed-out" && (
+        <div className="flex items-center gap-1.5 shrink-0">
+          {minimized && phase === "loaded" && (
+            <span className="text-xs text-brand-gray">
+              {todayCount} today
+              {weekCount > todayCount ? ` · ${weekCount} this week` : ""}
+            </span>
+          )}
+          {phase !== "signed-out" && !minimized && (
+            <button
+              type="button"
+              onClick={() => load()}
+              disabled={phase === "loading"}
+              className="text-xs text-brand-gray hover:text-brand-black px-2 py-1 rounded hover:bg-brand-nearwhite/60 disabled:opacity-40"
+              title="Refresh from Outlook"
+            >
+              {phase === "loading" ? "Loading…" : "↻ Refresh"}
+            </button>
+          )}
           <button
             type="button"
-            onClick={() => load()}
-            disabled={phase === "loading"}
-            className="text-xs text-brand-gray hover:text-brand-black px-2 py-1 rounded hover:bg-brand-nearwhite/60 disabled:opacity-40"
-            title="Refresh from Outlook"
+            onClick={() => setMinimized((v) => !v)}
+            className="text-brand-gray hover:text-brand-black px-2 py-1 rounded hover:bg-brand-nearwhite/60 text-sm leading-none"
+            title={minimized ? "Expand" : "Minimize"}
+            aria-label={minimized ? "Expand upcoming meetings" : "Minimize upcoming meetings"}
+            aria-expanded={!minimized}
           >
-            {phase === "loading" ? "Loading…" : "↻ Refresh"}
+            {minimized ? "▸" : "▾"}
           </button>
-        )}
+        </div>
       </div>
 
+      {!minimized && (
       <div className="mt-3 space-y-3">
         {phase === "signed-out" && <SignedOutCta />}
         {phase === "needs-consent" && (
@@ -302,7 +352,7 @@ export default function CalendarCard() {
 
         {(phase === "loaded" || (phase === "loading" && rows.length > 0)) && (
           <div className="space-y-4">
-            {groups.map((g) => (
+            {visibleGroups.map((g) => (
               <div key={g.key}>
                 <div className="text-[11px] uppercase tracking-wider text-brand-gray font-semibold mb-1">
                   {g.label}
@@ -342,9 +392,27 @@ export default function CalendarCard() {
                 )}
               </div>
             ))}
+            {groups.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setExpandedWeek((v) => !v)}
+                className="w-full text-center text-xs font-medium text-[#185fa5] hover:text-[#0f4d8a] py-1.5 rounded hover:bg-sky-50/60"
+              >
+                {expandedWeek
+                  ? "▴ Show today only"
+                  : `▾ Show rest of week${
+                      laterMeetingCount
+                        ? ` · ${laterMeetingCount} more meeting${
+                            laterMeetingCount === 1 ? "" : "s"
+                          }`
+                        : ""
+                    }`}
+              </button>
+            )}
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

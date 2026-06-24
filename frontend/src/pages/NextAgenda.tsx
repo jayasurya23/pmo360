@@ -321,7 +321,7 @@ export default function NextAgenda() {
           `This will discard the ${attendees.length} attendee${
             attendees.length === 1 ? "" : "s"
           } currently in this agenda and replace them with the roster from ` +
-          "the source meeting. Sub-project, discussion points, etc. stay as-is.",
+          "the source meeting. Project, discussion points, etc. stay as-is.",
         confirmLabel: "Replace attendees",
         destructive: true,
       });
