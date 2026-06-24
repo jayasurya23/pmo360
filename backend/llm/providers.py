@@ -176,9 +176,15 @@ Section scoping (important):
   like "Due Diligence", "Folder Structure", "General Concerns", or any \
   section labels that look like a list of meeting topics. Deduplicate. If \
   neither source has agenda topics, return an empty list.
-- Extract `action_items` ONLY from the ACTION ITEMS section. If the other \
-  sections describe action-like tasks, ignore them here — the ACTION ITEMS \
-  section is authoritative.
+- Extract `action_items` from the ACTION ITEMS section when it has content — \
+  that section is authoritative, so when it is non-empty do NOT also pull tasks \
+  from the minutes (this avoids duplicates). If the ACTION ITEMS section is \
+  EMPTY (e.g. an uploaded transcript was loaded into the minutes with no \
+  separate action list), ALSO scan the MEETING MINUTES section for explicit \
+  action items — clear commitments, follow-ups, assignments, or next steps such \
+  as "X will send…", "X to confirm… by <date>", "we need to…", "owner to do Y". \
+  Capture the owner and due date when stated; do NOT manufacture tasks out of \
+  general discussion. If neither section contains actions, return an empty list.
 
 Conventions:
 - Attendees: use initials when given (e.g. "AR", "CK, KC"); leave full_name empty \
