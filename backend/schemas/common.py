@@ -278,6 +278,8 @@ class ParseRequest(BaseModel):
     agenda_text: str = ""
     actions_text: str = ""
     attendees_roster: Optional[list[AttendeeIn]] = None
+    # Anchor for resolving relative action-item due dates ("next Friday").
+    meeting_date: Optional[date] = None
 
 
 # ---------- Save / Update meeting ----------

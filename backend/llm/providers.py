@@ -124,6 +124,7 @@ class LLMProvider(ABC):
         actions_text: str = "",
         project_context: str = "",
         attendees_roster: Optional[list[dict]] = None,
+        meeting_date: Optional[str] = None,
     ) -> ParsedMeeting:
         """Extract structured meeting data from three separated note sections.
 
@@ -204,8 +205,12 @@ Conventions:
   with its own label/content/discipline. Sub-points themselves can have \
   further sub-points (use the same `sub_points` field recursively); keep \
   nesting to at most 2 levels deep unless the source clearly shows more.
-- Action items: extract owner initials and ISO due dates when present. Default \
-  status is "open" unless the source says done/completed/pending/cancelled.
+- Action items: extract owner initials and due dates. Emit due dates as ISO \
+  YYYY-MM-DD; if a "Meeting date" is given above, resolve relative or partial \
+  deadlines ("next Friday", "by the 30th", "end of next week", "April 30") \
+  against that meeting date instead of leaving them blank. Use null only when \
+  no deadline is stated or it genuinely can't be inferred. Default status is \
+  "open" unless the source says done/completed/pending/cancelled.
 - Preserve the wording in the source. Do not paraphrase aggressively.
 
 ATTENDEE ROSTER MAPPING (important when an ATTENDEES list is provided below):
@@ -231,7 +236,7 @@ ATTENDEE ROSTER MAPPING (important when an ATTENDEES list is provided below):
 USER_PROMPT_TEMPLATE = """\
 Project context: {context}
 
-{attendees_block}=== MEETING MINUTES ===
+{date_block}{attendees_block}=== MEETING MINUTES ===
 \"\"\"
 {minutes}
 \"\"\"
@@ -268,6 +273,7 @@ class OpenAIProvider(LLMProvider):
         actions_text: str = "",
         project_context: str = "",
         attendees_roster: Optional[list[dict]] = None,
+        meeting_date: Optional[str] = None,
     ) -> ParsedMeeting:
         if attendees_roster:
             lines = [
@@ -282,8 +288,19 @@ class OpenAIProvider(LLMProvider):
         else:
             attendees_block = ""
 
+        # When the meeting date is known, instruct the model to resolve relative
+        # deadlines ("next Friday", "by the 30th") to real ISO dates.
+        date_block = (
+            f"Meeting date: {meeting_date}. Resolve any relative or partial "
+            f"action-item due dates against THIS date and output them as ISO "
+            f"YYYY-MM-DD (use the meeting's year when only a month/day is given).\n\n"
+            if meeting_date
+            else ""
+        )
+
         user_msg = USER_PROMPT_TEMPLATE.format(
             context=project_context or "Solar PV engineering project",
+            date_block=date_block,
             attendees_block=attendees_block,
             minutes=minutes_text or "(none)",
             agenda=agenda_text or "(none)",

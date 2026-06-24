@@ -204,6 +204,8 @@ export interface ParseRequest {
   agenda_text?: string;
   actions_text?: string;
   attendees_roster?: AttendeeInput[];
+  /** YYYY-MM-DD — anchors relative action due dates ("next Friday"). */
+  meeting_date?: string;
 }
 
 export interface DeliverableInput {
