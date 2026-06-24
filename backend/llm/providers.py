@@ -171,11 +171,15 @@ Section scoping (important):
   attendance is unreliable and unwanted.
 - Extract `discussion_points` ONLY from the MEETING MINUTES section.
 - Extract `agenda_items` from the AGENDA section when it has content. If the \
-  AGENDA section is empty (or has fewer than 2 distinct lines), ALSO scan \
-  the MEETING MINUTES section for agenda-style topic headers — short phrases \
-  like "Due Diligence", "Folder Structure", "General Concerns", or any \
-  section labels that look like a list of meeting topics. Deduplicate. If \
-  neither source has agenda topics, return an empty list.
+  AGENDA section is EMPTY (or has fewer than 2 distinct lines), derive the \
+  agenda from the MEETING MINUTES section: prefer agenda-style topic headers / \
+  section labels when present (short phrases like "Due Diligence", "Folder \
+  Structure", "General Concerns", or any labels that read like a list of \
+  meeting topics). If the minutes are prose or a raw transcript with no such \
+  headers (e.g. an uploaded Teams/Zoom transcript), instead summarize the \
+  distinct topics actually discussed into a handful of concise agenda lines — \
+  the subjects covered, NOT action items or fine-grained detail. Deduplicate. \
+  If there is nothing topic-like, return an empty list.
 - Extract `action_items` from the ACTION ITEMS section when it has content — \
   that section is authoritative, so when it is non-empty do NOT also pull tasks \
   from the minutes (this avoids duplicates). If the ACTION ITEMS section is \
