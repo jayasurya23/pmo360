@@ -541,7 +541,7 @@ export default function Review() {
                 <input
                   className="input col-span-2"
                   value={d.project_segment}
-                  placeholder="Sub-project"
+                  placeholder="Project"
                   onChange={(e) =>
                     setSelectedDeliverables(
                       selectedDeliverables.map((x, i) =>

@@ -509,6 +509,7 @@ export default function Capture() {
         agenda_text: agenda,
         actions_text: actions,
         attendees_roster: selectedAttendees,
+        meeting_date: meetingDate,
       });
       // Attendees come ONLY from the roster checkboxes the PM ticked above —
       // never from AI text extraction. People named in the minutes are

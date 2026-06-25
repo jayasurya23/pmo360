@@ -32,13 +32,20 @@ const FILTER_ALL = "__all__";
 const FILTER_UNSPECIFIED = "__unspecified__";
 
 export default function NotesPage() {
-  const { currentProject, refreshProjects } = useApp();
+  const { currentProject, refreshProjects, selectedSubProject } = useApp();
   const [notes, setNotes] = useState<Note[]>([]);
   const [deliverables, setDeliverables] = useState<Deliverable[]>([]);
   const [statusFilter, setStatusFilter] = useState<"all" | "open" | "closed">(
     "open"
   );
   const [areaFilter, setAreaFilter] = useState<string>(FILTER_ALL);
+
+  // Honour the header's Project picker: when a Project is selected up top,
+  // scope the Notes list to it; clearing it (All projects) drops back to all.
+  // The local filter dropdown can still override afterwards.
+  useEffect(() => {
+    setAreaFilter(selectedSubProject ? selectedSubProject : FILTER_ALL);
+  }, [selectedSubProject]);
   const [loading, setLoading] = useState(false);
   const [showManage, setShowManage] = useState(false);
   const confirm = useConfirm();
@@ -189,9 +196,9 @@ export default function NotesPage() {
               className="select w-44"
               value={areaFilter}
               onChange={(e) => setAreaFilter(e.target.value)}
-              title="Project area filter"
+              title="Project filter"
             >
-              <option value={FILTER_ALL}>All areas</option>
+              <option value={FILTER_ALL}>All projects</option>
               {subProjects.map((s) => (
                 <option key={s} value={s}>
                   {s}
@@ -469,13 +476,13 @@ function ManageSubProjectsPanel({
         className="w-full text-left px-4 py-3 text-sm font-semibold flex items-center justify-between"
         onClick={onToggle}
       >
-        <span>Manage sub-projects</span>
+        <span>Manage projects</span>
         <span className="text-xs text-brand-gray">{open ? "▾" : "▸"}</span>
       </button>
       {open && (
         <div className="border-t border-slate-200 px-4 py-4 space-y-3">
           <p className="text-xs text-brand-gray">
-            One sub-project name per line. These populate the area dropdown on
+            One project name per line. These populate the project dropdown on
             every note for this portfolio.
           </p>
           <textarea
@@ -574,7 +581,7 @@ function NoteCard({
         {showTextInput ? (
           <input
             className="input col-span-2"
-            placeholder="Area"
+            placeholder="Project"
             autoFocus={newAreaMode}
             value={draft.project_area || ""}
             onChange={(e) =>
@@ -603,7 +610,7 @@ function NoteCard({
               onPatch({ project_area: v });
             }}
           >
-            <option value="">— Area —</option>
+            <option value="">— Project —</option>
             {subProjects.map((s) => (
               <option key={s} value={s}>
                 {s}

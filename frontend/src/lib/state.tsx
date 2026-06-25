@@ -41,8 +41,13 @@ interface AppState {
   // ---- selection ----
   selectedClientId: number | null;
   selectedProjectId: number | null;
+  /** The "Project" level (a free-text tag from the portfolio's
+   *  sub_projects_json). Third tier of the Client → Portfolio → Project
+   *  picker; null = "All projects". */
+  selectedSubProject: string | null;
   setSelectedClientId: (id: number | null) => void;
   setSelectedProjectId: (id: number | null) => void;
+  setSelectedSubProject: (name: string | null) => void;
   // ---- scope (My / All toggle) ----
   scope: Scope;
   setScope: (s: Scope) => void;
@@ -99,6 +104,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<MeResponse | null>(null);
   const [selectedClientId, _setSelectedClientId] = useState<number | null>(null);
   const [selectedProjectId, _setSelectedProjectId] = useState<number | null>(null);
+  const [selectedSubProject, _setSelectedSubProject] = useState<string | null>(
+    null,
+  );
 
   // ----- Scope toggle (My portfolios / All portfolios) -----
   // Read the persisted choice on mount. Default depends on identity —
@@ -173,8 +181,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     _setSelectedClientId(id);
-    // Clear stale project when client changes
+    // Clear stale portfolio + project when client changes
     _setSelectedProjectId(null);
+    _setSelectedSubProject(null);
+    localStorage.removeItem("pmo360_subproject");
     setProjects([]);
     if (id) localStorage.setItem("pmo360_client", String(id));
 
@@ -186,8 +196,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const client = clients.find((c) => c.id === id);
         if (client) next.set("client", nameToSlug(client.name));
         else next.delete("client");
-        // dropping portfolio too — selection no longer applies to old client
+        // dropping portfolio + project too — selection no longer applies
         next.delete("portfolio");
+        next.delete("project");
         return next;
       },
       { replace: true },
@@ -196,6 +207,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setSelectedProjectId = (id: number | null) => {
     _setSelectedProjectId(id);
+    // Switching portfolio resets the Project tier (and its stored value, so a
+    // tag name doesn't bleed across portfolios); the resolver effect below
+    // re-picks from the URL against the new portfolio's list.
+    _setSelectedSubProject(null);
+    localStorage.removeItem("pmo360_subproject");
     if (id) localStorage.setItem("pmo360_project", String(id));
 
     urlSyncDirection.current = "writing";
@@ -205,6 +221,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const proj = projects.find((p) => p.id === id);
         if (proj) next.set("portfolio", nameToSlug(proj.name));
         else next.delete("portfolio");
+        next.delete("project");
+        return next;
+      },
+      { replace: true },
+    );
+  };
+
+  // The Project tier is a free-text tag, scoped to the selected portfolio.
+  // We persist it in `?project=<slug>` + localStorage, mirroring client /
+  // portfolio. No urlSyncDirection dance needed: the resolver effect below
+  // re-reads the same value we just wrote (idempotent), and the client /
+  // portfolio resolvers ignore the `project` param.
+  const setSelectedSubProject = (name: string | null) => {
+    _setSelectedSubProject(name);
+    if (name) localStorage.setItem("pmo360_subproject", name);
+    else localStorage.removeItem("pmo360_subproject");
+    setSearchParams(
+      (sp) => {
+        const next = new URLSearchParams(sp);
+        if (name) next.set("project", nameToSlug(name));
+        else next.delete("project");
         return next;
       },
       { replace: true },
@@ -345,6 +382,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, projects]);
 
+  // ---- Resolve the Project tier against the selected portfolio's list ----
+  // Runs whenever the portfolio (or its data / the URL) changes. Resolution
+  // priority: ?project= slug > localStorage > none. A value that isn't in the
+  // current portfolio's sub_projects_json resolves to null, so a stale tag
+  // from another portfolio never sticks.
+  useEffect(() => {
+    const proj = projects.find((p) => p.id === selectedProjectId) || null;
+    const list = proj?.sub_projects_json || [];
+    let pick: string | null = null;
+    const urlSlug = searchParams.get("project");
+    if (urlSlug) pick = list.find((n) => nameToSlug(n) === urlSlug) || null;
+    if (!pick) {
+      const stored = localStorage.getItem("pmo360_subproject");
+      if (stored)
+        pick = list.find((n) => n.toLowerCase() === stored.toLowerCase()) || null;
+    }
+    _setSelectedSubProject(pick);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProjectId, projects, searchParams]);
+
   const refreshClients = async () => {
     const cs = await api.listClients();
     setClients(cs);
@@ -391,8 +448,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     refreshMe,
     selectedClientId,
     selectedProjectId,
+    selectedSubProject,
     setSelectedClientId,
     setSelectedProjectId,
+    setSelectedSubProject,
     scope,
     setScope,
     draftMeetingId,

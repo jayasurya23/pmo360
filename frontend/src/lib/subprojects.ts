@@ -37,4 +37,4 @@ export function mergeSubProjects(
 export const NEW_AREA_SENTINEL = "__new_area__";
 
 /** Display label shown for the sentinel option. */
-export const NEW_AREA_LABEL = "+ New area…";
+export const NEW_AREA_LABEL = "+ New project…";

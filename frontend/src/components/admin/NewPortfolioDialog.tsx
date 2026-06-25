@@ -165,7 +165,7 @@ export default function NewPortfolioDialog({ open, onClose }: Props) {
         </div>
 
         <div>
-          <label className="label">Sub-projects (optional)</label>
+          <label className="label">Projects (optional)</label>
           <textarea
             className="textarea"
             rows={3}
@@ -174,7 +174,7 @@ export default function NewPortfolioDialog({ open, onClose }: Props) {
             onChange={(e) => setSubProjectsText(e.target.value)}
           />
           <p className="text-[11px] text-slate-500 mt-1">
-            One sub-project per line. Used by the Notes tab to filter.
+            One project per line. Used by the Notes tab to filter.
           </p>
         </div>
 

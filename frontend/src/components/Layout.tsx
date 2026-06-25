@@ -8,6 +8,7 @@ import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
 import DeletePortfolioDialog from "@/components/admin/DeletePortfolioDialog";
 import ManageTeamDialog from "@/components/admin/ManageTeamDialog";
 import RenameDialog from "@/components/admin/RenameDialog";
+import ProjectDialog, { type ProjectMode } from "@/components/admin/ProjectDialog";
 import { listProjectMembers } from "@/lib/api";
 import type { ProjectMember } from "@/lib/types";
 import CommandPalette from "./CommandPalette";
@@ -60,6 +61,7 @@ export default function Layout() {
   const [showDeletePortfolio, setShowDeletePortfolio] = useState(false);
   const [showManageTeam, setShowManageTeam] = useState(false);
   const [renameKind, setRenameKind] = useState<"client" | "portfolio" | null>(null);
+  const [projectMode, setProjectMode] = useState<ProjectMode | null>(null);
 
   useEffect(() => {
     if (settings)
@@ -76,6 +78,9 @@ export default function Layout() {
         onManageTeam={() => setShowManageTeam(true)}
         onRenameClient={() => setRenameKind("client")}
         onRenamePortfolio={() => setRenameKind("portfolio")}
+        onNewProject={() => setProjectMode("new")}
+        onRenameProject={() => setProjectMode("rename")}
+        onDeleteProject={() => setProjectMode("delete")}
       />
       <MeetingStepper currentPath={location.pathname} />
       <main className="flex-1 px-6 md:px-10 py-8 max-w-screen-2xl w-full mx-auto">
@@ -113,6 +118,7 @@ export default function Layout() {
         kind={renameKind ?? "client"}
         onClose={() => setRenameKind(null)}
       />
+      <ProjectDialog mode={projectMode} onClose={() => setProjectMode(null)} />
 
       <CommandPalette />
     </div>
@@ -263,6 +269,9 @@ interface ContextBarProps {
   onManageTeam: () => void;
   onRenameClient: () => void;
   onRenamePortfolio: () => void;
+  onNewProject: () => void;
+  onRenameProject: () => void;
+  onDeleteProject: () => void;
 }
 
 function ContextBar({
@@ -272,8 +281,12 @@ function ContextBar({
   onManageTeam,
   onRenameClient,
   onRenamePortfolio,
+  onNewProject,
+  onRenameProject,
+  onDeleteProject,
 }: ContextBarProps) {
-  const { clients, projects, selectedClientId, selectedProjectId } = useApp();
+  const { clients, projects, selectedClientId, selectedProjectId, selectedSubProject } =
+    useApp();
   const client = clients.find((c) => c.id === selectedClientId);
   const project = projects.find((p) => p.id === selectedProjectId);
 
@@ -284,12 +297,16 @@ function ContextBar({
         <ContextAdminGear
           hasClient={!!client}
           hasProject={!!project}
+          hasSubProject={!!selectedSubProject}
           onNewClient={onNewClient}
           onNewPortfolio={onNewPortfolio}
           onDeletePortfolio={onDeletePortfolio}
           onManageTeam={onManageTeam}
           onRenameClient={onRenameClient}
           onRenamePortfolio={onRenamePortfolio}
+          onNewProject={onNewProject}
+          onRenameProject={onRenameProject}
+          onDeleteProject={onDeleteProject}
         />
         <div className="flex-1" />
         {project?.schedule_version && (
@@ -329,21 +346,29 @@ function ContextBar({
 function ContextAdminGear({
   hasClient,
   hasProject,
+  hasSubProject,
   onNewClient,
   onNewPortfolio,
   onDeletePortfolio,
   onManageTeam,
   onRenameClient,
   onRenamePortfolio,
+  onNewProject,
+  onRenameProject,
+  onDeleteProject,
 }: {
   hasClient: boolean;
   hasProject: boolean;
+  hasSubProject: boolean;
   onNewClient: () => void;
   onNewPortfolio: () => void;
   onDeletePortfolio: () => void;
   onManageTeam: () => void;
   onRenameClient: () => void;
   onRenamePortfolio: () => void;
+  onNewProject: () => void;
+  onRenameProject: () => void;
+  onDeleteProject: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
@@ -404,6 +429,24 @@ function ContextAdminGear({
           >
             <span className="text-slate-400">+</span> New portfolio
           </button>
+          <button
+            type="button"
+            onClick={() => hasProject && fire(onNewProject)}
+            disabled={!hasProject}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasProject
+                ? "text-slate-700 hover:bg-slate-50"
+                : "text-slate-400 cursor-not-allowed",
+            )}
+            title={
+              hasProject
+                ? "Add a project to the selected portfolio"
+                : "Pick a portfolio first"
+            }
+          >
+            <span className="text-slate-400">+</span> New project
+          </button>
           <div className="my-1 border-t border-slate-100" />
           <button
             type="button"
@@ -432,6 +475,24 @@ function ContextAdminGear({
             title={hasProject ? "Rename the selected portfolio" : "Pick a portfolio first"}
           >
             <span aria-hidden="true">✏️</span> Rename portfolio
+          </button>
+          <button
+            type="button"
+            onClick={() => hasSubProject && fire(onRenameProject)}
+            disabled={!hasSubProject}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasSubProject
+                ? "text-slate-700 hover:bg-slate-50"
+                : "text-slate-400 cursor-not-allowed",
+            )}
+            title={
+              hasSubProject
+                ? "Rename the selected project"
+                : "Pick a project first"
+            }
+          >
+            <span aria-hidden="true">✏️</span> Rename project
           </button>
           <div className="my-1 border-t border-slate-100" />
           <button
@@ -471,6 +532,24 @@ function ContextAdminGear({
           >
             <span aria-hidden="true">🗑️</span> Delete portfolio
           </button>
+          <button
+            type="button"
+            onClick={() => hasSubProject && fire(onDeleteProject)}
+            disabled={!hasSubProject}
+            className={clsx(
+              "w-full text-left px-3 py-2 text-sm flex items-center gap-2",
+              hasSubProject
+                ? "text-rose-600 hover:bg-rose-50"
+                : "text-slate-400 cursor-not-allowed",
+            )}
+            title={
+              hasSubProject
+                ? "Remove the selected project from this portfolio"
+                : "Pick a project first to delete it"
+            }
+          >
+            <span aria-hidden="true">🗑️</span> Delete project
+          </button>
         </div>
       )}
     </div>
@@ -485,21 +564,12 @@ function ContextSwitcher() {
     setSelectedClientId,
     selectedProjectId,
     setSelectedProjectId,
+    selectedSubProject,
+    setSelectedSubProject,
   } = useApp();
 
-  const [open, setOpen] = useState(false);
-  const wrap = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const click = (e: MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener("mousedown", click);
-    return () => document.removeEventListener("mousedown", click);
-  }, []);
-
-  const client = clients.find((c) => c.id === selectedClientId);
   const project = projects.find((p) => p.id === selectedProjectId);
+  const subProjectList = project?.sub_projects_json || [];
 
   // Members of the active portfolio — fetched only for the selected one
   // (avoids N+1 hits against the dropdown). Cleared whenever the
@@ -532,94 +602,89 @@ function ContextSwitcher() {
   const moreCount = Math.max(0, memberFirstNames.length - shownNames.length);
 
   return (
-    <div ref={wrap} className="relative">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex flex-col items-start gap-0.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white hover:border-slate-300 transition text-sm"
-      >
-        <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-brand-red" />
-          <span className="font-medium text-slate-900">
-            {project?.name || "No portfolio"}
+    <div className="flex items-center gap-1.5 flex-wrap">
+      <span className="h-2 w-2 rounded-full bg-brand-red shrink-0" />
+      <HeaderSelect
+        ariaLabel="Client"
+        value={selectedClientId ? String(selectedClientId) : ""}
+        onChange={(v) => setSelectedClientId(v ? Number(v) : null)}
+        placeholder="Pick a client"
+        options={clients.map((c) => ({ value: c.id, label: c.name }))}
+      />
+      <span className="text-slate-300 select-none" aria-hidden="true">
+        ›
+      </span>
+      <HeaderSelect
+        ariaLabel="Portfolio"
+        value={selectedProjectId ? String(selectedProjectId) : ""}
+        onChange={(v) => setSelectedProjectId(v ? Number(v) : null)}
+        placeholder={projects.length ? "Pick a portfolio" : "No portfolios"}
+        disabled={!projects.length}
+        options={projects.map((p) => ({ value: p.id, label: p.name }))}
+      />
+      <span className="text-slate-300 select-none" aria-hidden="true">
+        ›
+      </span>
+      <HeaderSelect
+        ariaLabel="Project"
+        value={selectedSubProject || ""}
+        onChange={(v) => setSelectedSubProject(v || null)}
+        placeholder={subProjectList.length ? "All projects" : "No projects"}
+        disabled={!selectedProjectId || !subProjectList.length}
+        options={subProjectList.map((s) => ({ value: s, label: s }))}
+      />
+      {project && shownNames.length > 0 && (
+        <span
+          className="hidden lg:inline-flex items-center text-[11px] text-slate-500 ml-1 max-w-[16rem] truncate"
+          title={memberFirstNames.join(", ")}
+        >
+          <span aria-hidden="true" className="mr-1">
+            👤
           </span>
-          <span className="text-slate-400">/</span>
-          <span className="text-slate-600">{client?.name || "No client"}</span>
-          <svg
-            className={clsx(
-              "h-4 w-4 text-slate-400 transition",
-              open && "rotate-180",
-            )}
-            viewBox="0 0 20 20"
-            fill="currentColor"
-          >
-            <path
-              fillRule="evenodd"
-              d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.24 4.5a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z"
-              clipRule="evenodd"
-            />
-          </svg>
-        </div>
-        {project && shownNames.length > 0 && (
-          <div
-            className="text-[11px] text-slate-500 leading-none mt-0.5 max-w-[28rem] truncate"
-            title={memberFirstNames.join(", ")}
-          >
-            <span aria-hidden="true">👤</span> {shownNames.join(", ")}
-            {moreCount > 0 && (
-              <span className="text-slate-400"> · +{moreCount} more</span>
-            )}
-          </div>
-        )}
-      </button>
-
-      {open && (
-        <div className="absolute left-0 mt-2 w-80 bg-white border border-slate-200 rounded-xl shadow-lg z-50 p-3 space-y-3">
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
-              Client
-            </div>
-            <select
-              className="w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/30"
-              value={selectedClientId || ""}
-              onChange={(e) =>
-                setSelectedClientId(
-                  e.target.value ? Number(e.target.value) : null
-                )
-              }
-            >
-              <option value="">— Pick a client —</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
-              Portfolio
-            </div>
-            <select
-              className="w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/30"
-              value={selectedProjectId || ""}
-              onChange={(e) =>
-                setSelectedProjectId(
-                  e.target.value ? Number(e.target.value) : null
-                )
-              }
-              disabled={!projects.length}
-            >
-              <option value="">— Pick a portfolio —</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
+          {shownNames.join(", ")}
+          {moreCount > 0 && (
+            <span className="text-slate-400">&nbsp;· +{moreCount} more</span>
+          )}
+        </span>
       )}
     </div>
+  );
+}
+
+/** One inline header picker (Client / Portfolio / Project). Native <select>
+ *  so it's keyboard-accessible and each opens its own menu — three of these
+ *  side by side give the Client › Portfolio › Project breadcrumb. */
+function HeaderSelect({
+  ariaLabel,
+  value,
+  onChange,
+  placeholder,
+  options,
+  disabled,
+}: {
+  ariaLabel: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  options: { value: string | number; label: string }[];
+  disabled?: boolean;
+}) {
+  return (
+    <select
+      aria-label={ariaLabel}
+      title={ariaLabel}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      className="max-w-[12rem] truncate rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-900 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-red/30 disabled:bg-slate-50 disabled:text-slate-400 transition"
+    >
+      <option value="">{placeholder}</option>
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
   );
 }
 

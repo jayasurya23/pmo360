@@ -35,6 +35,7 @@ def parse_notes(payload: ParseRequest, db: Session = Depends(get_db)):
             actions_text=payload.actions_text or "",
             project=project,
             attendees_roster=roster_dicts,
+            meeting_date=payload.meeting_date.isoformat() if payload.meeting_date else None,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

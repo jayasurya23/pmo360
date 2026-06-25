@@ -124,6 +124,7 @@ class LLMProvider(ABC):
         actions_text: str = "",
         project_context: str = "",
         attendees_roster: Optional[list[dict]] = None,
+        meeting_date: Optional[str] = None,
     ) -> ParsedMeeting:
         """Extract structured meeting data from three separated note sections.
 
@@ -171,14 +172,24 @@ Section scoping (important):
   attendance is unreliable and unwanted.
 - Extract `discussion_points` ONLY from the MEETING MINUTES section.
 - Extract `agenda_items` from the AGENDA section when it has content. If the \
-  AGENDA section is empty (or has fewer than 2 distinct lines), ALSO scan \
-  the MEETING MINUTES section for agenda-style topic headers — short phrases \
-  like "Due Diligence", "Folder Structure", "General Concerns", or any \
-  section labels that look like a list of meeting topics. Deduplicate. If \
-  neither source has agenda topics, return an empty list.
-- Extract `action_items` ONLY from the ACTION ITEMS section. If the other \
-  sections describe action-like tasks, ignore them here — the ACTION ITEMS \
-  section is authoritative.
+  AGENDA section is EMPTY (or has fewer than 2 distinct lines), derive the \
+  agenda from the MEETING MINUTES section: prefer agenda-style topic headers / \
+  section labels when present (short phrases like "Due Diligence", "Folder \
+  Structure", "General Concerns", or any labels that read like a list of \
+  meeting topics). If the minutes are prose or a raw transcript with no such \
+  headers (e.g. an uploaded Teams/Zoom transcript), instead summarize the \
+  distinct topics actually discussed into a handful of concise agenda lines — \
+  the subjects covered, NOT action items or fine-grained detail. Deduplicate. \
+  If there is nothing topic-like, return an empty list.
+- Extract `action_items` from the ACTION ITEMS section when it has content — \
+  that section is authoritative, so when it is non-empty do NOT also pull tasks \
+  from the minutes (this avoids duplicates). If the ACTION ITEMS section is \
+  EMPTY (e.g. an uploaded transcript was loaded into the minutes with no \
+  separate action list), ALSO scan the MEETING MINUTES section for explicit \
+  action items — clear commitments, follow-ups, assignments, or next steps such \
+  as "X will send…", "X to confirm… by <date>", "we need to…", "owner to do Y". \
+  Capture the owner and due date when stated; do NOT manufacture tasks out of \
+  general discussion. If neither section contains actions, return an empty list.
 
 Conventions:
 - Attendees: use initials when given (e.g. "AR", "CK, KC"); leave full_name empty \
@@ -194,8 +205,12 @@ Conventions:
   with its own label/content/discipline. Sub-points themselves can have \
   further sub-points (use the same `sub_points` field recursively); keep \
   nesting to at most 2 levels deep unless the source clearly shows more.
-- Action items: extract owner initials and ISO due dates when present. Default \
-  status is "open" unless the source says done/completed/pending/cancelled.
+- Action items: extract owner initials and due dates. Emit due dates as ISO \
+  YYYY-MM-DD; if a "Meeting date" is given above, resolve relative or partial \
+  deadlines ("next Friday", "by the 30th", "end of next week", "April 30") \
+  against that meeting date instead of leaving them blank. Use null only when \
+  no deadline is stated or it genuinely can't be inferred. Default status is \
+  "open" unless the source says done/completed/pending/cancelled.
 - Preserve the wording in the source. Do not paraphrase aggressively.
 
 ATTENDEE ROSTER MAPPING (important when an ATTENDEES list is provided below):
@@ -221,7 +236,7 @@ ATTENDEE ROSTER MAPPING (important when an ATTENDEES list is provided below):
 USER_PROMPT_TEMPLATE = """\
 Project context: {context}
 
-{attendees_block}=== MEETING MINUTES ===
+{date_block}{attendees_block}=== MEETING MINUTES ===
 \"\"\"
 {minutes}
 \"\"\"
@@ -258,6 +273,7 @@ class OpenAIProvider(LLMProvider):
         actions_text: str = "",
         project_context: str = "",
         attendees_roster: Optional[list[dict]] = None,
+        meeting_date: Optional[str] = None,
     ) -> ParsedMeeting:
         if attendees_roster:
             lines = [
@@ -272,8 +288,19 @@ class OpenAIProvider(LLMProvider):
         else:
             attendees_block = ""
 
+        # When the meeting date is known, instruct the model to resolve relative
+        # deadlines ("next Friday", "by the 30th") to real ISO dates.
+        date_block = (
+            f"Meeting date: {meeting_date}. Resolve any relative or partial "
+            f"action-item due dates against THIS date and output them as ISO "
+            f"YYYY-MM-DD (use the meeting's year when only a month/day is given).\n\n"
+            if meeting_date
+            else ""
+        )
+
         user_msg = USER_PROMPT_TEMPLATE.format(
             context=project_context or "Solar PV engineering project",
+            date_block=date_block,
             attendees_block=attendees_block,
             minutes=minutes_text or "(none)",
             agenda=agenda_text or "(none)",

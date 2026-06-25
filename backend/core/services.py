@@ -38,6 +38,7 @@ def parse_notes_with_ai(
     actions_text: str,
     project: Project,
     attendees_roster: Optional[list[dict]] = None,
+    meeting_date: Optional[str] = None,
 ) -> ParsedMeeting:
     provider = get_provider()
     context = f"{project.client.name if project.client else ''} / {project.name}"
@@ -47,6 +48,7 @@ def parse_notes_with_ai(
         actions_text=actions_text,
         project_context=context,
         attendees_roster=attendees_roster,
+        meeting_date=meeting_date,
     )
 
 
