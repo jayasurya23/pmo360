@@ -143,7 +143,9 @@ def _write_meeting_children(session: Session, meeting: Meeting,
         session.add(ActionItem(
             project_id=project.id,
             originating_meeting_id=meeting.id,
-            text=a.text, owner=a.owner, due_date=due, status=a.status,
+            text=a.text, owner=a.owner,
+            owner_user_id=getattr(a, "owner_user_id", None),
+            due_date=due, status=a.status,
             created_by_id=actor_id, updated_by_id=actor_id,
         ))
 

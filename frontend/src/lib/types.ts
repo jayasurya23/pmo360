@@ -193,6 +193,9 @@ export interface ParsedDiscussionPoint {
 export interface ParsedActionItem {
   text: string;
   owner: string;
+  /** Set when the owner is picked from the PMO 360 team — carried through to
+   *  the saved ActionItem so it shows in "Mine" / dashboards. */
+  owner_user_id?: number | null;
   due_date: string | null;
   status: string;
 }
