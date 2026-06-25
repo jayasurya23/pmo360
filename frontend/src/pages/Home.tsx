@@ -131,12 +131,6 @@ export default function Home() {
         />
       )}
 
-      {/* ----- Calendar v2: upcoming Outlook meetings with manual override ----- */}
-      <CalendarCard />
-
-      {/* ----- Microsoft Planner: my open tasks, tick-to-complete ----- */}
-      <PlannerCard />
-
       {/* ----- Open risks rollup (signed-in only; auto-hides when empty) ----- */}
       <RisksCard />
 
@@ -206,6 +200,11 @@ export default function Home() {
               />
             </SubSection>
           </div>
+
+          {/* Upcoming Outlook meetings + my Microsoft Planner tasks — both are
+              personal-to-you, so they live under "Your stuff". */}
+          <CalendarCard />
+          <PlannerCard />
         </section>
       )}
 

@@ -10,7 +10,7 @@ lead's bird's-eye view. Everything is computed in a handful of bulk queries
 """
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from auth import require_db_user
@@ -45,12 +45,8 @@ def lead_overview(
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
 ) -> LeadOverviewResponse:
-    if not getattr(actor, "is_admin", False):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "The Lead dashboard is available to admins/leads only.",
-        )
-
+    # Visible to every signed-in user (no admin gate) — the team wanted the
+    # cross-portfolio view open to all PMs, not just leads.
     today = date.today()
 
     # ---- Projects + clients ----

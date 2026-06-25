@@ -1,32 +1,25 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
-import EmptyState from "@/components/EmptyState";
-import { useApp } from "@/lib/state";
 import { fetchLeadOverview } from "@/lib/api";
 import type { LeadOverview } from "@/lib/types";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
 /**
- * Lead Dashboard — admin/lead-only bird's-eye view across every portfolio.
+ * Lead Dashboard — a bird's-eye view across every portfolio, visible to every
+ * signed-in user (reached via the top-left PMO 360 logo).
  *
  * Three sections: org totals, per-portfolio health (sorted worst-first by
  * overdue then open actions), and per-PM workload. Read-only; the data comes
- * from GET /api/lead/overview which is admin-gated server-side too, so a
- * non-admin who deep-links here just gets an empty/403 state.
+ * from GET /api/lead/overview.
  */
 export default function LeadDashboard() {
-  const { me } = useApp();
   const [data, setData] = useState<LeadOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!me?.is_admin) {
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
     setLoading(true);
     fetchLeadOverview()
@@ -43,15 +36,7 @@ export default function LeadDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [me?.is_admin]);
-
-  if (!me?.is_admin)
-    return (
-      <EmptyState
-        title="Leads only"
-        hint="The Lead dashboard is available to admins/leads. Ask an admin to add you."
-      />
-    );
+  }, []);
 
   return (
     <div className="space-y-6">
