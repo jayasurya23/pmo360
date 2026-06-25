@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
+import OwnerPicker from "@/components/actions/OwnerPicker";
 import { useApp } from "@/lib/state";
 import {
   listAgendas,
@@ -63,6 +64,9 @@ type ScheduleChange = {
 type OpenAction = {
   text: string;
   owner: string;
+  /** Optional PMO-team link, set when the owner is picked from the team. Round-
+   *  trips through the agenda's open_actions_json (no schema change needed). */
+  owner_user_id?: number | null;
   due_date: string | null;
   status: string;
 };
@@ -820,7 +824,7 @@ export default function NextAgenda() {
             type: "textarea",
             colSpan: 5,
           },
-          { key: "owner", label: "Owner", colSpan: 2 },
+          { key: "owner", label: "Owner", type: "owner", colSpan: 2 },
           { key: "due_date", label: "Due", type: "date", colSpan: 2 },
           {
             key: "status",
@@ -985,7 +989,7 @@ interface Col<T> {
   key: keyof T;
   label: string;
   colSpan: number;
-  type?: "text" | "textarea" | "date" | "select" | "status";
+  type?: "text" | "textarea" | "date" | "select" | "status" | "owner";
   options?: string[];
 }
 function InlineTable<T extends Record<string, any>>({
@@ -1085,6 +1089,28 @@ function InlineTable<T extends Record<string, any>>({
                       <StatusSelect
                         value={String(v || "open")}
                         onChange={(nv) => setCell(nv)}
+                      />
+                    </div>
+                  );
+                }
+                if (c.type === "owner") {
+                  // Owner picker sets two fields at once (name + user link), so
+                  // it bypasses the single-key setCell helper.
+                  return (
+                    <div key={String(c.key)} style={colStyle}>
+                      <OwnerPicker
+                        value={String(v || "")}
+                        ownerUserId={(row as any).owner_user_id ?? null}
+                        compact
+                        onChange={({ owner, owner_user_id }) =>
+                          setRows(
+                            rows.map((r, i) =>
+                              i === idx
+                                ? ({ ...r, [c.key]: owner, owner_user_id } as T)
+                                : r,
+                            ),
+                          )
+                        }
                       />
                     </div>
                   );

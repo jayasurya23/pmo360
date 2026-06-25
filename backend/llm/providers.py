@@ -42,6 +42,9 @@ class ParsedDiscussionPoint(BaseModel):
 class ParsedActionItem(BaseModel):
     text: str
     owner: str = Field(default="", description="Initials, possibly comma-separated like 'CK, KC'")
+    # Not produced by the LLM (it only knows names); set when a PM picks the
+    # owner from the team in the UI, and carried through to the saved ActionItem.
+    owner_user_id: Optional[int] = Field(default=None, exclude=False)
     due_date: Optional[str] = Field(default=None, description="ISO date YYYY-MM-DD if stated")
     status: str = Field(default="open", description="open / pending / completed / cancelled")
 

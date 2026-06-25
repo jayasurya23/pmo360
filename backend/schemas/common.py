@@ -267,6 +267,9 @@ class ParsedDiscussionPointOut(BaseModel):
 class ParsedActionItemOut(BaseModel):
     text: str
     owner: str = ""
+    # First-class link when the owner is picked from the PMO 360 team (so the
+    # saved ActionItem shows in "Mine" / dashboards). null for free-form owners.
+    owner_user_id: Optional[int] = None
     due_date: Optional[str] = None
     status: str = "open"
 

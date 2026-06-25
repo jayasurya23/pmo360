@@ -7,6 +7,7 @@ import AgendaEditor, { PreviewDisclosure } from "@/components/AgendaEditor";
 import { StatusPill, StatusSelect } from "@/components/StatusPill";
 import SaveStatus from "@/components/SaveStatus";
 import { SortableList } from "@/components/SortableList";
+import OwnerPicker from "@/components/actions/OwnerPicker";
 import ScheduleItemPicker from "@/components/ScheduleItemPicker";
 import { SaveTemplateModal } from "@/components/TemplateModals";
 import AttachmentsSection from "@/components/AttachmentsSection";
@@ -680,18 +681,19 @@ export default function Review() {
                   }
                   onKeyDown={handleTextareaTab}
                 />
-                <input
-                  className="input col-span-2"
-                  value={a.owner}
-                  placeholder="Owner"
-                  onChange={(e) =>
-                    setActionItems(
-                      actionItems.map((x, i) =>
-                        i === idx ? { ...x, owner: e.target.value } : x
+                <div className="col-span-2">
+                  <OwnerPicker
+                    value={a.owner}
+                    ownerUserId={a.owner_user_id ?? null}
+                    onChange={({ owner, owner_user_id }) =>
+                      setActionItems(
+                        actionItems.map((x, i) =>
+                          i === idx ? { ...x, owner, owner_user_id } : x
+                        )
                       )
-                    )
-                  }
-                />
+                    }
+                  />
+                </div>
                 <input
                   type="date"
                   className="input col-span-2"

@@ -259,6 +259,7 @@ def regenerate_summary(meeting_id: int, db: Session = Depends(get_db)):
         discussion_points=_dp_to_parsed(meeting.discussion_points),
         action_items=[ParsedActionItem(
             text=a.text or "", owner=a.owner or "",
+            owner_user_id=a.owner_user_id,
             due_date=a.due_date.isoformat() if a.due_date else None,
             status=a.status or "open",
         ) for a in meeting.raised_actions],
