@@ -21,22 +21,24 @@ interface NavItem {
 const PRIMARY_NAV: NavItem[] = [
   { to: "/", label: "Home" },
   { to: "/portfolio", label: "Dashboard" },
-  { to: "/capture", label: "Capture" },
-  { to: "/next-agenda", label: "Next Agenda" },
+  { to: "/capture", label: "Meeting Minutes" },
+  { to: "/next-agenda", label: "Pre Meeting" },
   { to: "/actions", label: "Actions" },
   { to: "/notes", label: "Notes" },
   { to: "/history", label: "History" },
-  { to: "/schedule", label: "Schedule" },
+  // Schedule tab retired — the Proposals module covers project schedules. The
+  // /schedule route stays mounted so old deep links still resolve.
   { to: "/timeline", label: "Timeline" },
   { to: "/proposals", label: "Proposals" },
 ];
 
-// Admin/lead-only — appended to the nav when the signed-in user is an admin.
-const LEAD_NAV: NavItem = { to: "/lead", label: "Lead" };
+// The Lead dashboard no longer has its own tab — the top-left PMO 360 logo links
+// to it (see TopNav). Visible to every signed-in user (not admin-gated).
+const LEAD_PATH = "/lead";
 
-// The "this meeting" minutes flow — Capture → Review → Preview → Send.
+// The "this meeting" minutes flow — Meeting Minutes → Review → Preview → Send.
 const MEETING_FLOW: NavItem[] = [
-  { to: "/capture", label: "Capture" },
+  { to: "/capture", label: "Meeting Minutes" },
   { to: "/review", label: "Review" },
   { to: "/preview", label: "Preview" },
   { to: "/send", label: "Send" },
@@ -46,7 +48,7 @@ const MEETING_FLOW: NavItem[] = [
 // off the end of the minutes stepper as a visually-distinct "plan ahead"
 // segment so PMs see the full loop: capture this week's minutes → plan
 // next week's agenda → (next week) capture again.
-const NEXT_CYCLE_STEP: NavItem = { to: "/next-agenda", label: "Next agenda" };
+const NEXT_CYCLE_STEP: NavItem = { to: "/next-agenda", label: "Pre Meeting" };
 const STEPPER_PATHS = [...MEETING_FLOW.map((s) => s.to), NEXT_CYCLE_STEP.to];
 
 export default function Layout() {
@@ -127,12 +129,15 @@ export default function Layout() {
 
 function TopNav() {
   const location = useLocation();
-  const { me } = useApp();
-  const navItems = me?.is_admin ? [...PRIMARY_NAV, LEAD_NAV] : PRIMARY_NAV;
+  const navItems = PRIMARY_NAV;
   return (
     <header className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-slate-200">
       <div className="max-w-screen-2xl mx-auto px-6 md:px-10 h-16 flex items-center gap-6">
-        <NavLink to="/" className="shrink-0" aria-label="PMO 360 home">
+        <NavLink
+          to={LEAD_PATH}
+          className="shrink-0"
+          aria-label="PMO 360 — Lead dashboard"
+        >
           <img
             src="/assets/logo/pmo360_logo.png"
             alt="PMO 360"
@@ -236,8 +241,6 @@ function ScopeToggle() {
 
 function MobileNav() {
   const location = useLocation();
-  const { me } = useApp();
-  const navItems = me?.is_admin ? [...PRIMARY_NAV, LEAD_NAV] : PRIMARY_NAV;
   return (
     <nav className="md:hidden border-t border-slate-200 overflow-x-auto">
       <div className="flex items-center gap-1 px-3 py-2">

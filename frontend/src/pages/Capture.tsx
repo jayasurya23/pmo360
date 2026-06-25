@@ -569,7 +569,7 @@ export default function Capture() {
       {/* Header banner */}
       <div className="card p-5">
         <div className="text-lg font-bold text-slate-900">
-          New meeting · Capture notes
+          New meeting · Meeting minutes
         </div>
         <div className="text-xs text-slate-500 mt-1">
           {currentClient?.name} · {currentProject.name} · {today}
