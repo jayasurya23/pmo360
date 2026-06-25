@@ -324,13 +324,16 @@ function ComposeEmailSection({
   };
 
   const mailtoHref = useMemo(() => {
-    const params = new URLSearchParams();
-    if (composedCc.trim()) params.set("cc", composedCc.trim());
-    if (subject) params.set("subject", subject);
-    if (body) params.set("body", body);
-    // Use comma between recipient list + ? before params (RFC 6068).
+    // RFC 6068: mailto headers + body must be PERCENT-encoded. URLSearchParams
+    // form-encodes spaces as "+", which mail clients render as a literal "+"
+    // (a space is %20 in a mailto, not "+"), so build the query by hand with
+    // encodeURIComponent — otherwise the whole email arrives "like+this".
+    const parts: string[] = [];
+    if (composedCc.trim()) parts.push(`cc=${encodeURIComponent(composedCc.trim())}`);
+    if (subject) parts.push(`subject=${encodeURIComponent(subject)}`);
+    if (body) parts.push(`body=${encodeURIComponent(body)}`);
     const toPart = composedTo.trim();
-    const query = params.toString();
+    const query = parts.join("&");
     return `mailto:${encodeURIComponent(toPart)}${query ? `?${query}` : ""}`;
   }, [composedTo, composedCc, subject, body]);
 

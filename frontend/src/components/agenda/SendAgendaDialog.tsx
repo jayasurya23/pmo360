@@ -217,12 +217,15 @@ export default function SendAgendaDialog({ open, onClose, payload }: Props) {
 
   // ---- mailto: fallback ----
   function buildMailtoHref() {
-    const params = new URLSearchParams();
-    if (composedCc.trim()) params.set("cc", composedCc.trim());
-    if (subject) params.set("subject", subject);
-    if (body) params.set("body", body);
+    // RFC 6068: mailto headers + body must be PERCENT-encoded. URLSearchParams
+    // form-encodes spaces as "+", which mail clients render as a literal "+",
+    // so the email arrives "like+this". Build the query with encodeURIComponent.
+    const parts: string[] = [];
+    if (composedCc.trim()) parts.push(`cc=${encodeURIComponent(composedCc.trim())}`);
+    if (subject) parts.push(`subject=${encodeURIComponent(subject)}`);
+    if (body) parts.push(`body=${encodeURIComponent(body)}`);
     const toPart = composedTo.trim();
-    const query = params.toString();
+    const query = parts.join("&");
     return `mailto:${encodeURIComponent(toPart)}${query ? `?${query}` : ""}`;
   }
 
