@@ -309,14 +309,13 @@ export const finalizedFileUrl = (path: string) =>
  *  hits this in a new tab and the Content-Disposition header triggers the
  *  download. Use as an anchor `href`, not via the axios client. */
 export const actionsCsvUrl = (
-  projectId: number,
+  projectId: number | null,
   status: string = "all",
   owner: string = "",
 ) => {
-  const params = new URLSearchParams({
-    project_id: String(projectId),
-    status,
-  });
+  const params = new URLSearchParams({ status });
+  // Omit project_id entirely for the cross-portfolio ("All portfolios") export.
+  if (projectId != null) params.set("project_id", String(projectId));
   if (owner) params.set("owner", owner);
   return `${API_BASE}/actions/export.csv?${params.toString()}`;
 };
@@ -326,6 +325,13 @@ export const listActions = (projectId: number, onlyOpen = false) =>
     .get<ActionItem[]>("/actions", {
       params: { project_id: projectId, only_open: onlyOpen },
     })
+    .then((r) => r.data);
+
+/** Every action across all portfolios (the Actions page default view). Each
+ *  row carries project_name / client_name so the table can label its portfolio. */
+export const listAllActions = (onlyOpen = false) =>
+  apiClient
+    .get<ActionItem[]>("/actions", { params: { only_open: onlyOpen } })
     .then((r) => r.data);
 export const updateAction = (
   id: number,

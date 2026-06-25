@@ -200,6 +200,16 @@ def all_actions(session: Session, project_id: int) -> list[ActionItem]:
     )
 
 
+def all_actions_across_portfolios(session: Session) -> list[ActionItem]:
+    """Every action across every portfolio (all statuses), newest first.
+    Backs the Actions page 'All portfolios' default view."""
+    return (
+        session.query(ActionItem)
+        .order_by(desc(ActionItem.created_at))
+        .all()
+    )
+
+
 def update_action_status(
     session: Session,
     action_id: int,

@@ -116,6 +116,11 @@ export interface ActionItem {
   updated_by?: UserStub | null;
   created_at?: string;
   updated_at?: string;
+  /** Portfolio context — set by the list endpoint so the cross-portfolio
+   *  "All portfolios" Actions view can label each row. */
+  project_name?: string | null;
+  client_name?: string | null;
+  originating_meeting_date?: string | null;
 }
 
 export interface MeetingAttendee {
