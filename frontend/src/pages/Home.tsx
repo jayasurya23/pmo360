@@ -180,9 +180,19 @@ export default function Home() {
           >
             <SubSection title="Your open actions">
               <ActionsList
-                items={mine?.open_actions || []}
+                items={(mine?.open_actions || []).slice(0, 5)}
                 emptyHint="Nothing assigned to you"
               />
+              {(mine?.open_actions || []).length > 0 && (
+                <button
+                  className="mt-2 text-xs font-semibold text-brand-red hover:underline"
+                  onClick={() => nav("/actions?owner=mine&status=open_pending")}
+                >
+                  {(mine?.open_actions || []).length > 5
+                    ? `View all ${mine!.open_actions.length} open actions →`
+                    : "View all in Actions →"}
+                </button>
+              )}
             </SubSection>
 
             <SubSection title="Your follow-ups">
