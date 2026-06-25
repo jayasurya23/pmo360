@@ -29,6 +29,8 @@ import {
   listProposals,
   fetchProposalTimelineMilestones,
   placeProposalMilestone,
+  listAllPortfolios,
+  listClients,
 } from "@/lib/api";
 import type {
   TimelineBoard,
@@ -37,6 +39,8 @@ import type {
   TimelineAssignment,
   TimelineTimeOff,
   GlobalAttendee,
+  Client,
+  Project,
   ProposalListItem,
   ProposalTimelineMilestone,
 } from "@/lib/types";
@@ -290,6 +294,12 @@ export default function Timeline() {
   // proposal-milestone palette (pick a proposal → drag its phase chips onto engineers)
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [proposals, setProposals] = useState<ProposalListItem[]>([]);
+  // Client → Portfolio → Project picker for the palette (independent of the
+  // global header picker).
+  const [tlClients, setTlClients] = useState<Client[]>([]);
+  const [tlPortfolios, setTlPortfolios] = useState<Project[]>([]);
+  const [tlClientId, setTlClientId] = useState<number | null>(null);
+  const [tlPortfolioId, setTlPortfolioId] = useState<number | null>(null);
   const [paletteProposalId, setPaletteProposalId] = useState<number | null>(null);
   const [paletteVersionId, setPaletteVersionId] = useState<number | null>(null);
   const [paletteMilestones, setPaletteMilestones] = useState<ProposalTimelineMilestone[]>([]);
@@ -613,7 +623,60 @@ export default function Timeline() {
   useEffect(() => {
     if (!paletteOpen || proposals.length) return;
     void listProposals().then(setProposals).catch(() => {});
+    void listClients().then(setTlClients).catch(() => {});
+    void listAllPortfolios().then(setTlPortfolios).catch(() => {});
   }, [paletteOpen, proposals.length]);
+
+  // Maps that gate the Client → Portfolio → Project picker to entities that
+  // actually have a proposal/schedule attached (everything else renders, but
+  // disabled). Proposal titles mirror the sub-project name.
+  const propByPortfolio = useMemo(() => {
+    const m = new Map<number, ProposalListItem[]>();
+    for (const p of proposals) {
+      if (p.portfolio_id == null) continue;
+      const arr = m.get(p.portfolio_id);
+      if (arr) arr.push(p);
+      else m.set(p.portfolio_id, [p]);
+    }
+    return m;
+  }, [proposals]);
+  const portfolioById = useMemo(
+    () => new Map(tlPortfolios.map((p) => [p.id, p])),
+    [tlPortfolios],
+  );
+  const portfoliosWithProp = useMemo(
+    () => new Set([...propByPortfolio.keys()]),
+    [propByPortfolio],
+  );
+  const clientsWithProp = useMemo(() => {
+    const s = new Set<number>();
+    for (const pid of portfoliosWithProp) {
+      const port = portfolioById.get(pid);
+      if (port?.client_id != null) s.add(port.client_id);
+    }
+    return s;
+  }, [portfoliosWithProp, portfolioById]);
+  const tlProjectOptions = useMemo(() => {
+    if (tlPortfolioId == null) return [] as { label: string; proposalId: number | null }[];
+    const port = portfolioById.get(tlPortfolioId);
+    const props = propByPortfolio.get(tlPortfolioId) ?? [];
+    const match = (sub: string) => {
+      const s = sub.trim().toLowerCase();
+      return props.find((p) => {
+        const t = (p.title || "").trim().toLowerCase();
+        return t === s || t.startsWith(s) || s.startsWith(t);
+      });
+    };
+    const out: { label: string; proposalId: number | null }[] = [];
+    const used = new Set<number>();
+    for (const sub of port?.sub_projects_json ?? []) {
+      const mp = match(sub);
+      if (mp) used.add(mp.id);
+      out.push({ label: sub, proposalId: mp?.id ?? null });
+    }
+    for (const p of props) if (!used.has(p.id)) out.push({ label: p.title, proposalId: p.id });
+    return out;
+  }, [tlPortfolioId, portfolioById, propByPortfolio]);
 
   useEffect(() => {
     setPlacedCounts({});   // a different proposal → forget what was staffed from the last one
@@ -799,19 +862,67 @@ export default function Timeline() {
         </button>
         {paletteOpen && (
           <div className="flex flex-col gap-2 px-3 pb-3">
-            <select
-              className="max-w-md rounded-md border border-slate-300 px-2 py-1 text-sm"
-              value={paletteProposalId ?? ""}
-              onChange={(e) => setPaletteProposalId(e.target.value ? Number(e.target.value) : null)}
-            >
-              <option value="">Choose a proposal…</option>
-              {proposals.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.title}
-                  {p.customer_name ? ` — ${p.customer_name}` : ""}
-                </option>
-              ))}
-            </select>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <select
+                aria-label="Client"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm"
+                value={tlClientId ?? ""}
+                onChange={(e) => {
+                  setTlClientId(e.target.value ? Number(e.target.value) : null);
+                  setTlPortfolioId(null);
+                  setPaletteProposalId(null);
+                }}
+              >
+                <option value="">Client…</option>
+                {tlClients.map((c) => (
+                  <option key={c.id} value={c.id} disabled={!clientsWithProp.has(c.id)}>
+                    {c.name}
+                    {clientsWithProp.has(c.id) ? "" : " — no schedule"}
+                  </option>
+                ))}
+              </select>
+              <span className="text-slate-300" aria-hidden="true">›</span>
+              <select
+                aria-label="Portfolio"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                value={tlPortfolioId ?? ""}
+                disabled={tlClientId == null}
+                onChange={(e) => {
+                  setTlPortfolioId(e.target.value ? Number(e.target.value) : null);
+                  setPaletteProposalId(null);
+                }}
+              >
+                <option value="">Portfolio…</option>
+                {tlPortfolios
+                  .filter((p) => p.client_id === tlClientId)
+                  .map((p) => (
+                    <option key={p.id} value={p.id} disabled={!portfoliosWithProp.has(p.id)}>
+                      {p.name}
+                      {portfoliosWithProp.has(p.id) ? "" : " — no schedule"}
+                    </option>
+                  ))}
+              </select>
+              <span className="text-slate-300" aria-hidden="true">›</span>
+              <select
+                aria-label="Project"
+                className="rounded-md border border-slate-300 px-2 py-1 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                value={paletteProposalId ?? ""}
+                disabled={tlPortfolioId == null}
+                onChange={(e) => setPaletteProposalId(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">Project…</option>
+                {tlProjectOptions.map((o, i) => (
+                  <option
+                    key={`${o.label}-${i}`}
+                    value={o.proposalId ?? ""}
+                    disabled={o.proposalId == null}
+                  >
+                    {o.label}
+                    {o.proposalId == null ? " — no schedule" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
             {paletteProposalId != null &&
               (paletteLoading ? (
                 <div className="text-xs text-brand-gray">Loading milestones…</div>
