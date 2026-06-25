@@ -80,23 +80,39 @@ def _check_stale(expected: Optional[int], current: Optional[int], kind: str = "p
 
 def _cfg_from_json(d: Optional[dict]) -> ScheduleConfig:
     d = d or {}
-    from datetime import datetime
+    from datetime import datetime, date
+    # config_json stores custom_holidays as ISO date strings, but ScheduleConfig
+    # (and holiday_np_array, which reads `.year`) expects datetime.date objects.
+    # Parse them here, or calculate_all_dates crashes for any proposal that has
+    # custom holidays — both on import_template AND on in-app Recompute.
+    hols = set()
+    for x in (d.get("custom_holidays") or ()):
+        if isinstance(x, date):
+            hols.add(x)
+        else:
+            try:
+                hols.add(date.fromisoformat(str(x)[:10]))
+            except ValueError:
+                pass
     return ScheduleConfig(
         project_start=d.get("project_start") or datetime.now().strftime("%m/%d/%y"),
         utilization_percent=float(d.get("utilization_percent", 100.0) or 100.0),
         fs_start_next_day=bool(d.get("fs_start_next_day", True)),
         disabled_holidays=frozenset(d.get("disabled_holidays") or ()),
-        custom_holidays=frozenset(d.get("custom_holidays") or ()),
+        custom_holidays=frozenset(hols),
     )
 
 
 def _cfg_to_json(cfg: ScheduleConfig) -> dict:
+    from datetime import date
     return {
         "project_start": cfg.project_start,
         "utilization_percent": cfg.utilization_percent,
         "fs_start_next_day": cfg.fs_start_next_day,
         "disabled_holidays": sorted(cfg.disabled_holidays),
-        "custom_holidays": sorted(cfg.custom_holidays),
+        # back to JSON-safe ISO strings (symmetric with _cfg_from_json)
+        "custom_holidays": sorted(h.isoformat() if isinstance(h, date) else str(h)
+                                  for h in cfg.custom_holidays),
     }
 
 

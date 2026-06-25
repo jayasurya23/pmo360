@@ -8,18 +8,20 @@ import { useApp } from "@/lib/state";
 import {
   listMeetings,
   listAgendas,
+  listNotes,
   deleteMeeting,
   deleteAgenda,
   updateMeetingMeta,
   meetingDocUrl,
   getMeeting,
 } from "@/lib/api";
-import type { Meeting, Agenda } from "@/lib/types";
+import type { Meeting, Agenda, Note } from "@/lib/types";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
-type Tab = "meetings" | "agendas";
+type Tab = "meetings" | "agendas" | "notes";
 type StatusFilter = "all" | "draft" | "final" | "sent";
+type NoteStatusFilter = "all" | "open" | "closed";
 
 export default function History() {
   const {
@@ -35,8 +37,10 @@ export default function History() {
   const [tab, setTab] = useState<Tab>("meetings");
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [agendas, setAgendas] = useState<Agenda[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [noteFilter, setNoteFilter] = useState<NoteStatusFilter>("open");
   // Inline rename state — the row whose title is being edited + its draft.
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -48,10 +52,14 @@ export default function History() {
     Promise.all([
       listMeetings(currentProject.id),
       listAgendas(currentProject.id),
+      // Mirror the portfolio's planner notes here (read-only) — same source
+      // as the Notes page, so History is a one-stop review surface.
+      listNotes(currentProject.id).catch(() => [] as Note[]),
     ])
-      .then(([m, a]) => {
+      .then(([m, a, n]) => {
         setMeetings(m);
         setAgendas(a);
+        setNotes(n);
       })
       .finally(() => setLoading(false));
   }, [currentProject?.id]);
@@ -90,6 +98,31 @@ export default function History() {
     }
     return c;
   }, [meetings]);
+
+  const noteCounts = useMemo(() => {
+    const c = { open: 0, closed: 0 };
+    for (const n of notes) {
+      const s = (n.status || "open") === "closed" ? "closed" : "open";
+      c[s] += 1;
+    }
+    return c;
+  }, [notes]);
+
+  // Open notes first, then newest note_date first — a useful review order.
+  const filteredNotes = useMemo(() => {
+    const rank = (n: Note) => ((n.status || "open") === "closed" ? 1 : 0);
+    return notes
+      .filter((n) => {
+        if (noteFilter === "all") return true;
+        const s = (n.status || "open") === "closed" ? "closed" : "open";
+        return s === noteFilter;
+      })
+      .slice()
+      .sort(
+        (a, b) =>
+          rank(a) - rank(b) || (b.note_date || "").localeCompare(a.note_date || ""),
+      );
+  }, [notes, noteFilter]);
 
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
@@ -206,7 +239,7 @@ export default function History() {
     <div className="space-y-6">
       <PageHeader
         title="History"
-        subtitle="Past meetings and saved pre-meeting agendas for this portfolio."
+        subtitle="Past meetings, saved pre-meeting agendas, and planner notes for this portfolio."
       />
 
       <div className="flex border-b border-brand-lightgray gap-6">
@@ -215,6 +248,9 @@ export default function History() {
         </TabBtn>
         <TabBtn active={tab === "agendas"} onClick={() => setTab("agendas")}>
           Pre-Meeting Agendas ({agendas.length})
+        </TabBtn>
+        <TabBtn active={tab === "notes"} onClick={() => setTab("notes")}>
+          Notes ({notes.length})
         </TabBtn>
       </div>
 
@@ -390,44 +426,186 @@ export default function History() {
             </div>
           )}
         </>
-      ) : agendas.length === 0 ? (
-        <EmptyState title="No saved agendas yet" />
+      ) : tab === "agendas" ? (
+        agendas.length === 0 ? (
+          <EmptyState title="No saved agendas yet" />
+        ) : (
+          <div className="card divide-y divide-brand-lightgray/60">
+            {agendas.map((a) => (
+              <div
+                key={a.id}
+                className="px-5 py-3 grid grid-cols-[1fr_auto] gap-4 items-center"
+              >
+                <div>
+                  <div className="text-sm font-medium text-brand-black">
+                    {a.title || `Pre-meeting agenda — ${a.upcoming_date}`}
+                  </div>
+                  <div className="text-xs text-brand-gray">
+                    {format(parseISO(a.upcoming_date), "EEE, MMM d, yyyy")} ·{" "}
+                    {a.meeting_duration_minutes || 30} min
+                  </div>
+                  <UpdatedByLine user={a.updated_by} at={a.updated_at} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="btn-ghost"
+                    onClick={() => nav(`/next-agenda?agenda=${a.id}`)}
+                  >
+                    Open
+                  </button>
+                  <button
+                    className="btn-danger"
+                    onClick={() => handleDeleteAgenda(a)}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
       ) : (
-        <div className="card divide-y divide-brand-lightgray/60">
-          {agendas.map((a) => (
-            <div
-              key={a.id}
-              className="px-5 py-3 grid grid-cols-[1fr_auto] gap-4 items-center"
-            >
-              <div>
-                <div className="text-sm font-medium text-brand-black">
-                  {a.title || `Pre-meeting agenda — ${a.upcoming_date}`}
-                </div>
-                <div className="text-xs text-brand-gray">
-                  {format(parseISO(a.upcoming_date), "EEE, MMM d, yyyy")} ·{" "}
-                  {a.meeting_duration_minutes || 30} min
-                </div>
-                <UpdatedByLine user={a.updated_by} at={a.updated_at} />
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  className="btn-ghost"
-                  onClick={() => nav(`/next-agenda?agenda=${a.id}`)}
+        // ---- Notes tab: read-only mirror of this portfolio's planner notes ----
+        <>
+          {notes.length > 0 && (
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                <FilterPill
+                  active={noteFilter === "open"}
+                  onClick={() => setNoteFilter("open")}
                 >
-                  Open
-                </button>
-                <button
-                  className="btn-danger"
-                  onClick={() => handleDeleteAgenda(a)}
+                  Open ({noteCounts.open})
+                </FilterPill>
+                <FilterPill
+                  active={noteFilter === "closed"}
+                  onClick={() => setNoteFilter("closed")}
                 >
-                  Delete
-                </button>
+                  Closed ({noteCounts.closed})
+                </FilterPill>
+                <FilterPill
+                  active={noteFilter === "all"}
+                  onClick={() => setNoteFilter("all")}
+                >
+                  All ({notes.length})
+                </FilterPill>
               </div>
+              <button
+                className="btn-ghost text-sm"
+                onClick={() => nav("/notes")}
+                title="Open the Planner notes page to add or edit"
+              >
+                Edit in Planner notes →
+              </button>
             </div>
-          ))}
-        </div>
+          )}
+
+          {notes.length === 0 ? (
+            <EmptyState
+              title="No notes yet"
+              hint="Capture lightweight follow-ups on the Planner notes page."
+              action={
+                <button
+                  className="btn-primary mt-2"
+                  onClick={() => nav("/notes")}
+                >
+                  Open Planner notes
+                </button>
+              }
+            />
+          ) : filteredNotes.length === 0 ? (
+            <EmptyState
+              title={`No ${noteFilter} notes`}
+              hint="Try a different status filter."
+            />
+          ) : (
+            <div className="card divide-y divide-brand-lightgray/60">
+              {filteredNotes.map((n) => (
+                <NoteRow key={n.id} note={n} />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
+  );
+}
+
+/** Read-only row mirroring a single planner note. Editing happens on the
+ *  Planner notes page — this is a review surface. */
+function NoteRow({ note }: { note: Note }) {
+  const status = (note.status || "open") === "closed" ? "closed" : "open";
+  const priority = note.priority || "Medium";
+  return (
+    <div className="px-5 py-3 space-y-1.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-brand-black">
+            {note.topic || "(untitled note)"}
+          </div>
+          <div className="text-xs text-brand-gray mt-0.5 flex items-center gap-2 flex-wrap">
+            <span>
+              {note.note_date
+                ? format(parseISO(note.note_date), "EEE, MMM d, yyyy")
+                : "No date"}
+            </span>
+            {note.project_area && (
+              <span className="px-1.5 py-0.5 rounded bg-brand-nearwhite text-brand-gray">
+                {note.project_area}
+              </span>
+            )}
+            {note.source && <span>· {note.source}</span>}
+            {note.follow_up_date && (
+              <span>
+                · follow-up{" "}
+                {format(parseISO(note.follow_up_date), "MMM d, yyyy")}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <PriorityBadge priority={priority} />
+          <NoteStatusBadge status={status} />
+        </div>
+      </div>
+      {note.action_needed && (
+        <div className="text-sm text-brand-gray whitespace-pre-wrap">
+          {note.action_needed}
+        </div>
+      )}
+      <UpdatedByLine user={note.updated_by} at={note.updated_at} />
+    </div>
+  );
+}
+
+function PriorityBadge({ priority }: { priority: string }) {
+  const cfg: Record<string, { bg: string; text: string }> = {
+    High: { bg: "#fbe0e3", text: "#ad1f2b" },
+    Medium: { bg: "#f3eecf", text: "#7a7320" },
+    Low: { bg: "#e6e7e8", text: "#4d4d4f" },
+  };
+  const c = cfg[priority] || cfg.Medium;
+  return (
+    <span
+      className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
+      style={{ background: c.bg, color: c.text }}
+    >
+      {priority}
+    </span>
+  );
+}
+
+function NoteStatusBadge({ status }: { status: "open" | "closed" }) {
+  const c =
+    status === "closed"
+      ? { label: "Closed", bg: "#d6f0e0", text: "#278747" }
+      : { label: "Open", bg: "#dbeaf7", text: "#185fa5" };
+  return (
+    <span
+      className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
+      style={{ background: c.bg, color: c.text }}
+    >
+      {c.label}
+    </span>
   );
 }
 
