@@ -510,7 +510,7 @@ export default function Proposals() {
   const confirm = useConfirm();
   const navigate = useNavigate();
   const { isAuthenticated } = useAuth();
-  const { currentProject } = useApp();
+  const { currentProject, selectedSubProject } = useApp();
 
   const [list, setList] = useState<ProposalListItem[]>([]);
   const [board, setBoard] = useState<ProposalBoard | null>(null);
@@ -604,7 +604,10 @@ export default function Proposals() {
   const loadList = useCallback(async () => {
     setLoading(true);
     try {
-      const rows = await listProposals();
+      // Inherit the header's portfolio selection: when a portfolio is picked in
+      // the top context bar, scope the list to it; otherwise show every proposal
+      // (standalone + across all portfolios).
+      const rows = await listProposals(currentProject?.id ?? undefined);
       setList(rows);
       setError(null);
       return rows;
@@ -614,7 +617,7 @@ export default function Proposals() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentProject?.id]);
 
   useEffect(() => {
     void loadList();
@@ -660,6 +663,21 @@ export default function Proposals() {
     },
     [keyOf, seedDrafts],
   );
+
+  // Default the open proposal to the one matching the project picked in the
+  // global header (Client › Portfolio › Project) — proposal titles mirror the
+  // sub-project name (e.g. "Gonzo", "Nesler Rd"). The dropdown stays available
+  // as an optional manual override.
+  useEffect(() => {
+    if (!selectedSubProject || list.length === 0) return;
+    const sub = selectedSubProject.trim().toLowerCase();
+    const match = list.find((p) => {
+      const t = (p.title || "").trim().toLowerCase();
+      return t === sub || t.startsWith(sub) || sub.startsWith(t);
+    });
+    if (match && match.id !== proposalId) void loadBoard(match.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSubProject, list]);
 
   // After any version-board response, refresh local tree + list metadata.
   const applyBoard = useCallback(
@@ -1795,6 +1813,20 @@ export default function Proposals() {
             ))}
           </select>
         </label>
+        <span className="text-[11px] text-brand-gray">
+          {currentProject ? (
+            <>
+              Scoped to{" "}
+              <span className="font-semibold text-slate-700">
+                {currentProject.name}
+              </span>
+            </>
+          ) : (
+            <>All portfolios</>
+          )}
+          {" · "}
+          {list.length} proposal{list.length === 1 ? "" : "s"}
+        </span>
         {board && (
           <button
             className="text-[12px] text-brand-red hover:underline ml-auto"
