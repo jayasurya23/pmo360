@@ -8,8 +8,11 @@ from sqlalchemy.orm import Session
 
 from core.deps import get_db
 from auth import get_current_db_user
-from db.models import ActionItem, Project
-from db.repository import all_actions, open_actions, update_action_status
+from db.models import ActionItem, Project, Client, Meeting
+from db.repository import (
+    all_actions, open_actions, update_action_status,
+    all_open_actions_across_portfolios, all_actions_across_portfolios,
+)
 from core.services import safe_filename_slug
 from schemas.common import ActionItemOut, ActionItemUpdate, ActionItemCreate
 
@@ -17,15 +20,42 @@ from schemas.common import ActionItemOut, ActionItemUpdate, ActionItemCreate
 router = APIRouter(prefix="/api/actions", tags=["actions"])
 
 
+def _with_context(db: Session, rows: list[ActionItem]) -> list[ActionItemOut]:
+    """Attach each action's portfolio name, client name, and originating-meeting
+    date so the cross-portfolio Actions view can render them. Uses one query per
+    lookup table (projects / clients / meeting dates) — no per-row N+1."""
+    projects = {p.id: p for p in db.query(Project).all()}
+    clients = {c.id: c.name for c in db.query(Client).all()}
+    meeting_dates = dict(db.query(Meeting.id, Meeting.meeting_date).all())
+    out: list[ActionItemOut] = []
+    for r in rows:
+        o = ActionItemOut.model_validate(r)
+        proj = projects.get(r.project_id)
+        if proj is not None:
+            o.project_name = proj.name
+            o.client_name = clients.get(proj.client_id)
+        o.originating_meeting_date = meeting_dates.get(r.originating_meeting_id)
+        out.append(o)
+    return out
+
+
 @router.get("", response_model=list[ActionItemOut])
 def list_actions(
-    project_id: int = Query(...),
+    project_id: int | None = Query(None),
     only_open: bool = Query(False),
     db: Session = Depends(get_db),
 ):
-    if only_open:
-        return open_actions(db, project_id)
-    return all_actions(db, project_id)
+    """List actions. With ``project_id`` -> that portfolio only; without it ->
+    every action across all portfolios (the Actions page default view)."""
+    if project_id is not None:
+        rows = open_actions(db, project_id) if only_open else all_actions(db, project_id)
+    else:
+        rows = (
+            all_open_actions_across_portfolios(db)
+            if only_open
+            else all_actions_across_portfolios(db)
+        )
+    return _with_context(db, rows)
 
 
 @router.post("", response_model=ActionItemOut, status_code=201)
@@ -116,23 +146,33 @@ _STATUS_FILTERS: dict[str, set[str]] = {
 
 @router.get("/export.csv")
 def export_actions_csv(
-    project_id: int = Query(...),
+    project_id: int | None = Query(None),
     status: str = Query("all"),
     owner: str = Query("", description="Case-insensitive substring filter on owner"),
     db: Session = Depends(get_db),
 ):
-    """Stream a CSV of action items for the given portfolio.
+    """Stream a CSV of action items. With ``project_id`` it's scoped to that
+    portfolio; without it, every portfolio's actions (the 'All portfolios'
+    view). Portfolio + Client columns are appended so the cross-portfolio
+    export stays self-describing.
 
     Filters mirror what the Actions page renders so the export matches the
-    table the PM is looking at when they click Export. Columns are stable
-    so PMs can build pivot tables / Power BI / Excel formulas against the
-    output without breakage when we add new fields server-side.
+    table the PM is looking at when they click Export. Existing columns keep
+    their position so PMs' pivot tables / Power BI / Excel formulas don't break.
     """
-    project = db.get(Project, project_id)
-    if not project:
-        raise HTTPException(404, "Project not found")
+    if project_id is not None:
+        project = db.get(Project, project_id)
+        if not project:
+            raise HTTPException(404, "Project not found")
+        rows = all_actions(db, project_id)
+        scope_slug = safe_filename_slug(project.name or "project")
+    else:
+        rows = all_actions_across_portfolios(db)
+        scope_slug = "All_Portfolios"
 
-    rows = all_actions(db, project_id)
+    # Portfolio + client name lookup for the trailing columns (one query each).
+    projects = {p.id: p for p in db.query(Project).all()}
+    clients = {c.id: c.name for c in db.query(Client).all()}
 
     # Status filter
     allowed = _STATUS_FILTERS.get(status.lower())
@@ -159,8 +199,11 @@ def export_actions_csv(
         "Raised in meeting", "Closed in meeting",
         "Created at", "Updated at",
         "Created by", "Updated by",
+        # appended so existing column positions stay stable
+        "Portfolio", "Client",
     ])
     for i, a in enumerate(rows, start=1):
+        proj = projects.get(a.project_id)
         writer.writerow([
             i,
             (a.text or "").strip(),
@@ -181,12 +224,13 @@ def export_actions_csv(
             a.updated_at.isoformat(timespec="minutes") if a.updated_at else "",
             (a.created_by.name if a.created_by else "") or "",
             (a.updated_by.name if a.updated_by else "") or "",
+            (proj.name if proj else "") or "",
+            (clients.get(proj.client_id) if proj else "") or "",
         ])
 
     data = buf.getvalue().encode("utf-8")
-    proj_slug = safe_filename_slug(project.name or "project")
     date_str = datetime.utcnow().strftime("%Y-%m-%d")
-    filename = f"{proj_slug}_Actions_{date_str}.csv"
+    filename = f"{scope_slug}_Actions_{date_str}.csv"
     return StreamingResponse(
         iter([data]),
         media_type="text/csv; charset=utf-8",

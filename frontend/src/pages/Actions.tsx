@@ -9,6 +9,7 @@ import OwnerPicker from "@/components/actions/OwnerPicker";
 import { useApp } from "@/lib/state";
 import {
   listActions,
+  listAllActions,
   actionsCsvUrl,
   updateAction,
   deleteAction,
@@ -44,6 +45,9 @@ export default function Actions() {
   const [searchParams] = useSearchParams();
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  // Default: all actions across every portfolio. Toggle on to scope the list to
+  // the header's selected portfolio (the Client > Portfolio picker up top).
+  const [scopeToProject, setScopeToProject] = useState(false);
   // Honour a deep-link from Home's "Your open actions" card: ?status= sets the
   // status filter, ?owner=mine scopes to the signed-in user (by owner_user_id).
   const [filter, setFilter] = useState<string>(() => {
@@ -59,12 +63,21 @@ export default function Actions() {
   const [bulkDueValue, setBulkDueValue] = useState("");
   const confirm = useConfirm();
 
+  const scoped = scopeToProject && !!currentProject;
+
   const load = async () => {
-    if (!currentProject) return;
+    // Scoped-but-no-portfolio: nothing to load, the render shows a hint.
+    if (scopeToProject && !currentProject) {
+      setActions([]);
+      return;
+    }
     setLoading(true);
     const [a, m] = await Promise.all([
-      listActions(currentProject.id),
-      listMeetings(currentProject.id),
+      scoped ? listActions(currentProject!.id) : listAllActions(),
+      // Meetings back the "Add action" picker + raised-date lookup; only the
+      // selected portfolio's are needed (cross-portfolio rows carry their own
+      // originating_meeting_date from the API).
+      currentProject ? listMeetings(currentProject.id) : Promise.resolve([] as Meeting[]),
     ]);
     setActions(a);
     setMeetings(m);
@@ -73,7 +86,8 @@ export default function Actions() {
 
   useEffect(() => {
     void load();
-  }, [currentProject?.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentProject?.id, scopeToProject]);
 
   // Reset selection + bulk panels whenever the project changes.
   useEffect(() => {
@@ -106,9 +120,6 @@ export default function Actions() {
       x.toLowerCase().localeCompare(y.toLowerCase())
     );
   }, [actions]);
-
-  if (!currentProject)
-    return <EmptyState title="Pick a client + portfolio first" />;
 
   const filtered = actions.filter((a) => {
     // Status filter
@@ -193,6 +204,10 @@ export default function Actions() {
   };
 
   const handleAdd = async () => {
+    if (!currentProject) {
+      alert("Pick a client + portfolio in the header first — a new action needs a portfolio.");
+      return;
+    }
     if (!meetings.length) {
       alert("Create a meeting first — actions are tied to an originating meeting.");
       return;
@@ -271,9 +286,39 @@ export default function Actions() {
     <div className="space-y-6">
       <PageHeader
         title="Rolling action items"
-        subtitle={`${actions.length} total — ${counts.open} open, ${counts.pending} pending, ${counts.completed} completed, ${counts.cancelled} cancelled`}
+        subtitle={`${scoped ? currentProject!.name : "All portfolios"} · ${actions.length} total — ${counts.open} open, ${counts.pending} pending, ${counts.completed} completed, ${counts.cancelled} cancelled`}
         actions={
           <>
+            {/* Scope toggle: all portfolios (default) vs the header-selected one. */}
+            <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-sm">
+              <button
+                type="button"
+                onClick={() => setScopeToProject(false)}
+                className={
+                  !scopeToProject
+                    ? "px-3 py-1.5 bg-brand-red text-white font-semibold"
+                    : "px-3 py-1.5 text-brand-gray hover:bg-brand-nearwhite/60"
+                }
+              >
+                All portfolios
+              </button>
+              <button
+                type="button"
+                onClick={() => setScopeToProject(true)}
+                title={
+                  currentProject
+                    ? `Scope to ${currentProject.name}`
+                    : "Pick a portfolio in the header to scope"
+                }
+                className={
+                  scopeToProject
+                    ? "px-3 py-1.5 bg-brand-red text-white font-semibold"
+                    : "px-3 py-1.5 text-brand-gray hover:bg-brand-nearwhite/60"
+                }
+              >
+                {currentProject ? "This portfolio" : "Selected portfolio"}
+              </button>
+            </div>
             <select
               className="select w-44"
               value={filter}
@@ -302,25 +347,33 @@ export default function Actions() {
             </select>
             <a
               className="btn-ghost"
-              href={
-                currentProject
-                  ? actionsCsvUrl(
-                      currentProject.id,
-                      filter || "all",
-                      ownerFilter === "__all__"
-                        ? ""
-                        : ownerFilter === "__mine__"
-                          ? me?.name || ""
-                          : ownerFilter,
-                    )
-                  : "#"
+              href={actionsCsvUrl(
+                scoped ? currentProject!.id : null,
+                filter || "all",
+                ownerFilter === "__all__"
+                  ? ""
+                  : ownerFilter === "__mine__"
+                    ? me?.name || ""
+                    : ownerFilter,
+              )}
+              title={
+                scoped
+                  ? "Download this portfolio's filtered actions as a CSV"
+                  : "Download all portfolios' filtered actions as a CSV"
               }
-              title="Download the currently-filtered actions as a CSV (Excel-friendly)"
-              aria-disabled={!currentProject}
             >
               📥 Export CSV
             </a>
-            <button className="btn-primary" onClick={handleAdd}>
+            <button
+              className="btn-primary"
+              onClick={handleAdd}
+              disabled={!currentProject}
+              title={
+                currentProject
+                  ? "Add a new action to the selected portfolio"
+                  : "Pick a portfolio in the header to add an action"
+              }
+            >
               + Add action
             </button>
           </>
@@ -442,7 +495,20 @@ export default function Actions() {
         </div>
       )}
 
-      {loading ? (
+      {scopeToProject && !currentProject ? (
+        <EmptyState
+          title="Pick a portfolio to scope"
+          hint="Choose a client + portfolio in the header, or switch back to All portfolios."
+          action={
+            <button
+              className="btn-primary mt-2"
+              onClick={() => setScopeToProject(false)}
+            >
+              Show all portfolios
+            </button>
+          }
+        />
+      ) : loading ? (
         <div className="card p-5 text-sm text-brand-gray">Loading…</div>
       ) : filtered.length === 0 ? (
         <EmptyState
@@ -490,9 +556,13 @@ export default function Actions() {
             </span>
           </div>
           {filtered.map((a) => {
-            const raisedMeeting = meetings.find(
-              (m) => m.id === a.originating_meeting_id
-            );
+            // Prefer the date the API attached (works cross-portfolio); fall
+            // back to the loaded meetings list when scoped to one portfolio.
+            const raisedDate =
+              a.originating_meeting_date ||
+              meetings.find((m) => m.id === a.originating_meeting_id)
+                ?.meeting_date ||
+              null;
             const checked = selectedIds.has(a.id);
             return (
               <div
@@ -527,6 +597,20 @@ export default function Actions() {
                   <span className="text-[10px] uppercase tracking-wider text-brand-gray font-semibold md:hidden">
                     Action
                   </span>
+                  {/* Which portfolio this action belongs to — only meaningful in
+                      the cross-portfolio "All portfolios" view. */}
+                  {!scoped && a.project_name && (
+                    <div className="text-[11px] leading-tight">
+                      {a.client_name && (
+                        <span className="text-brand-gray">
+                          {a.client_name} ·{" "}
+                        </span>
+                      )}
+                      <span className="font-semibold text-brand-red">
+                        {a.project_name}
+                      </span>
+                    </div>
+                  )}
                   <textarea
                     className="textarea text-sm"
                     rows={2}
@@ -546,8 +630,8 @@ export default function Actions() {
                   />
                   <div className="text-[11px] text-brand-gray">
                     Raised{" "}
-                    {raisedMeeting
-                      ? format(parseISO(raisedMeeting.meeting_date), "MMM d, yyyy")
+                    {raisedDate
+                      ? format(parseISO(raisedDate), "MMM d, yyyy")
                       : "—"}
                   </div>
                   <UpdatedByLine

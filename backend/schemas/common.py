@@ -194,6 +194,12 @@ class ActionItemOut(ORMModel):
     updated_by: Optional[UserStub] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # Portfolio context — populated by the list endpoint so the cross-portfolio
+    # "All portfolios" Actions view can show which portfolio each action belongs
+    # to (and its raised date, since the meetings list may be a different scope).
+    project_name: Optional[str] = None
+    client_name: Optional[str] = None
+    originating_meeting_date: Optional[date] = None
 
 
 # ---------- Attachments ----------
