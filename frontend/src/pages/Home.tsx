@@ -37,6 +37,8 @@ export default function Home() {
   // so the skeleton can stay up during the refresh button flow.
   const [briefing, setBriefing] = useState<Briefing | null>(null);
   const [briefingLoading, setBriefingLoading] = useState(false);
+  // Overdue rollup is collapsed to 5 by default; expandable to the full list.
+  const [showAllOverdue, setShowAllOverdue] = useState(false);
   const nav = useNavigate();
   const { settings, resetDraft, scope, me } = useApp();
   const { isAuthenticated, user } = useAuth();
@@ -234,7 +236,25 @@ export default function Home() {
               hint="All clear — no rolling actions need attention right now."
             />
           ) : (
-            <ActionsList items={(data?.open_actions || []).slice(0, 10)} />
+            <>
+              <ActionsList
+                items={
+                  showAllOverdue
+                    ? data?.open_actions || []
+                    : (data?.open_actions || []).slice(0, 5)
+                }
+              />
+              {(data?.open_actions || []).length > 5 && (
+                <button
+                  className="mt-2 text-xs font-semibold text-brand-red hover:underline"
+                  onClick={() => setShowAllOverdue((v) => !v)}
+                >
+                  {showAllOverdue
+                    ? "Show fewer"
+                    : `Show all ${(data?.open_actions || []).length} →`}
+                </button>
+              )}
+            </>
           )}
         </section>
 
