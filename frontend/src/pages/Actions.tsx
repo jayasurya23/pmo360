@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import { StatusSelect } from "@/components/StatusPill";
@@ -39,10 +40,16 @@ function splitOwners(raw: string | null | undefined): string[] {
 }
 
 export default function Actions() {
-  const { currentProject } = useApp();
+  const { currentProject, me } = useApp();
+  const [searchParams] = useSearchParams();
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
-  const [filter, setFilter] = useState<string>("open_pending");
+  // Honour a deep-link from Home's "Your open actions" card: ?status= sets the
+  // status filter, ?owner=mine scopes to the signed-in user (by owner_user_id).
+  const [filter, setFilter] = useState<string>(() => {
+    const s = searchParams.get("status");
+    return s && STATUS_FILTERS.some((f) => f.value === s) ? s : "open_pending";
+  });
   const [ownerFilter, setOwnerFilter] = useState<string>("__all__");
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
@@ -75,6 +82,15 @@ export default function Actions() {
     setOwnerFilter("__all__");
   }, [currentProject?.id]);
 
+  // Apply a ?owner=mine deep-link ONCE, after the project-reset above has run
+  // (so it isn't clobbered back to "__all__" when the portfolio first hydrates).
+  const ownerParamApplied = useRef(false);
+  useEffect(() => {
+    if (ownerParamApplied.current || !currentProject) return;
+    ownerParamApplied.current = true;
+    if (searchParams.get("owner") === "mine") setOwnerFilter("__mine__");
+  }, [currentProject?.id]);
+
   // Build the deduped, case-insensitively-sorted owner list off all loaded
   // actions (not just the visible ones — picking from a hidden owner is a
   // legitimate use case).
@@ -101,8 +117,12 @@ export default function Actions() {
     } else if (filter !== "all") {
       if (a.status !== filter) return false;
     }
-    // Owner filter (case-insensitive substring on the comma-split parts)
-    if (ownerFilter !== "__all__") {
+    // Owner filter. "__mine__" scopes to the signed-in user by the canonical
+    // owner_user_id link (matches Home's "Your open actions"); otherwise it's a
+    // case-insensitive substring match on the comma-split owner-name parts.
+    if (ownerFilter === "__mine__") {
+      if (!(me && a.owner_user_id === me.id)) return false;
+    } else if (ownerFilter !== "__all__") {
       const needle = ownerFilter.toLowerCase();
       const hit = splitOwners(a.owner).some((p) =>
         p.toLowerCase().includes(needle)
@@ -273,6 +293,7 @@ export default function Actions() {
               aria-label="Owner filter"
             >
               <option value="__all__">All owners</option>
+              {me && <option value="__mine__">Mine (me)</option>}
               {ownerOptions.map((o) => (
                 <option key={o} value={o}>
                   {o}
@@ -286,7 +307,11 @@ export default function Actions() {
                   ? actionsCsvUrl(
                       currentProject.id,
                       filter || "all",
-                      ownerFilter === "__all__" ? "" : ownerFilter,
+                      ownerFilter === "__all__"
+                        ? ""
+                        : ownerFilter === "__mine__"
+                          ? me?.name || ""
+                          : ownerFilter,
                     )
                   : "#"
               }
