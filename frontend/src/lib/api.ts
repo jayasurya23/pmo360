@@ -996,6 +996,8 @@ export interface ChangeOrderCreate {
   location?: string | null;
   state?: string | null;
   size_mw?: string | null;
+  signatory_name?: string | null;
+  signatory_title?: string | null;
   notes?: string | null;
   line_items: ChangeOrderLineItemInput[];
 }

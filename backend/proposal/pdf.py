@@ -341,8 +341,8 @@ def _create_table_data(styles, template_items, info, mode, milestones_only,
                 start_disp = ""
             if not item.show_end_date:
                 end_disp = ""
-            price_disp = (f"${int(item.price):,}" if (item.price or 0) > 0
-                          else ("$0" if item.is_milestone else ""))
+            # Every price-column row carries a $ (zero-price leaf tasks -> "$0").
+            price_disp = f"${int(item.price or 0):,}"
 
             if mode == "price_only":
                 row = [name_para, Paragraph(f"${int(item.price or 0):,}", price_style)]

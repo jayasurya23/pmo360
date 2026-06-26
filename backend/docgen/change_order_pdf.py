@@ -266,7 +266,8 @@ def _build_data_page(co) -> bytes:
         return [Paragraph(value or "&nbsp;", S["sig_v"])]
 
     fields = ["Company Name", "Print Name", "Title", "Signature", "Date"]
-    left_vals = ["Castillo Engineering Services", "", "", "", ""]
+    left_vals = ["Castillo Engineering Services",
+                 co.signatory_name or "", co.signatory_title or "", "", ""]
     right_vals = [co.client_name or "", "", "", "", ""]
 
     def sig_cell(value, label):

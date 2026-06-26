@@ -697,6 +697,8 @@ export interface ChangeOrder {
   location?: string | null;
   state?: string | null;
   size_mw?: string | null;
+  signatory_name?: string | null;
+  signatory_title?: string | null;
   notes?: string | null;
   total_amount?: number | null;
   version?: number;

@@ -816,6 +816,8 @@ class ChangeOrder(Base):
     location = Column(String(200))         # PDF header (e.g. "Lawrenceburg")
     state = Column(String(50))             # PDF header (e.g. "TN")
     size_mw = Column(String(50))           # PDF header (e.g. "8") — free text
+    signatory_name = Column(String(200))   # Castillo signature block: Print Name
+    signatory_title = Column(String(200))  # Castillo signature block: Title
     notes = Column(Text)
     total_amount = Column(Float, default=0.0)
     version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic lock

@@ -1120,6 +1120,8 @@ class ChangeOrderOut(ORMModel):
     location: Optional[str] = None
     state: Optional[str] = None
     size_mw: Optional[str] = None
+    signatory_name: Optional[str] = None
+    signatory_title: Optional[str] = None
     notes: Optional[str] = None
     total_amount: Optional[float] = None
     version: int = 1
@@ -1143,6 +1145,8 @@ class ChangeOrderIn(BaseModel):
     location: Optional[str] = None
     state: Optional[str] = None
     size_mw: Optional[str] = None
+    signatory_name: Optional[str] = None
+    signatory_title: Optional[str] = None
     notes: Optional[str] = None
     line_items: list[ChangeOrderLineItemIn] = Field(default_factory=list)
 
@@ -1158,5 +1162,7 @@ class ChangeOrderUpdate(BaseModel):
     location: Optional[str] = None
     state: Optional[str] = None
     size_mw: Optional[str] = None
+    signatory_name: Optional[str] = None
+    signatory_title: Optional[str] = None
     notes: Optional[str] = None
     line_items: Optional[list[ChangeOrderLineItemIn]] = None

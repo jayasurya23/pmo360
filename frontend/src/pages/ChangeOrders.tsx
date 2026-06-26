@@ -99,6 +99,9 @@ export default function ChangeOrders() {
   const [location, setLocation] = useState("");
   const [stateCode, setStateCode] = useState("");
   const [sizeMw, setSizeMw] = useState("");
+  const [signatoryName, setSignatoryName] = useState("");
+  const [signatoryUserId, setSignatoryUserId] = useState<number | null>(null);
+  const [signatoryTitle, setSignatoryTitle] = useState("");
   const [title, setTitle] = useState("");
   const [lines, setLines] = useState<LineRow[]>([blankLine()]);
   const [saving, setSaving] = useState(false);
@@ -148,6 +151,9 @@ export default function ChangeOrders() {
     setLocation("");
     setStateCode("");
     setSizeMw("");
+    setSignatoryName("");
+    setSignatoryUserId(null);
+    setSignatoryTitle("");
     setTitle("");
     setLines([blankLine()]);
     setErr(null);
@@ -165,6 +171,9 @@ export default function ChangeOrders() {
     setLocation(co.location || "");
     setStateCode(co.state || "");
     setSizeMw(co.size_mw || "");
+    setSignatoryName(co.signatory_name || "");
+    setSignatoryUserId(null);
+    setSignatoryTitle(co.signatory_title || "");
     setTitle(co.title || "");
     setLines(
       (co.line_items.length ? co.line_items : [{}]).map((li) => ({
@@ -193,6 +202,8 @@ export default function ChangeOrders() {
       location: location || null,
       state: stateCode || null,
       size_mw: sizeMw || null,
+      signatory_name: signatoryName || null,
+      signatory_title: signatoryTitle || null,
       line_items: lines
         .filter(
           (l) =>
@@ -422,6 +433,27 @@ export default function ChangeOrders() {
                     setRequestedBy(owner);
                     setRequestedByUserId(owner_user_id);
                   }}
+                />
+              </label>
+              <label className="block">
+                <span className="label">Signatory — Print Name (Castillo)</span>
+                <OwnerPicker
+                  value={signatoryName}
+                  ownerUserId={signatoryUserId}
+                  placeholder="Pick the Castillo signer…"
+                  onChange={({ owner, owner_user_id }) => {
+                    setSignatoryName(owner);
+                    setSignatoryUserId(owner_user_id);
+                  }}
+                />
+              </label>
+              <label className="block">
+                <span className="label">Signatory title</span>
+                <input
+                  className="input"
+                  value={signatoryTitle}
+                  onChange={(e) => setSignatoryTitle(e.target.value)}
+                  placeholder="e.g. VP, Sales & Marketing"
                 />
               </label>
               <label className="block">
