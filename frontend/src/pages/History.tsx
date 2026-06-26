@@ -16,12 +16,18 @@ import {
   getMeeting,
 } from "@/lib/api";
 import type { Meeting, Agenda, Note } from "@/lib/types";
+import { mergeSubProjects } from "@/lib/subprojects";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
 type Tab = "meetings" | "agendas" | "notes";
 type StatusFilter = "all" | "draft" | "final" | "sent";
 type NoteStatusFilter = "all" | "open" | "closed";
+type NotePriorityFilter = "all" | "High" | "Medium" | "Low";
+type NoteSort = "newest" | "oldest" | "priority" | "followup" | "topic";
+
+const NOTE_AREA_ALL = "__all__";
+const NOTE_AREA_UNSPEC = "__unspecified__";
 
 export default function History() {
   const {
@@ -41,6 +47,9 @@ export default function History() {
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [noteFilter, setNoteFilter] = useState<NoteStatusFilter>("open");
+  const [noteArea, setNoteArea] = useState<string>(NOTE_AREA_ALL);
+  const [notePriority, setNotePriority] = useState<NotePriorityFilter>("all");
+  const [noteSort, setNoteSort] = useState<NoteSort>("newest");
   // Inline rename state — the row whose title is being edited + its draft.
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -108,21 +117,57 @@ export default function History() {
     return c;
   }, [notes]);
 
-  // Open notes first, then newest note_date first — a useful review order.
+  // Project (area) options — curated sub-projects plus any area already used on
+  // a note, mirroring the Planner Notes page filter.
+  const noteSubProjects = useMemo(
+    () =>
+      mergeSubProjects(
+        currentProject?.sub_projects_json || [],
+        notes.map((n) => n.project_area || ""),
+      ),
+    [currentProject?.sub_projects_json, notes],
+  );
+
   const filteredNotes = useMemo(() => {
-    const rank = (n: Note) => ((n.status || "open") === "closed" ? 1 : 0);
+    const prRank = (p?: string | null) =>
+      ({ High: 0, Medium: 1, Low: 2 } as Record<string, number>)[p || "Medium"] ??
+      1;
+    const byDateDesc = (a: Note, b: Note) =>
+      (b.note_date || "").localeCompare(a.note_date || "");
+    const sorters: Record<NoteSort, (a: Note, b: Note) => number> = {
+      newest: byDateDesc,
+      oldest: (a, b) => (a.note_date || "").localeCompare(b.note_date || ""),
+      priority: (a, b) => prRank(a.priority) - prRank(b.priority) || byDateDesc(a, b),
+      followup: (a, b) =>
+        (a.follow_up_date || "9999-99-99").localeCompare(
+          b.follow_up_date || "9999-99-99",
+        ) || byDateDesc(a, b),
+      topic: (a, b) =>
+        (a.topic || "")
+          .toLowerCase()
+          .localeCompare((b.topic || "").toLowerCase()),
+    };
     return notes
       .filter((n) => {
-        if (noteFilter === "all") return true;
-        const s = (n.status || "open") === "closed" ? "closed" : "open";
-        return s === noteFilter;
+        if (noteFilter !== "all") {
+          const s = (n.status || "open") === "closed" ? "closed" : "open";
+          if (s !== noteFilter) return false;
+        }
+        if (noteArea !== NOTE_AREA_ALL) {
+          const area = (n.project_area || "").trim();
+          if (noteArea === NOTE_AREA_UNSPEC) {
+            if (area) return false;
+          } else if (area.toLowerCase() !== noteArea.toLowerCase()) {
+            return false;
+          }
+        }
+        if (notePriority !== "all" && (n.priority || "Medium") !== notePriority)
+          return false;
+        return true;
       })
       .slice()
-      .sort(
-        (a, b) =>
-          rank(a) - rank(b) || (b.note_date || "").localeCompare(a.note_date || ""),
-      );
-  }, [notes, noteFilter]);
+      .sort(sorters[noteSort]);
+  }, [notes, noteFilter, noteArea, notePriority, noteSort]);
 
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
@@ -468,34 +513,80 @@ export default function History() {
         // ---- Notes tab: read-only mirror of this portfolio's planner notes ----
         <>
           {notes.length > 0 && (
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-2 flex-wrap">
-                <FilterPill
-                  active={noteFilter === "open"}
-                  onClick={() => setNoteFilter("open")}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <FilterPill
+                    active={noteFilter === "open"}
+                    onClick={() => setNoteFilter("open")}
+                  >
+                    Open ({noteCounts.open})
+                  </FilterPill>
+                  <FilterPill
+                    active={noteFilter === "closed"}
+                    onClick={() => setNoteFilter("closed")}
+                  >
+                    Closed ({noteCounts.closed})
+                  </FilterPill>
+                  <FilterPill
+                    active={noteFilter === "all"}
+                    onClick={() => setNoteFilter("all")}
+                  >
+                    All ({notes.length})
+                  </FilterPill>
+                </div>
+                <button
+                  className="btn-ghost text-sm"
+                  onClick={() => nav("/notes")}
+                  title="Open the Planner notes page to add or edit"
                 >
-                  Open ({noteCounts.open})
-                </FilterPill>
-                <FilterPill
-                  active={noteFilter === "closed"}
-                  onClick={() => setNoteFilter("closed")}
-                >
-                  Closed ({noteCounts.closed})
-                </FilterPill>
-                <FilterPill
-                  active={noteFilter === "all"}
-                  onClick={() => setNoteFilter("all")}
-                >
-                  All ({notes.length})
-                </FilterPill>
+                  Edit in Planner notes →
+                </button>
               </div>
-              <button
-                className="btn-ghost text-sm"
-                onClick={() => nav("/notes")}
-                title="Open the Planner notes page to add or edit"
-              >
-                Edit in Planner notes →
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  className="select text-sm w-44"
+                  value={noteArea}
+                  onChange={(e) => setNoteArea(e.target.value)}
+                  title="Project filter"
+                >
+                  <option value={NOTE_AREA_ALL}>All projects</option>
+                  {noteSubProjects.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                  <option value={NOTE_AREA_UNSPEC}>Unspecified</option>
+                </select>
+                <select
+                  className="select text-sm w-32"
+                  value={notePriority}
+                  onChange={(e) =>
+                    setNotePriority(e.target.value as NotePriorityFilter)
+                  }
+                  title="Priority filter"
+                >
+                  <option value="all">Any priority</option>
+                  <option value="High">High</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Low">Low</option>
+                </select>
+                <select
+                  className="select text-sm w-48"
+                  value={noteSort}
+                  onChange={(e) => setNoteSort(e.target.value as NoteSort)}
+                  title="Sort"
+                >
+                  <option value="newest">Sort: Newest first</option>
+                  <option value="oldest">Sort: Oldest first</option>
+                  <option value="priority">Sort: Priority (High→Low)</option>
+                  <option value="followup">Sort: Follow-up (soonest)</option>
+                  <option value="topic">Sort: Topic (A–Z)</option>
+                </select>
+                <span className="text-xs text-brand-gray">
+                  {filteredNotes.length} shown
+                </span>
+              </div>
             </div>
           )}
 
@@ -514,8 +605,8 @@ export default function History() {
             />
           ) : filteredNotes.length === 0 ? (
             <EmptyState
-              title={`No ${noteFilter} notes`}
-              hint="Try a different status filter."
+              title="No notes match these filters"
+              hint="Try a different status, project, or priority."
             />
           ) : (
             <div className="card divide-y divide-brand-lightgray/60">
