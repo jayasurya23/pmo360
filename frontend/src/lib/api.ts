@@ -583,10 +583,18 @@ export const activateProposalVersion = (id: number, vid: number) =>
   apiClient
     .post<ProposalBoard>(`/proposals/${id}/versions/${vid}/activate`)
     .then((r) => r.data);
-export const generateProposalPdf = (id: number, vid: number) =>
+/** kind: "sov" (Schedule of Values), "schedule" (Project Schedule, default),
+ *  or "both" (SOV + Project Schedule in one PDF). */
+export const generateProposalPdf = (
+  id: number,
+  vid: number,
+  kind: "sov" | "schedule" | "both" = "schedule",
+) =>
   apiClient
     .post<{ document_id: number; filename: string; file_size_bytes: number }>(
       `/proposals/${id}/versions/${vid}/pdf`,
+      undefined,
+      { params: { kind } },
     )
     .then((r) => r.data);
 /** Path of the serve-PDF endpoint. The endpoint requires a Bearer token, so

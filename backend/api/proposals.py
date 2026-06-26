@@ -213,6 +213,28 @@ def _merge_pdfs(table_bytes: bytes, gantt_bytes: Optional[bytes]) -> bytes:
         gantt.close()
 
 
+def _merge_pdf_list(parts: "list[bytes]") -> bytes:
+    """Concatenate several single-PDF blobs into one (e.g. SOV page(s) +
+    Project Schedule page(s) + Gantt) preserving order."""
+    parts = [p for p in parts if p]
+    if not parts:
+        return b""
+    if len(parts) == 1:
+        return parts[0]
+    import pikepdf
+    opened = [pikepdf.open(io.BytesIO(p)) for p in parts]
+    try:
+        base = opened[0]
+        for extra in opened[1:]:
+            base.pages.extend(extra.pages)
+        out = io.BytesIO()
+        base.save(out)
+        return out.getvalue()
+    finally:
+        for o in opened:
+            o.close()
+
+
 # Branding logos (#7) — uploaded as data URLs, stored on the Proposal, rendered
 # onto the deliverable header. Raster only (ReportLab/matplotlib render these).
 _LOGO_MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg"}
@@ -263,6 +285,7 @@ def _build_proposal_pdf(
     v: ProposalVersion,
     proposal: "Proposal | None" = None,
     mode: "str | None" = None,
+    kind: "str | None" = None,
 ) -> bytes:
     """Render page-1 milestones table + page-2 Gantt and merge → PDF bytes.
 
@@ -290,14 +313,23 @@ def _build_proposal_pdf(
             info.client_logo_path = client_path
     opts = v.info_json or {}
 
-    # PDF export options (desktop parity): table mode, milestones-only, gantt toggle.
-    # `schedule_table_modes` is the multi-select set bundled in the ZIP; an explicit
-    # `mode` arg overrides it (used per-mode by export_bundle). The single PDF
-    # prefers "both" when selected, else the first selected mode.
-    sel_modes = opts.get("schedule_table_modes") or [opts.get("schedule_table_mode") or "both"]
-    mode = mode or ("both" if "both" in sel_modes else (sel_modes[0] if sel_modes else "both"))
+    # PDF export options (desktop parity): milestones-only + gantt toggle.
     milestones_only = bool(opts.get("milestones_only_pdf", False))
-    include_gantt = bool(opts.get("include_gantt", True))
+    include_gantt_opt = bool(opts.get("include_gantt", True))
+
+    # Decide which table(s) to render + whether the Gantt page is appended:
+    #   mode= (legacy, used per-mode by the ZIP export): one explicit table + Gantt.
+    #   kind="sov"      -> Schedule of Values only (price table, no Gantt).
+    #   kind="both"     -> Schedule of Values, then the dated Project Schedule + Gantt.
+    #   kind="schedule" (default) -> the dated Project Schedule + Gantt.
+    if mode is not None:
+        table_modes, want_gantt = [mode], include_gantt_opt
+    elif kind == "sov":
+        table_modes, want_gantt = ["price_only"], False
+    elif kind == "both":
+        table_modes, want_gantt = ["price_only", "both"], include_gantt_opt
+    else:
+        table_modes, want_gantt = ["both"], include_gantt_opt
 
     # Company logo on both pages: an uploaded company_logo (set above) wins, else
     # any logo stored on the version's info, else the bundled Castillo default.
@@ -305,14 +337,16 @@ def _build_proposal_pdf(
     info.logo_path = logo
 
     try:
-        table_bytes = render_schedule_table_bytes(
-            items, info, disabled_holidays=cfg.disabled_holidays,
-            mode=mode, milestones_only=milestones_only,
-            project_utilization=cfg.utilization_percent,
-        )
+        parts: "list[bytes]" = [
+            render_schedule_table_bytes(
+                items, info, disabled_holidays=cfg.disabled_holidays,
+                mode=m, milestones_only=milestones_only,
+                project_utilization=cfg.utilization_percent,
+            )
+            for m in table_modes
+        ]
 
-        gantt_bytes = None
-        if include_gantt:
+        if want_gantt:
             rows = build_gantt_rows(
                 items,
                 project_utilization=cfg.utilization_percent,
@@ -320,14 +354,14 @@ def _build_proposal_pdf(
                 project_start_date=cfg.project_start,
             )
             if rows:
-                gantt_bytes = render_gantt_bytes(
+                parts.append(render_gantt_bytes(
                     rows, title="Project Schedule",
                     project_title=info.project_title, customer_name=info.customer_name,
                     version=info.version, project_location=info.project_location,
                     project_state=info.project_state, project_size_mw=info.project_size_mw,
                     logo_path=logo,
-                )
-        return _merge_pdfs(table_bytes, gantt_bytes)
+                ))
+        return _merge_pdf_list(parts)
     finally:
         for _p in tmp_logo_paths:
             try:
@@ -629,16 +663,25 @@ def activate_version(
 # ---------------------------------------------------------------------------
 # PDF generate + serve
 # ---------------------------------------------------------------------------
+_PDF_KIND_SUFFIX = {
+    "sov": "Schedule-of-Values",
+    "schedule": "Project-Schedule",
+    "both": "Proposal",
+}
+
+
 @router.post("/{pid}/versions/{vid}/pdf")
 def generate_pdf(
     pid: int, vid: int,
+    kind: str = Query("schedule", description="sov | schedule | both"),
     db: Session = Depends(get_db), actor=Depends(require_db_user),
 ):
     p = _get_proposal(pid, db)
     v = _get_version(p, vid, db)
-    merged = _build_proposal_pdf(v, p)
+    kind = kind if kind in _PDF_KIND_SUFFIX else "schedule"
+    merged = _build_proposal_pdf(v, p, kind=kind)
     title = (v.info_json or {}).get("project_title") or p.title
-    fname = _safe_filename(f"{title}-{v.label}-Project-Schedule") + ".pdf"
+    fname = _safe_filename(f"{title}-{v.label}-{_PDF_KIND_SUFFIX[kind]}") + ".pdf"
     rel = f"proposals/{p.id}/{v.id}/{fname}"
     get_storage().save(rel, merged)
     doc = ProposalDocument(
