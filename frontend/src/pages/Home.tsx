@@ -40,8 +40,44 @@ export default function Home() {
   // Overdue rollup is collapsed to 5 by default; expandable to the full list.
   const [showAllOverdue, setShowAllOverdue] = useState(false);
   const nav = useNavigate();
-  const { settings, resetDraft, scope, me } = useApp();
+  const {
+    settings,
+    resetDraft,
+    scope,
+    me,
+    clients,
+    projects,
+    selectedClientId,
+    selectedProjectId,
+  } = useApp();
   const { isAuthenticated, user } = useAuth();
+
+  // ---- Dashboard scope ----
+  // Narrow the all-portfolio rollups to the header's Client/Portfolio pick.
+  // A specific portfolio filters by project_id; a client (with "All
+  // portfolios") filters by client name; "All clients" shows everything.
+  const scopeClientName = selectedClientId
+    ? clients.find((c) => c.id === selectedClientId)?.name ?? null
+    : null;
+  const scopeProjectName = selectedProjectId
+    ? projects.find((p) => p.id === selectedProjectId)?.name ?? null
+    : null;
+  const inScope = (it: {
+    project_id?: number | null;
+    client_name?: string | null;
+  }) => {
+    if (selectedProjectId) return it.project_id === selectedProjectId;
+    if (scopeClientName) return (it.client_name || "") === scopeClientName;
+    return true;
+  };
+  const rollupHeader = scopeProjectName
+    ? scopeProjectName
+    : scopeClientName
+      ? `${scopeClientName} — all portfolios`
+      : "Across all portfolios";
+  const scopedActions = (data?.open_actions || []).filter(inScope);
+  const scopedAgendas = (data?.upcoming_agendas || []).filter(inScope);
+  const scopedNotes = (data?.follow_up_notes || []).filter(inScope);
 
   // When the user picks "My portfolios" AND they're signed in AND not an
   // admin, the all-portfolios rollup uses /dashboard/mine instead of
@@ -223,14 +259,14 @@ export default function Home() {
       {/* ----- All-portfolio rollups ----- */}
       <div className="pt-2">
         <div className="text-xs uppercase tracking-wider font-semibold text-brand-gray mb-3">
-          Across all portfolios
+          {rollupHeader}
         </div>
 
         <section>
           <h2 className="section-title mb-3">Overdue & Soon Due Actions</h2>
           {loading ? (
             <Loader />
-          ) : (data?.open_actions || []).length === 0 ? (
+          ) : scopedActions.length === 0 ? (
             <EmptyState
               title="Nothing overdue"
               hint="All clear — no rolling actions need attention right now."
@@ -238,20 +274,16 @@ export default function Home() {
           ) : (
             <>
               <ActionsList
-                items={
-                  showAllOverdue
-                    ? data?.open_actions || []
-                    : (data?.open_actions || []).slice(0, 5)
-                }
+                items={showAllOverdue ? scopedActions : scopedActions.slice(0, 5)}
               />
-              {(data?.open_actions || []).length > 5 && (
+              {scopedActions.length > 5 && (
                 <button
                   className="mt-2 text-xs font-semibold text-brand-red hover:underline"
                   onClick={() => setShowAllOverdue((v) => !v)}
                 >
                   {showAllOverdue
                     ? "Show fewer"
-                    : `Show all ${(data?.open_actions || []).length} →`}
+                    : `Show all ${scopedActions.length} →`}
                 </button>
               )}
             </>
@@ -262,7 +294,7 @@ export default function Home() {
           <h2 className="section-title mb-3">Upcoming Pre-Meeting Agendas</h2>
           {loading ? (
             <Loader />
-          ) : (data?.upcoming_agendas || []).length === 0 ? (
+          ) : scopedAgendas.length === 0 ? (
             <EmptyState
               title="No upcoming agendas"
               hint="Use the Next Agenda page to plan an upcoming meeting."
@@ -277,7 +309,7 @@ export default function Home() {
             />
           ) : (
             <AgendasList
-              items={data?.upcoming_agendas || []}
+              items={scopedAgendas}
               onOpen={(id) => nav(`/next-agenda?agenda=${id}`)}
             />
           )}
@@ -287,13 +319,13 @@ export default function Home() {
           <h2 className="section-title mb-3">Follow-up Notes</h2>
           {loading ? (
             <Loader />
-          ) : (data?.follow_up_notes || []).length === 0 ? (
+          ) : scopedNotes.length === 0 ? (
             <EmptyState
               title="No follow-ups"
               hint="Notes with a follow-up date appear here when their date arrives."
             />
           ) : (
-            <NotesList items={data?.follow_up_notes || []} />
+            <NotesList items={scopedNotes} />
           )}
         </section>
       </div>

@@ -611,7 +611,7 @@ function ContextSwitcher() {
         ariaLabel="Client"
         value={selectedClientId ? String(selectedClientId) : ""}
         onChange={(v) => setSelectedClientId(v ? Number(v) : null)}
-        placeholder="Pick a client"
+        placeholder="All clients"
         options={clients.map((c) => ({ value: c.id, label: c.name }))}
       />
       <span className="text-slate-300 select-none" aria-hidden="true">
@@ -621,7 +621,7 @@ function ContextSwitcher() {
         ariaLabel="Portfolio"
         value={selectedProjectId ? String(selectedProjectId) : ""}
         onChange={(v) => setSelectedProjectId(v ? Number(v) : null)}
-        placeholder={projects.length ? "Pick a portfolio" : "No portfolios"}
+        placeholder={projects.length ? "All portfolios" : "No portfolios"}
         disabled={!projects.length}
         options={projects.map((p) => ({ value: p.id, label: p.name }))}
       />
