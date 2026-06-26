@@ -7,7 +7,6 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
 import {
   listChangeOrders,
-  getChangeOrder,
   createChangeOrder,
   updateChangeOrder,
   submitChangeOrder,
@@ -24,18 +23,33 @@ import clsx from "clsx";
 type Tab = "create" | "pending" | "approved";
 type RateType = "fixed" | "hourly";
 
+// Standard Castillo hourly billing rates (from the request-form rate card).
+// Picking a role pre-fills the rate; the rate stays editable per line.
+const RATE_CARD: { role: string; rate: number }[] = [
+  { role: "Project Engineer", rate: 250 },
+  { role: "Senior Engineer", rate: 350 },
+  { role: "Project Manager", rate: 300 },
+  { role: "Director", rate: 600 },
+  { role: "PMO", rate: 300 },
+  { role: "Administrative Tasks", rate: 150 },
+];
+
 // Editor row — numeric fields kept as strings for clean controlled inputs.
 interface LineRow {
+  id: string;
   details: string;
   cost: string;
+  role: string;
   hourly_rate: string;
   hours: string;
   internal_notes: string;
 }
 
 const blankLine = (): LineRow => ({
+  id: newLineId(),
   details: "",
   cost: "",
+  role: "",
   hourly_rate: "",
   hours: "",
   internal_notes: "",
@@ -52,7 +66,12 @@ const num = (s: string): number | null => {
   return Number.isFinite(v) ? v : null;
 };
 
-const today = () => new Date().toISOString().slice(0, 10);
+// Local calendar date (avoid the UTC off-by-one from toISOString in US evenings).
+const today = () => format(new Date(), "yyyy-MM-dd");
+
+// Stable ids for line rows so React keys survive insert/delete (focus/IME safe).
+let lineSeq = 0;
+const newLineId = () => `l${++lineSeq}`;
 
 export default function ChangeOrders() {
   const { currentProject, clients, selectedClientId } = useApp();
@@ -72,10 +91,14 @@ export default function ChangeOrders() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingVersion, setEditingVersion] = useState<number | null>(null);
   const [rateType, setRateType] = useState<RateType>("fixed");
+  const [rateChosen, setRateChosen] = useState(false); // gate: pick fixed/hourly first
   const [coVersion, setCoVersion] = useState("V1");
   const [requestDate, setRequestDate] = useState(today());
   const [requestedBy, setRequestedBy] = useState("");
   const [requestedByUserId, setRequestedByUserId] = useState<number | null>(null);
+  const [location, setLocation] = useState("");
+  const [stateCode, setStateCode] = useState("");
+  const [sizeMw, setSizeMw] = useState("");
   const [title, setTitle] = useState("");
   const [lines, setLines] = useState<LineRow[]>([blankLine()]);
   const [saving, setSaving] = useState(false);
@@ -117,10 +140,14 @@ export default function ChangeOrders() {
     setEditingId(null);
     setEditingVersion(null);
     setRateType("fixed");
+    setRateChosen(false);
     setCoVersion("V1");
     setRequestDate(today());
     setRequestedBy("");
     setRequestedByUserId(null);
+    setLocation("");
+    setStateCode("");
+    setSizeMw("");
     setTitle("");
     setLines([blankLine()]);
     setErr(null);
@@ -130,15 +157,21 @@ export default function ChangeOrders() {
     setEditingId(co.id);
     setEditingVersion(co.version ?? null);
     setRateType((co.rate_type as RateType) || "fixed");
+    setRateChosen(true);
     setCoVersion(co.co_version || "V1");
     setRequestDate(co.request_date || today());
     setRequestedBy(co.requested_by || "");
     setRequestedByUserId(co.requested_by_user_id ?? null);
+    setLocation(co.location || "");
+    setStateCode(co.state || "");
+    setSizeMw(co.size_mw || "");
     setTitle(co.title || "");
     setLines(
       (co.line_items.length ? co.line_items : [{}]).map((li) => ({
+        id: newLineId(),
         details: li.details || "",
         cost: li.cost != null ? String(li.cost) : "",
+        role: li.role || "",
         hourly_rate: li.hourly_rate != null ? String(li.hourly_rate) : "",
         hours: li.hours != null ? String(li.hours) : "",
         internal_notes: li.internal_notes || "",
@@ -157,11 +190,15 @@ export default function ChangeOrders() {
       request_date: requestDate || null,
       requested_by: requestedBy || null,
       requested_by_user_id: requestedByUserId,
+      location: location || null,
+      state: stateCode || null,
+      size_mw: sizeMw || null,
       line_items: lines
         .filter(
           (l) =>
             l.details.trim() ||
             l.cost ||
+            l.role ||
             l.hourly_rate ||
             l.hours ||
             l.internal_notes.trim(),
@@ -169,6 +206,7 @@ export default function ChangeOrders() {
         .map((l) => ({
           details: l.details,
           cost: rateType === "fixed" ? num(l.cost) : null,
+          role: rateType === "hourly" ? l.role || null : null,
           hourly_rate: rateType === "hourly" ? num(l.hourly_rate) : null,
           hours: rateType === "hourly" ? num(l.hours) : null,
           internal_notes: l.internal_notes || null,
@@ -295,7 +333,15 @@ export default function ChangeOrders() {
       {/* ============ CREATE / EDIT ============ */}
       {tab === "create" && (
         <div className="space-y-5">
-          <section className="card p-5 space-y-4">
+          {!editingId && !rateChosen ? (
+            <RateChooser
+              onPick={(rt) => {
+                setRateType(rt);
+                setRateChosen(true);
+              }}
+            />
+          ) : (
+            <section className="card p-5 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="section-title">
                 {editingId ? "Edit change order" : "New change order"}
@@ -340,6 +386,33 @@ export default function ChangeOrders() {
                 />
               </label>
               <label className="block">
+                <span className="label">Location</span>
+                <input
+                  className="input"
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  placeholder="City / site"
+                />
+              </label>
+              <label className="block">
+                <span className="label">State</span>
+                <input
+                  className="input"
+                  value={stateCode}
+                  onChange={(e) => setStateCode(e.target.value)}
+                  placeholder="e.g. TN"
+                />
+              </label>
+              <label className="block">
+                <span className="label">Size (MW)</span>
+                <input
+                  className="input"
+                  value={sizeMw}
+                  onChange={(e) => setSizeMw(e.target.value)}
+                  placeholder="e.g. 8"
+                />
+              </label>
+              <label className="block">
                 <span className="label">Requested by</span>
                 <OwnerPicker
                   value={requestedBy}
@@ -370,7 +443,18 @@ export default function ChangeOrders() {
                   <button
                     key={rt}
                     type="button"
-                    onClick={() => setRateType(rt)}
+                    onClick={() => {
+                      setRateType(rt);
+                      // drop the now-irrelevant per-line values so a flipped line
+                      // doesn't carry stale cost / rate+hours into the payload.
+                      setLines((ls) =>
+                        ls.map((l) =>
+                          rt === "fixed"
+                            ? { ...l, role: "", hourly_rate: "", hours: "" }
+                            : { ...l, cost: "" },
+                        ),
+                      );
+                    }}
                     className={
                       rateType === rt
                         ? "px-3 py-1.5 bg-brand-red text-white font-semibold"
@@ -397,7 +481,7 @@ export default function ChangeOrders() {
                     : num(l.cost) || 0;
                 return (
                   <div
-                    key={idx}
+                    key={l.id}
                     className="rounded-lg border border-slate-200 p-3 space-y-2"
                   >
                     <div className="flex items-start gap-2">
@@ -421,21 +505,42 @@ export default function ChangeOrders() {
                         />
                       ) : (
                         <>
+                          <select
+                            className="input w-36 text-sm"
+                            value={l.role}
+                            title="Pick a rate-card role to pre-fill the rate"
+                            onChange={(e) => {
+                              const role = e.target.value;
+                              const card = RATE_CARD.find((r) => r.role === role);
+                              set(
+                                card
+                                  ? { role, hourly_rate: String(card.rate) }
+                                  : { role },
+                              );
+                            }}
+                          >
+                            <option value="">Role…</option>
+                            {RATE_CARD.map((r) => (
+                              <option key={r.role} value={r.role}>
+                                {r.role} (${r.rate})
+                              </option>
+                            ))}
+                          </select>
                           <input
-                            className="input w-24 text-right"
+                            className="input w-20 text-right"
                             inputMode="decimal"
                             placeholder="Rate"
                             value={l.hourly_rate}
                             onChange={(e) => set({ hourly_rate: e.target.value })}
                           />
                           <input
-                            className="input w-20 text-right"
+                            className="input w-16 text-right"
                             inputMode="decimal"
                             placeholder="Hrs"
                             value={l.hours}
                             onChange={(e) => set({ hours: e.target.value })}
                           />
-                          <span className="w-28 text-right text-sm font-medium text-brand-black pt-2 tabular-nums">
+                          <span className="w-24 text-right text-sm font-medium text-brand-black pt-2 tabular-nums">
                             {money(lineTotal)}
                           </span>
                         </>
@@ -495,6 +600,7 @@ export default function ChangeOrders() {
               </div>
             </div>
           </section>
+          )}
 
           {/* saved drafts */}
           {drafts.length > 0 && (
@@ -685,6 +791,47 @@ function CoStatusBadge({ status }: { status: string }) {
     >
       {c.label}
     </span>
+  );
+}
+
+// First step when creating: pick how the change order is priced.
+function RateChooser({ onPick }: { onPick: (rt: RateType) => void }) {
+  const opts: { rt: RateType; label: string; blurb: string }[] = [
+    {
+      rt: "fixed",
+      label: "Fixed $$",
+      blurb: "One cost per line. Best for lump-sum scope changes.",
+    },
+    {
+      rt: "hourly",
+      label: "Hourly",
+      blurb: "Rate × hours per line, with the standard Castillo rate card.",
+    },
+  ];
+  return (
+    <section className="card p-6 space-y-4">
+      <div>
+        <h3 className="section-title">Start a change order</h3>
+        <p className="text-sm text-brand-gray mt-1">
+          Pick how this change order is priced — you can fill in the details next.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {opts.map((o) => (
+          <button
+            key={o.rt}
+            type="button"
+            onClick={() => onPick(o.rt)}
+            className="text-left rounded-xl border border-brand-lightgray hover:border-brand-red hover:bg-brand-nearwhite/40 p-5 transition"
+          >
+            <div className="text-base font-semibold text-brand-black">
+              {o.label}
+            </div>
+            <div className="text-sm text-brand-gray mt-1">{o.blurb}</div>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 

@@ -673,6 +673,7 @@ export interface ChangeOrderLineItem {
   order_index?: number;
   details?: string | null;
   cost?: number | null; // fixed mode
+  role?: string | null; // hourly mode: rate-card role label
   hourly_rate?: number | null; // hourly mode
   hours?: number | null; // hourly mode
   internal_notes?: string | null;
@@ -693,6 +694,9 @@ export interface ChangeOrder {
   approved_by_user_id?: number | null;
   approved_at?: string | null;
   client_name?: string | null;
+  location?: string | null;
+  state?: string | null;
+  size_mw?: string | null;
   notes?: string | null;
   total_amount?: number | null;
   version?: number;

@@ -980,6 +980,7 @@ export const fetchBriefing = () =>
 export interface ChangeOrderLineItemInput {
   details?: string;
   cost?: number | null;
+  role?: string | null;
   hourly_rate?: number | null;
   hours?: number | null;
   internal_notes?: string | null;
@@ -992,6 +993,9 @@ export interface ChangeOrderCreate {
   request_date?: string | null;
   requested_by?: string | null;
   requested_by_user_id?: number | null;
+  location?: string | null;
+  state?: string | null;
+  size_mw?: string | null;
   notes?: string | null;
   line_items: ChangeOrderLineItemInput[];
 }

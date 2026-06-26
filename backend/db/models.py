@@ -813,6 +813,9 @@ class ChangeOrder(Base):
     approved_by_user_id = Column(Integer, ForeignKey("users.id"))
     approved_at = Column(DateTime)
     client_name = Column(String(200))     # snapshot for the PDF + History
+    location = Column(String(200))         # PDF header (e.g. "Lawrenceburg")
+    state = Column(String(50))             # PDF header (e.g. "TN")
+    size_mw = Column(String(50))           # PDF header (e.g. "8") — free text
     notes = Column(Text)
     total_amount = Column(Float, default=0.0)
     version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic lock
@@ -844,6 +847,7 @@ class ChangeOrderLineItem(Base):
     order_index = Column(Integer, default=0)
     details = Column(Text)
     cost = Column(Float)            # fixed mode
+    role = Column(String(100))      # hourly mode: rate-card role label (informational)
     hourly_rate = Column(Float)     # hourly mode
     hours = Column(Float)           # hourly mode
     internal_notes = Column(Text)

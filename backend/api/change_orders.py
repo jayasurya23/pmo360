@@ -45,7 +45,7 @@ def _apply_line_items(co: ChangeOrder, items: "list[ChangeOrderLineItemIn]") -> 
     for i, it in enumerate(items):
         co.line_items.append(ChangeOrderLineItem(
             order_index=i, details=it.details or "",
-            cost=it.cost, hourly_rate=it.hourly_rate, hours=it.hours,
+            cost=it.cost, role=it.role, hourly_rate=it.hourly_rate, hours=it.hours,
             internal_notes=it.internal_notes,
         ))
 
@@ -105,6 +105,9 @@ def create_change_order(
         requested_by=payload.requested_by,
         requested_by_user_id=payload.requested_by_user_id,
         client_name=(project.client.name if project.client else None),
+        location=payload.location,
+        state=payload.state,
+        size_mw=payload.size_mw,
         notes=payload.notes,
         created_by_id=actor.id if actor else None,
         updated_by_id=actor.id if actor else None,
@@ -133,7 +136,8 @@ def update_change_order(
         })
     sent = payload.model_fields_set
     for field in ("co_version", "title", "rate_type", "request_date",
-                  "requested_by", "requested_by_user_id", "notes"):
+                  "requested_by", "requested_by_user_id", "location", "state",
+                  "size_mw", "notes"):
         if field in sent:
             setattr(co, field, getattr(payload, field))
     if co.rate_type not in _VALID_RATE:
