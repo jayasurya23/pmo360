@@ -9,18 +9,20 @@ import {
   listMeetings,
   listAgendas,
   listNotes,
+  listChangeOrders,
+  fetchChangeOrderPdfBlob,
   deleteMeeting,
   deleteAgenda,
   updateMeetingMeta,
   meetingDocUrl,
   getMeeting,
 } from "@/lib/api";
-import type { Meeting, Agenda, Note } from "@/lib/types";
+import type { Meeting, Agenda, Note, ChangeOrder } from "@/lib/types";
 import { mergeSubProjects } from "@/lib/subprojects";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
-type Tab = "meetings" | "agendas" | "notes";
+type Tab = "meetings" | "agendas" | "notes" | "change_orders";
 type StatusFilter = "all" | "draft" | "final" | "sent";
 type NoteStatusFilter = "all" | "open" | "closed";
 type NotePriorityFilter = "all" | "High" | "Medium" | "Low";
@@ -44,6 +46,7 @@ export default function History() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [agendas, setAgendas] = useState<Agenda[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
+  const [changeOrders, setChangeOrders] = useState<ChangeOrder[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [noteFilter, setNoteFilter] = useState<NoteStatusFilter>("open");
@@ -64,11 +67,13 @@ export default function History() {
       // Mirror the portfolio's planner notes here (read-only) — same source
       // as the Notes page, so History is a one-stop review surface.
       listNotes(currentProject.id).catch(() => [] as Note[]),
+      listChangeOrders(currentProject.id).catch(() => [] as ChangeOrder[]),
     ])
-      .then(([m, a, n]) => {
+      .then(([m, a, n, co]) => {
         setMeetings(m);
         setAgendas(a);
         setNotes(n);
+        setChangeOrders(co);
       })
       .finally(() => setLoading(false));
   }, [currentProject?.id]);
@@ -297,6 +302,12 @@ export default function History() {
         <TabBtn active={tab === "notes"} onClick={() => setTab("notes")}>
           Notes ({notes.length})
         </TabBtn>
+        <TabBtn
+          active={tab === "change_orders"}
+          onClick={() => setTab("change_orders")}
+        >
+          Change Orders ({changeOrders.length})
+        </TabBtn>
       </div>
 
       {loading ? (
@@ -509,7 +520,7 @@ export default function History() {
             ))}
           </div>
         )
-      ) : (
+      ) : tab === "notes" ? (
         // ---- Notes tab: read-only mirror of this portfolio's planner notes ----
         <>
           {notes.length > 0 && (
@@ -616,8 +627,107 @@ export default function History() {
             </div>
           )}
         </>
+      ) : (
+        // ---- Change Orders tab: read-only mirror of this portfolio's COs ----
+        changeOrders.length === 0 ? (
+          <EmptyState
+            title="No change orders yet"
+            hint="Create change orders on the Change Orders page."
+            action={
+              <button
+                className="btn-primary mt-2"
+                onClick={() => nav("/change-orders")}
+              >
+                Open Change Orders
+              </button>
+            }
+          />
+        ) : (
+          <div className="card divide-y divide-brand-lightgray/60">
+            {changeOrders.map((co) => (
+              <div
+                key={co.id}
+                className="px-5 py-3 grid grid-cols-[1fr_auto] gap-4 items-center"
+              >
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-brand-black flex items-center gap-2">
+                    <span>
+                      CO-{co.co_number}
+                      <span className="text-brand-gray font-normal">
+                        {" "}
+                        · {co.co_version}
+                      </span>
+                    </span>
+                    <CoHistoryBadge status={co.status} />
+                    <span className="text-xs px-1.5 py-0.5 rounded bg-brand-nearwhite text-brand-gray">
+                      {co.rate_type === "hourly" ? "Hourly" : "Fixed"}
+                    </span>
+                  </div>
+                  <div className="text-xs text-brand-gray mt-0.5">
+                    <b className="text-brand-black">{coMoney(co.total_amount)}</b>
+                    {co.requested_by ? ` · ${co.requested_by}` : ""}
+                    {co.status === "approved" && co.approved_by
+                      ? ` · approved by ${co.approved_by}`
+                      : ""}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {co.status === "approved" && (
+                    <button
+                      className="btn-ghost"
+                      onClick={() => void downloadCoPdf(co)}
+                    >
+                      PDF
+                    </button>
+                  )}
+                  <button
+                    className="btn-ghost"
+                    onClick={() => nav("/change-orders")}
+                  >
+                    Open
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )
       )}
     </div>
+  );
+}
+
+const coMoney = (n: number | null | undefined) =>
+  `$${(Number(n) || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+async function downloadCoPdf(co: ChangeOrder) {
+  const blob = await fetchChangeOrderPdfBlob(co.id);
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${co.client_name || "Castillo"}-CO-${co.co_number}-${
+    co.co_version || "V1"
+  }.pdf`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function CoHistoryBadge({ status }: { status: string }) {
+  const cfg: Record<string, { label: string; bg: string; text: string }> = {
+    draft: { label: "Draft", bg: "#e6e7e8", text: "#4d4d4f" },
+    pending: { label: "Pending", bg: "#f3eecf", text: "#7a7320" },
+    approved: { label: "Approved", bg: "#d6f0e0", text: "#278747" },
+  };
+  const c = cfg[status] || cfg.draft;
+  return (
+    <span
+      className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
+      style={{ background: c.bg, color: c.text }}
+    >
+      {c.label}
+    </span>
   );
 }
 

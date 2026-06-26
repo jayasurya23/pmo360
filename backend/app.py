@@ -27,7 +27,7 @@ from db import init_db
 from api import (
     clients, projects, meetings, actions, notes, agendas, schedules,
     roster, dashboard, parse, documents, search, me, users, templates,
-    attachments, members, calendar, lead, timeline, proposals,
+    attachments, members, calendar, lead, timeline, proposals, change_orders,
     settings as settings_router,
 )
 
@@ -85,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(lead.router)
     app.include_router(timeline.router)
     app.include_router(proposals.router)
+    app.include_router(change_orders.router)
 
     # ---- Health check ----
     @app.get("/api/health", tags=["health"])

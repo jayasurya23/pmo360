@@ -37,6 +37,8 @@ import type {
   ProposalLogos,
   ProposalToTimelineResult,
   ProposalTimelineMilestones,
+  ChangeOrder,
+  ChangeOrderLineItem,
 } from "./types";
 
 // Honor VITE_API_BASE at build-time so the same artefact can talk to
@@ -972,3 +974,65 @@ export interface Briefing {
 }
 export const fetchBriefing = () =>
   apiClient.get<Briefing>("/dashboard/briefing").then((r) => r.data);
+
+// ---------- change orders ----------
+/** Line-item payload for create/update (server replaces the full list). */
+export interface ChangeOrderLineItemInput {
+  details?: string;
+  cost?: number | null;
+  hourly_rate?: number | null;
+  hours?: number | null;
+  internal_notes?: string | null;
+}
+export interface ChangeOrderCreate {
+  project_id: number;
+  co_version?: string;
+  title?: string | null;
+  rate_type: "fixed" | "hourly";
+  request_date?: string | null;
+  requested_by?: string | null;
+  requested_by_user_id?: number | null;
+  notes?: string | null;
+  line_items: ChangeOrderLineItemInput[];
+}
+
+export const listChangeOrders = (
+  projectId: number,
+  status?: "draft" | "pending" | "approved",
+) =>
+  apiClient
+    .get<ChangeOrder[]>("/change-orders", {
+      params: { project_id: projectId, ...(status ? { status } : {}) },
+    })
+    .then((r) => r.data);
+
+export const getChangeOrder = (id: number) =>
+  apiClient.get<ChangeOrder>(`/change-orders/${id}`).then((r) => r.data);
+
+export const createChangeOrder = (payload: ChangeOrderCreate) =>
+  apiClient.post<ChangeOrder>("/change-orders", payload).then((r) => r.data);
+
+export const updateChangeOrder = (
+  id: number,
+  payload: Partial<ChangeOrderCreate> & {
+    expected_version?: number;
+    line_items?: ChangeOrderLineItemInput[];
+  },
+) => apiClient.patch<ChangeOrder>(`/change-orders/${id}`, payload).then((r) => r.data);
+
+export const submitChangeOrder = (id: number) =>
+  apiClient.post<ChangeOrder>(`/change-orders/${id}/submit`).then((r) => r.data);
+export const approveChangeOrder = (id: number) =>
+  apiClient.post<ChangeOrder>(`/change-orders/${id}/approve`).then((r) => r.data);
+export const rejectChangeOrder = (id: number) =>
+  apiClient.post<ChangeOrder>(`/change-orders/${id}/reject`).then((r) => r.data);
+export const deleteChangeOrder = (id: number) =>
+  apiClient.delete(`/change-orders/${id}`);
+
+/** Authed blob fetch of the branded CO PDF (require_db_user behind it). */
+export const fetchChangeOrderPdfBlob = async (id: number) => {
+  const res = await apiClient.get(`/change-orders/${id}/pdf/file`, {
+    responseType: "blob",
+  });
+  return res.data as Blob;
+};

@@ -666,3 +666,40 @@ export interface Settings {
   openai: { model: string | null };
   brand: Record<string, any>;
 }
+
+// ---------- Change Orders ----------
+export interface ChangeOrderLineItem {
+  id?: number;
+  order_index?: number;
+  details?: string | null;
+  cost?: number | null; // fixed mode
+  hourly_rate?: number | null; // hourly mode
+  hours?: number | null; // hourly mode
+  internal_notes?: string | null;
+}
+
+export interface ChangeOrder {
+  id: number;
+  project_id: number;
+  co_number: number;
+  co_version?: string | null;
+  title?: string | null;
+  rate_type: "fixed" | "hourly";
+  status: "draft" | "pending" | "approved";
+  request_date?: string | null;
+  requested_by?: string | null;
+  requested_by_user_id?: number | null;
+  approved_by?: string | null;
+  approved_by_user_id?: number | null;
+  approved_at?: string | null;
+  client_name?: string | null;
+  notes?: string | null;
+  total_amount?: number | null;
+  version?: number;
+  line_items: ChangeOrderLineItem[];
+  created_by?: UserStub | null;
+  updated_by?: UserStub | null;
+  created_at?: string;
+  updated_at?: string;
+  project_name?: string | null;
+}

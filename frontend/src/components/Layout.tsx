@@ -30,6 +30,7 @@ const PRIMARY_NAV: NavItem[] = [
   // /schedule route stays mounted so old deep links still resolve.
   { to: "/timeline", label: "Timeline" },
   { to: "/proposals", label: "Proposals" },
+  { to: "/change-orders", label: "Change Orders" },
 ];
 
 // The Lead dashboard no longer has its own tab — the top-left PMO 360 logo links
