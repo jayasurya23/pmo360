@@ -3094,13 +3094,18 @@ function Row({
       </td>
       <td className="px-1 py-1.5 text-center">
         {isLeaf ? (
-          <input
-            type="number"
-            className="w-20 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums"
-            value={node.price}
-            disabled={isLocked}
-            onChange={(e) => onUpdate(rowKey, { price: Number(e.target.value) || 0 })}
-          />
+          <div className="relative inline-block">
+            <span className="pointer-events-none absolute left-1 top-1/2 -translate-y-1/2 text-xs text-slate-400">
+              $
+            </span>
+            <input
+              type="number"
+              className="w-20 rounded border border-slate-200 pl-3 pr-1 py-0.5 text-xs text-right tabular-nums"
+              value={node.price}
+              disabled={isLocked}
+              onChange={(e) => onUpdate(rowKey, { price: Number(e.target.value) || 0 })}
+            />
+          </div>
         ) : (
           <span
             className="block w-20 text-right tabular-nums text-xs px-1"
