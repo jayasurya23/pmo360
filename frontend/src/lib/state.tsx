@@ -315,16 +315,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // (Home, briefing) which call fetchMyDashboard / fetchDashboard
   // explicitly — it doesn't need to filter the picker too.
   useEffect(() => {
-    if (!selectedClientId) {
-      setProjects([]);
-      return;
-    }
     let cancelled = false;
     (async () => {
       try {
-        const ps = await api.listProjects(selectedClientId, false);
+        // "All clients" (no client selected) -> load every portfolio so the
+        // portfolio dropdown still works and the dashboard can aggregate
+        // across clients. A stale transient null on first render is harmless:
+        // the `cancelled` guard drops its result once a client resolves.
+        const ps = selectedClientId
+          ? await api.listProjects(selectedClientId, false)
+          : await api.listAllPortfolios(false);
         if (cancelled) return;
         setProjects(ps);
+        if (!selectedClientId) {
+          // Stay on the aggregate ("All portfolios") view unless the URL pins
+          // a specific portfolio — never auto-pick under "All clients".
+          const pick = findBySlug(ps, searchParams.get("portfolio"));
+          _setSelectedProjectId(pick ? pick.id : null);
+          return;
+        }
         // Same resolution priority as clients.
         const urlSlug = searchParams.get("portfolio");
         let pick: Project | null = findBySlug(ps, urlSlug);
