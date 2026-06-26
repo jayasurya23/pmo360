@@ -589,6 +589,8 @@ export default function Proposals() {
   const [showPdf, setShowPdf] = useState(false);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfKind, setPdfKind] = useState<"sov" | "schedule" | "both">("schedule");
+  const [showPdfChooser, setShowPdfChooser] = useState(false);
   const [showSync, setShowSync] = useState(false);
 
   const proposalId = board?.proposal.id ?? null;
@@ -1395,13 +1397,17 @@ export default function Proposals() {
   }
 
   // ---- pdf ----
-  async function openPdf() {
+  // `kind` picks the deliverable: "sov" (Schedule of Values table only),
+  // "schedule" (dated Project Schedule + Gantt), or "both" (SOV + schedule).
+  async function openPdf(kind: "sov" | "schedule" | "both") {
     if (!proposalId || !activeVersionId) return;
+    setShowPdfChooser(false);
+    setPdfKind(kind);
     setShowPdf(true);
     setPdfBusy(true);
     setPdfUrl(null);
     try {
-      await generateProposalPdf(proposalId, activeVersionId);
+      await generateProposalPdf(proposalId, activeVersionId, kind);
       const blob = await fetchProposalPdfBlob(proposalId, activeVersionId);
       setPdfUrl(URL.createObjectURL(blob));
     } catch (e: any) {
@@ -1411,6 +1417,12 @@ export default function Proposals() {
       setPdfBusy(false);
     }
   }
+  const pdfKindLabel =
+    pdfKind === "sov"
+      ? "Schedule of Values"
+      : pdfKind === "both"
+        ? "SOV + Project Schedule"
+        : "Project Schedule";
   function closePdf() {
     setShowPdf(false);
     if (pdfUrl) URL.revokeObjectURL(pdfUrl);
@@ -1418,11 +1430,17 @@ export default function Proposals() {
   }
   function downloadPdf() {
     if (!pdfUrl || !board) return;
+    const suffix =
+      pdfKind === "sov"
+        ? "Schedule-of-Values"
+        : pdfKind === "both"
+          ? "Proposal"
+          : "Project-Schedule";
     const a = document.createElement("a");
     a.href = pdfUrl;
     a.download = `${board.proposal.title || "Proposal"}-${
       activeVersion?.label || "V1"
-    }-Project-Schedule.pdf`;
+    }-${suffix}.pdf`;
     a.click();
   }
 
@@ -2131,7 +2149,10 @@ export default function Proposals() {
             <button className="btn-ghost text-xs py-1" onClick={() => void saveZip()}>
               🗜 ZIP
             </button>
-            <button className="btn-ghost text-xs py-1" onClick={openPdf}>
+            <button
+              className="btn-ghost text-xs py-1"
+              onClick={() => setShowPdfChooser(true)}
+            >
               📄 PDF
             </button>
             <button
@@ -2327,8 +2348,52 @@ export default function Proposals() {
         />
       )}
 
+      {showPdfChooser && (
+        <Modal title="Generate PDF" onClose={() => setShowPdfChooser(false)}>
+          <p className="text-sm text-brand-gray mb-3">
+            Which deliverable do you want to generate?
+          </p>
+          <div className="space-y-2">
+            <button
+              type="button"
+              className="w-full text-left border border-brand-lightgray/60 rounded-lg p-3 hover:border-brand-red transition"
+              onClick={() => void openPdf("sov")}
+            >
+              <div className="font-semibold text-brand-black">
+                📄 Schedule of Values
+              </div>
+              <div className="text-xs text-brand-gray">
+                The price / value table only — no schedule or Gantt.
+              </div>
+            </button>
+            <button
+              type="button"
+              className="w-full text-left border border-brand-lightgray/60 rounded-lg p-3 hover:border-brand-red transition"
+              onClick={() => void openPdf("schedule")}
+            >
+              <div className="font-semibold text-brand-black">
+                📅 Project Schedule
+              </div>
+              <div className="text-xs text-brand-gray">
+                The dated schedule table + Gantt chart.
+              </div>
+            </button>
+            <button
+              type="button"
+              className="w-full text-left border border-brand-lightgray/60 rounded-lg p-3 hover:border-brand-red transition"
+              onClick={() => void openPdf("both")}
+            >
+              <div className="font-semibold text-brand-black">📑 Both</div>
+              <div className="text-xs text-brand-gray">
+                Schedule of Values + Project Schedule in one PDF.
+              </div>
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {showPdf && (
-        <Modal title="Project Schedule PDF" onClose={closePdf} wide>
+        <Modal title={`${pdfKindLabel} PDF`} onClose={closePdf} wide>
           {pdfBusy && (
             <div className="py-10 text-center text-sm text-brand-gray">
               Generating PDF…
@@ -2609,13 +2674,13 @@ function SummaryPanel({ summary }: { summary: ProjectSummary }) {
               label="Project Start"
               value={fmtSummaryDate(summary.start)}
             />
+            <SummaryRow label="Project End" value={fmtSummaryDate(summary.end)} />
             <SummaryRow
-              label="Project End"
+              label="Project Duration"
               value={
-                fmtSummaryDate(summary.end) +
-                (summary.calendarDays != null
-                  ? ` (${summary.calendarDays} calendar days)`
-                  : "")
+                summary.calendarDays != null
+                  ? `${summary.calendarDays} calendar days`
+                  : "—"
               }
             />
           </div>
@@ -2655,8 +2720,10 @@ function SummaryPanel({ summary }: { summary: ProjectSummary }) {
 }
 
 function SummaryRow({ label, value }: { label: string; value: string }) {
+  // A ruled row (thin divider under each pair) makes it easy to track which
+  // label on the left maps to which value on the right.
   return (
-    <div className="flex justify-between gap-4">
+    <div className="flex justify-between gap-4 border-b border-brand-lightgray/40 py-1 last:border-0">
       <span className="text-brand-gray">{label}</span>
       <span className="text-brand-black font-medium tabular-nums">{value}</span>
     </div>

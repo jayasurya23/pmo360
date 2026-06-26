@@ -225,7 +225,8 @@ def _create_table_data(styles, template_items, info, mode, milestones_only,
 
     # ---- header row ----
     if mode == "price_only":
-        header = [Paragraph("Deliverables", th_left), Paragraph("Price", th_right)]
+        # "Schedule of Values" titles the price-only deliverable (the SOV PDF).
+        header = [Paragraph("Schedule of Values", th_left), Paragraph("Price", th_right)]
     elif mode == "dates_only":
         header = [Paragraph("Project Schedule", th_left), Paragraph("Days", th_left),
                   Paragraph("Start", th_left), Paragraph("Finish", th_left)]
