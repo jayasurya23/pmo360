@@ -51,6 +51,17 @@ from .models import ProjectInfo
 VALID_MODES = ("both", "price_only", "dates_only", "no_dates", "duration_only")
 
 
+def _table_title(mode: str) -> str:
+    """The centered red title above the table (V9 parity). Reflects the columns:
+    price only -> 'Schedule of Value'; schedule without price -> 'Project
+    Schedule'; schedule + price -> 'Project Schedule & Schedule of Value'."""
+    if mode == "price_only":
+        return "Schedule of Value"
+    if mode in ("dates_only", "duration_only"):
+        return "Project Schedule"
+    return "Project Schedule & Schedule of Value"
+
+
 # ---------------------------------------------------------------------------
 # Styles + per-mode column widths (V9 _setup_reportlab_styles)
 # ---------------------------------------------------------------------------
@@ -85,6 +96,8 @@ def _setup_reportlab_styles(mode: str):
 
     styles = getSampleStyleSheet()
     table_styles = {
+        # Centered deliverable title rendered above the table (V9 parity).
+        "doc_title": ParagraphStyle("doc_title_style", parent=styles["Normal"], fontName=font_name_bold, fontSize=14, leading=18, alignment=1, textColor=colors.HexColor("#991f2b")),
         "header_project": ParagraphStyle("header_project_style", parent=styles["Normal"], fontName=font_name_bold, fontSize=14, alignment=0),
         "table_text": ParagraphStyle("table_text_style", parent=styles["Normal"], fontName=font_name, fontSize=font_size, leading=leading, alignment=0),
         "table_bold": ParagraphStyle("table_bold_style", parent=styles["Normal"], fontName=font_name_bold, fontSize=font_size, leading=leading, alignment=0),
@@ -225,8 +238,7 @@ def _create_table_data(styles, template_items, info, mode, milestones_only,
 
     # ---- header row ----
     if mode == "price_only":
-        # "Schedule of Values" titles the price-only deliverable (the SOV PDF).
-        header = [Paragraph("Schedule of Values", th_left), Paragraph("Price", th_right)]
+        header = [Paragraph("Deliverables", th_left), Paragraph("Price", th_right)]
     elif mode == "dates_only":
         header = [Paragraph("Project Schedule", th_left), Paragraph("Days", th_left),
                   Paragraph("Start", th_left), Paragraph("Finish", th_left)]
@@ -458,7 +470,12 @@ def render_schedule_table_bytes(
 
     style_settings = _setup_reportlab_styles(mode)
     styles = style_settings["styles"]
-    elements = [_create_pdf_header(style_settings, info), Spacer(1, 0.2 * inch)]
+    elements = [
+        _create_pdf_header(style_settings, info),
+        Spacer(1, 0.12 * inch),
+        Paragraph(_table_title(mode), styles["doc_title"]),
+        Spacer(1, 0.08 * inch),
+    ]
 
     table_data = _create_table_data(styles, template_items, info, mode,
                                     milestones_only, disabled_holidays, project_utilization)
