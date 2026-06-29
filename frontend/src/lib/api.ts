@@ -1015,13 +1015,20 @@ export interface ChangeOrderCreate {
   line_items: ChangeOrderLineItemInput[];
 }
 
+// projectId omitted → aggregate across all portfolios (optionally narrowed to a
+// client). Used by the "All clients" CO view + the Home rollup card.
 export const listChangeOrders = (
-  projectId: number,
+  projectId?: number | null,
   status?: "draft" | "pending" | "approved",
+  clientId?: number | null,
 ) =>
   apiClient
     .get<ChangeOrder[]>("/change-orders", {
-      params: { project_id: projectId, ...(status ? { status } : {}) },
+      params: {
+        ...(projectId != null ? { project_id: projectId } : {}),
+        ...(clientId != null ? { client_id: clientId } : {}),
+        ...(status ? { status } : {}),
+      },
     })
     .then((r) => r.data);
 

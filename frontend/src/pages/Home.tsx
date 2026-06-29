@@ -6,6 +6,7 @@ import { StatusPill } from "@/components/StatusPill";
 import CalendarCard from "@/components/home/CalendarCard";
 import PlannerCard from "@/components/home/PlannerCard";
 import RisksCard from "@/components/home/RisksCard";
+import ChangeOrdersCard from "@/components/home/ChangeOrdersCard";
 import DraftResumeBanner from "@/components/DraftResumeBanner";
 import {
   fetchBriefing,
@@ -171,6 +172,9 @@ export default function Home() {
 
       {/* ----- Open risks rollup (signed-in only; auto-hides when empty) ----- */}
       <RisksCard />
+
+      {/* ----- Change orders rollup across portfolios (auto-hides when none) ----- */}
+      <ChangeOrdersCard />
 
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
