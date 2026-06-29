@@ -40,7 +40,14 @@ import { listOrgDirectory, type DirectoryUser } from "@/lib/graph";
 interface Props {
   value: string;
   ownerUserId: number | null;
-  onChange: (next: { owner: string; owner_user_id: number | null }) => void;
+  // `email` is set only when a known person is picked (PMO user / contact /
+  // directory). It's optional + ignored by existing call sites; the CO
+  // "Prepared by" picker uses it to auto-fill the signatory email.
+  onChange: (next: {
+    owner: string;
+    owner_user_id: number | null;
+    email?: string;
+  }) => void;
   placeholder?: string;
   /** Optional extra className for the wrapping div. */
   className?: string;
@@ -228,7 +235,7 @@ export default function OwnerPicker({
   function handlePick(s: Suggestion) {
     setText(s.name);
     setOpen(false);
-    onChange({ owner: s.name, owner_user_id: s.userId });
+    onChange({ owner: s.name, owner_user_id: s.userId, email: s.email });
   }
 
   function handleClear() {
