@@ -78,15 +78,15 @@ export default function PortfolioDashboard() {
       {metrics && (
         <>
           <TopStatRow metrics={metrics} />
-          <ChangeOrdersSection
-            changeOrders={changeOrders}
-            onOpen={() => nav("/change-orders")}
-          />
           <BurndownSection points={metrics.burndown} />
           <RisksSection risks={metrics.risks_by_likelihood} />
           <RecentMeetingsSection
             meetings={meetings.slice(0, 5)}
             onOpen={() => nav("/history")}
+          />
+          <ChangeOrdersSection
+            changeOrders={changeOrders}
+            onOpen={() => nav("/change-orders")}
           />
         </>
       )}
