@@ -77,6 +77,9 @@ def create_project(
         client_id=payload.client_id,
         name=payload.name,
         scope=payload.scope,
+        location=payload.location,
+        state=payload.state,
+        size_mw=payload.size_mw,
         schedule_version=payload.schedule_version or "V1",
         sub_projects_json=payload.sub_projects_json or [],
     )
@@ -103,6 +106,12 @@ def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depend
         project.name = payload.name
     if payload.scope is not None:
         project.scope = payload.scope
+    if payload.location is not None:
+        project.location = payload.location
+    if payload.state is not None:
+        project.state = payload.state
+    if payload.size_mw is not None:
+        project.size_mw = payload.size_mw
     if payload.schedule_version is not None:
         project.schedule_version = payload.schedule_version
     if payload.sub_projects_json is not None:

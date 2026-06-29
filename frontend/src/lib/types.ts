@@ -40,6 +40,9 @@ export interface Project {
   client_id: number;
   name: string;
   scope?: string | null;
+  location?: string | null;
+  state?: string | null;
+  size_mw?: string | null;
   schedule_version?: string | null;
   sub_projects_json?: string[] | null;
   created_at?: string;

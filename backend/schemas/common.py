@@ -86,6 +86,9 @@ class ProjectOut(ORMModel):
     client_id: int
     name: str
     scope: Optional[str] = None
+    location: Optional[str] = None
+    state: Optional[str] = None
+    size_mw: Optional[str] = None
     schedule_version: Optional[str] = None
     sub_projects_json: Optional[list[str]] = None
     created_at: Optional[datetime] = None
@@ -95,6 +98,9 @@ class ProjectCreate(BaseModel):
     client_id: int
     name: str
     scope: Optional[str] = None
+    location: Optional[str] = None
+    state: Optional[str] = None
+    size_mw: Optional[str] = None
     schedule_version: Optional[str] = "V1"
     sub_projects_json: Optional[list[str]] = None
 
@@ -102,6 +108,9 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     scope: Optional[str] = None
+    location: Optional[str] = None
+    state: Optional[str] = None
+    size_mw: Optional[str] = None
     schedule_version: Optional[str] = None
     sub_projects_json: Optional[list[str]] = None
 
