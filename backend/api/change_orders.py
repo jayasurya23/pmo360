@@ -14,10 +14,12 @@ from sqlalchemy.orm import Session
 from core.deps import get_db
 from auth import require_db_user
 from core.services import safe_filename_slug
+from storage.backend import get_storage
 from db.models import ChangeOrder, ChangeOrderLineItem, Project
 from docgen.change_order_pdf import build_change_order_pdf
 from schemas.common import (
     ChangeOrderOut, ChangeOrderIn, ChangeOrderUpdate, ChangeOrderLineItemIn,
+    ChangeOrderMarkSent,
 )
 
 
@@ -80,6 +82,30 @@ def _get(db: Session, co_id: int) -> ChangeOrder:
     if not co:
         raise HTTPException(404, "Change order not found")
     return co
+
+
+def _co_pdf_filename(co: ChangeOrder) -> str:
+    return safe_filename_slug(
+        f"{co.client_name or 'Castillo'}-CO-{co.co_number}-{co.co_version or 'V1'}"
+    ) + ".pdf"
+
+
+def _archive_pdf(co: ChangeOrder) -> None:
+    """Best-effort: build the branded PDF and file it under the project's
+    storage folder (SharePoint in prod, local FS in dev). Records the returned
+    path on the CO. Never raises — archiving must not block approval."""
+    try:
+        proj = co.project
+        client = proj.client if proj else None
+        folder = "/".join(filter(None, [
+            safe_filename_slug(client.name) if client and client.name else None,
+            safe_filename_slug(proj.name) if proj and proj.name else "project",
+            "change-orders",
+        ]))
+        path = get_storage().save(f"{folder}/{_co_pdf_filename(co)}", build_change_order_pdf(co))
+        co.pdf_storage_path = path
+    except Exception:
+        pass
 
 
 @router.get("", response_model=list[ChangeOrderOut])
@@ -195,6 +221,26 @@ def approve_change_order(co_id: int, db: Session = Depends(get_db), actor=Depend
     co.approved_by = (actor.name or actor.email) if actor else None
     co.approved_by_user_id = actor.id if actor else None
     co.approved_at = datetime.utcnow()
+    if actor:
+        co.updated_by_id = actor.id
+    db.flush()
+    _archive_pdf(co)   # file the final PDF to storage (best-effort)
+    db.flush()
+    return _out(co, db)
+
+
+@router.post("/{co_id}/mark-sent", response_model=ChangeOrderOut)
+def mark_change_order_sent(
+    co_id: int,
+    payload: ChangeOrderMarkSent,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+):
+    """Record that the approved CO PDF was emailed to the client (the email
+    itself is sent client-side via Microsoft Graph from the PM's mailbox)."""
+    co = _get(db, co_id)
+    co.sent_at = datetime.utcnow()
+    co.sent_to = (payload.recipients or "").strip() or None
     if actor:
         co.updated_by_id = actor.id
     db.flush()

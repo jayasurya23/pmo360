@@ -1045,6 +1045,10 @@ export const approveChangeOrder = (id: number) =>
   apiClient.post<ChangeOrder>(`/change-orders/${id}/approve`).then((r) => r.data);
 export const rejectChangeOrder = (id: number) =>
   apiClient.post<ChangeOrder>(`/change-orders/${id}/reject`).then((r) => r.data);
+export const markChangeOrderSent = (id: number, recipients: string) =>
+  apiClient
+    .post<ChangeOrder>(`/change-orders/${id}/mark-sent`, { recipients })
+    .then((r) => r.data);
 export const deleteChangeOrder = (id: number) =>
   apiClient.delete(`/change-orders/${id}`);
 

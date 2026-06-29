@@ -1146,6 +1146,9 @@ class ChangeOrderOut(ORMModel):
     client_signatory_title: Optional[str] = None
     notes: Optional[str] = None
     total_amount: Optional[float] = None
+    pdf_storage_path: Optional[str] = None
+    sent_at: Optional[datetime] = None
+    sent_to: Optional[str] = None
     version: int = 1
     line_items: list[ChangeOrderLineItemOut] = Field(default_factory=list)
     created_by: Optional[UserStub] = None
@@ -1175,6 +1178,10 @@ class ChangeOrderIn(BaseModel):
     client_signatory_title: Optional[str] = None
     notes: Optional[str] = None
     line_items: list[ChangeOrderLineItemIn] = Field(default_factory=list)
+
+
+class ChangeOrderMarkSent(BaseModel):
+    recipients: Optional[str] = None   # the To/Cc the CO was emailed to
 
 
 class ChangeOrderUpdate(BaseModel):
