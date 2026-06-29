@@ -3,9 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
-import { listMeetings, fetchPortfolioMetrics } from "@/lib/api";
+import { listMeetings, fetchPortfolioMetrics, listChangeOrders } from "@/lib/api";
 import type { PortfolioMetrics, BurndownPoint } from "@/lib/api";
-import type { Meeting } from "@/lib/types";
+import type { Meeting, ChangeOrder } from "@/lib/types";
 import { useApp } from "@/lib/state";
 
 /**
@@ -20,6 +20,7 @@ export default function PortfolioDashboard() {
   const nav = useNavigate();
   const [metrics, setMetrics] = useState<PortfolioMetrics | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [changeOrders, setChangeOrders] = useState<ChangeOrder[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,6 +28,7 @@ export default function PortfolioDashboard() {
     if (!currentProject) {
       setMetrics(null);
       setMeetings([]);
+      setChangeOrders([]);
       return;
     }
     setLoading(true);
@@ -34,10 +36,13 @@ export default function PortfolioDashboard() {
     Promise.all([
       fetchPortfolioMetrics(currentProject.id),
       listMeetings(currentProject.id),
+      // COs are a soft add-on — never fail the whole dashboard if they error.
+      listChangeOrders(currentProject.id).catch(() => [] as ChangeOrder[]),
     ])
-      .then(([m, mts]) => {
+      .then(([m, mts, cos]) => {
         setMetrics(m);
         setMeetings(mts);
+        setChangeOrders(cos);
       })
       .catch((e) => setError(e?.message || "Failed to load metrics"))
       .finally(() => setLoading(false));
@@ -73,6 +78,10 @@ export default function PortfolioDashboard() {
       {metrics && (
         <>
           <TopStatRow metrics={metrics} />
+          <ChangeOrdersSection
+            changeOrders={changeOrders}
+            onOpen={() => nav("/change-orders")}
+          />
           <BurndownSection points={metrics.burndown} />
           <RisksSection risks={metrics.risks_by_likelihood} />
           <RecentMeetingsSection
@@ -163,6 +172,101 @@ function StatCard({
       {subtitle && (
         <div className={`text-xs mt-1 ${subColor}`}>{subtitle}</div>
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+   Change orders rollup — pending / approved value + counts
+   ============================================================ */
+const dashMoney = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+
+function ChangeOrdersSection({
+  changeOrders,
+  onOpen,
+}: {
+  changeOrders: ChangeOrder[];
+  onOpen: () => void;
+}) {
+  const countOf = (s: ChangeOrder["status"]) =>
+    changeOrders.filter((c) => c.status === s).length;
+  const sumOf = (s: ChangeOrder["status"]) =>
+    changeOrders
+      .filter((c) => c.status === s)
+      .reduce((acc, c) => acc + (Number(c.total_amount) || 0), 0);
+
+  return (
+    <section>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="section-title">Change orders</h2>
+        <button
+          type="button"
+          onClick={onOpen}
+          className="text-xs font-semibold text-brand-red hover:underline"
+        >
+          Open change orders →
+        </button>
+      </div>
+      {changeOrders.length === 0 ? (
+        <div className="card p-8 text-center text-sm text-brand-gray">
+          No change orders yet — raise one from the Change Orders tab, or start
+          one from a meeting on the Review page.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <CoStat
+            label="Approved value"
+            count={countOf("approved")}
+            amount={sumOf("approved")}
+            accent="green"
+          />
+          <CoStat
+            label="Pending approval"
+            count={countOf("pending")}
+            amount={sumOf("pending")}
+            accent="gold"
+          />
+          <CoStat
+            label="Drafts"
+            count={countOf("draft")}
+            amount={null}
+            accent="red"
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CoStat({
+  label,
+  count,
+  amount,
+  accent,
+}: {
+  label: string;
+  count: number;
+  amount: number | null;
+  accent: "red" | "gold" | "green";
+}) {
+  const accentClass = {
+    red: "border-l-brand-red",
+    gold: "border-l-brand-gold",
+    green: "border-l-brand-green",
+  }[accent];
+  return (
+    <div className={`card p-5 border-l-4 ${accentClass}`}>
+      <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
+        {label}
+      </div>
+      <div className="text-4xl font-bold text-brand-black mt-2 tabular-nums">
+        {amount != null ? dashMoney(amount) : count}
+      </div>
+      <div className="text-xs mt-1 text-brand-gray">
+        {amount != null
+          ? `${count} change order${count === 1 ? "" : "s"}`
+          : `${count} not yet submitted`}
+      </div>
     </div>
   );
 }

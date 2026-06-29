@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import PdfPagePreview from "@/components/PdfPagePreview";
@@ -89,6 +90,10 @@ const newLineId = () => `l${++lineSeq}`;
 export default function ChangeOrders() {
   const { currentProject, clients, selectedClientId } = useApp();
   const confirm = useConfirm();
+  // `location` is already a CO form field below, so alias the router hook.
+  const routerLoc = useLocation();
+  const routerNav = useNavigate();
+  const prefillApplied = useRef(false);
   const [tab, setTab] = useState<Tab>("create");
 
   const clientName =
@@ -148,6 +153,31 @@ export default function ChangeOrders() {
     resetForm();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id]);
+
+  // Seed the create form from a "Create change order" hand-off (e.g. the meeting
+  // Review page passes { coPrefill: { title, details } } via router state).
+  // Runs after the mount effect above, so it overrides the blank resetForm().
+  // Consumed once, then the router state is cleared so a refresh/revisit is blank.
+  useEffect(() => {
+    const pf = (
+      routerLoc.state as {
+        coPrefill?: { title?: string; details?: string };
+      } | null
+    )?.coPrefill;
+    if (!pf || prefillApplied.current) return;
+    prefillApplied.current = true;
+    setTab("create");
+    setRateChosen(false);
+    setRateType("fixed");
+    if (pf.title) setTitle(pf.title);
+    if (pf.details) setLines([{ ...blankLine(), details: pf.details }]);
+    // keep the search string so the ?client=/?portfolio= context isn't dropped
+    routerNav(routerLoc.pathname + routerLoc.search, {
+      replace: true,
+      state: null,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routerLoc.state]);
 
   const total = useMemo(() => {
     return lines.reduce((sum, l) => {

@@ -53,6 +53,7 @@ import {
   sendProposalToTimeline,
   fetchProposalLogos,
   updateProposalLogos,
+  listChangeOrders,
 } from "@/lib/api";
 import type {
   ProposalBoard,
@@ -593,6 +594,16 @@ export default function Proposals() {
   const [showPdfChooser, setShowPdfChooser] = useState(false);
   const [showSync, setShowSync] = useState(false);
 
+  // Approved change orders on this proposal's owning portfolio — drives the
+  // "revised contract value" rollup (original proposal total + approved COs).
+  const [coApproved, setCoApproved] = useState<{
+    total: number;
+    count: number;
+  } | null>(null);
+  // Monotonic token so a slow approved-CO fetch from a previously-open proposal
+  // can't land on top of the one now displayed (fire-and-forget has no abort).
+  const coReqRef = useRef(0);
+
   const proposalId = board?.proposal.id ?? null;
   const activeVersion = board?.version ?? null;
   const activeVersionId = activeVersion?.id ?? null;
@@ -639,6 +650,29 @@ export default function Proposals() {
       try {
         const b = await fetchProposalBoard(id);
         setBoard(b);
+        // Approved change orders on this proposal's portfolio → contract-value
+        // rollup. Best-effort + non-blocking; standalone proposals (no portfolio)
+        // have no COs to tie in. The token invalidates any earlier in-flight
+        // fetch so switching proposals can't show a stale portfolio's figure.
+        const coToken = ++coReqRef.current;
+        setCoApproved(null);
+        const pfId = b.proposal.portfolio_id;
+        if (pfId != null) {
+          void listChangeOrders(pfId, "approved")
+            .then((cos) => {
+              if (coReqRef.current !== coToken) return; // superseded
+              setCoApproved({
+                total: cos.reduce(
+                  (s, c) => s + (Number(c.total_amount) || 0),
+                  0,
+                ),
+                count: cos.length,
+              });
+            })
+            .catch(() => {
+              /* stale or failed; the sync setCoApproved(null) above stands */
+            });
+        }
         // Logos live off the board response — fetch them alongside, non-blocking.
         setLogos({ company_logo: null, client_logo: null });
         void fetchProposalLogos(id)
@@ -2166,7 +2200,7 @@ export default function Proposals() {
           </section>
 
           {/* project summary (collapsible) */}
-          <SummaryPanel summary={summary} />
+          <SummaryPanel summary={summary} coApproved={coApproved} />
 
           {/* portfolio tie-in */}
           <section className="card flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
@@ -2641,8 +2675,16 @@ function LogoUploader({
 }
 
 // ---------------- project summary panel (collapsible) ----------------
-function SummaryPanel({ summary }: { summary: ProjectSummary }) {
+function SummaryPanel({
+  summary,
+  coApproved,
+}: {
+  summary: ProjectSummary;
+  coApproved: { total: number; count: number } | null;
+}) {
   const [open, setOpen] = useState(true);
+  const hasCOs = !!coApproved && coApproved.count > 0;
+  const revisedTotal = summary.total + (coApproved?.total ?? 0);
   const datesLabel = (start: Date | null, end: Date | null) =>
     start || end
       ? `${fmtSummaryDate(start)} to ${fmtSummaryDate(end)}`
@@ -2659,6 +2701,12 @@ function SummaryPanel({ summary }: { summary: ProjectSummary }) {
         <div className="flex-1" />
         <span className="text-sm text-brand-gray">
           Total <b className="text-brand-black">{fmtMoney(summary.total)}</b>
+          {hasCOs && (
+            <>
+              {" · Revised "}
+              <b className="text-brand-black">{fmtMoney(revisedTotal)}</b>
+            </>
+          )}
         </span>
       </button>
       {open && (
@@ -2670,6 +2718,18 @@ function SummaryPanel({ summary }: { summary: ProjectSummary }) {
               value={`${fmtMoney(summary.depositAmount)} (${summary.depositPct.toFixed(1)}%)`}
             />
             <SummaryRow label="Net" value={fmtMoney(summary.net)} />
+            {hasCOs && (
+              <>
+                <SummaryRow
+                  label={`Approved change orders (${coApproved!.count})`}
+                  value={`+ ${fmtMoney(coApproved!.total)}`}
+                />
+                <SummaryRow
+                  label="Revised contract value"
+                  value={fmtMoney(revisedTotal)}
+                />
+              </>
+            )}
             <SummaryRow
               label="Project Start"
               value={fmtSummaryDate(summary.start)}

@@ -327,6 +327,40 @@ export default function Review() {
             )}
             <button
               className="btn-ghost"
+              onClick={() => {
+                // Seed a change order with this meeting's context: title from the
+                // meeting, first line item carrying the discussion points so the
+                // PM has the raw material to describe the scope change.
+                const detailLines = discussion
+                  .map((d) => {
+                    const head = [d.discipline, d.label]
+                      .filter(Boolean)
+                      .join(" — ");
+                    const body = (d.content || "").trim();
+                    return [head, body].filter(Boolean).join(": ");
+                  })
+                  .filter(Boolean);
+                nav("/change-orders", {
+                  state: {
+                    coPrefill: {
+                      title: meetingTitle
+                        ? `Change order — ${meetingTitle}`
+                        : "Change order",
+                      details: detailLines.length
+                        ? `From meeting "${meetingTitle || "Untitled"}"${
+                            meetingDate ? ` (${meetingDate})` : ""
+                          }:\n${detailLines.join("\n")}`
+                        : "",
+                    },
+                  },
+                });
+              }}
+              title="Start a change order seeded with this meeting's context"
+            >
+              📝 Create change order
+            </button>
+            <button
+              className="btn-ghost"
               onClick={() => setSaveTemplateOpen(true)}
               title="Save attendees, agenda topics, deliverables, and duration as a reusable template"
             >
