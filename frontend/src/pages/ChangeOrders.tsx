@@ -484,19 +484,22 @@ export default function ChangeOrders() {
                 />
               </label>
               <label className="block">
-                <span className="label">Signatory — Print Name (Castillo)</span>
+                <span className="label">
+                  Prepared by — Name (Castillo team)
+                </span>
                 <OwnerPicker
                   value={signatoryName}
                   ownerUserId={signatoryUserId}
-                  placeholder="Pick the Castillo signer…"
-                  onChange={({ owner, owner_user_id }) => {
+                  placeholder="Pick a Castillo team member…"
+                  onChange={({ owner, owner_user_id, email }) => {
                     setSignatoryName(owner);
                     setSignatoryUserId(owner_user_id);
+                    if (email) setSignatoryEmail(email); // auto-fill from the pick
                   }}
                 />
               </label>
               <label className="block">
-                <span className="label">Signatory title</span>
+                <span className="label">Prepared by — Title (optional)</span>
                 <input
                   className="input"
                   value={signatoryTitle}
@@ -505,7 +508,7 @@ export default function ChangeOrders() {
                 />
               </label>
               <label className="block">
-                <span className="label">Signatory phone (optional)</span>
+                <span className="label">Prepared by — Phone (optional)</span>
                 <input
                   className="input"
                   value={signatoryPhone}
@@ -514,12 +517,12 @@ export default function ChangeOrders() {
                 />
               </label>
               <label className="block">
-                <span className="label">Signatory email (optional)</span>
+                <span className="label">Prepared by — Email (optional)</span>
                 <input
                   className="input"
                   value={signatoryEmail}
                   onChange={(e) => setSignatoryEmail(e.target.value)}
-                  placeholder='Shown under "Prepared by" on the PDF'
+                  placeholder="Auto-fills when you pick a team member"
                 />
               </label>
               <label className="block">
@@ -618,13 +621,18 @@ export default function ChangeOrders() {
                         onChange={(e) => set({ details: e.target.value })}
                       />
                       {rateType === "fixed" ? (
-                        <input
-                          className="input w-32 text-right"
-                          inputMode="decimal"
-                          placeholder="Cost"
-                          value={l.cost}
-                          onChange={(e) => set({ cost: e.target.value })}
-                        />
+                        <div className="relative w-32">
+                          <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-sm text-brand-gray">
+                            $
+                          </span>
+                          <input
+                            className="input w-full pl-5 text-right"
+                            inputMode="decimal"
+                            placeholder="Cost"
+                            value={l.cost}
+                            onChange={(e) => set({ cost: e.target.value })}
+                          />
+                        </div>
                       ) : (
                         <span className="w-24 text-right text-sm font-semibold text-brand-black pt-2 tabular-nums">
                           {money(lineTotal)}
@@ -679,15 +687,20 @@ export default function ChangeOrders() {
                                   </option>
                                 ))}
                               </select>
-                              <input
-                                className="input w-20 text-right"
-                                inputMode="decimal"
-                                placeholder="Rate"
-                                value={a.rate}
-                                onChange={(e) =>
-                                  setAlloc(ai, { rate: e.target.value })
-                                }
-                              />
+                              <div className="relative w-20">
+                                <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-xs text-brand-gray">
+                                  $
+                                </span>
+                                <input
+                                  className="input w-full pl-4 text-right"
+                                  inputMode="decimal"
+                                  placeholder="Rate"
+                                  value={a.rate}
+                                  onChange={(e) =>
+                                    setAlloc(ai, { rate: e.target.value })
+                                  }
+                                />
+                              </div>
                               <span className="text-xs text-brand-gray">×</span>
                               <input
                                 className="input w-16 text-right"
