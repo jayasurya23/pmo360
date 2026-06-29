@@ -160,9 +160,10 @@ export default function ChangeOrders() {
     setRequestDate(today());
     setRequestedBy("");
     setRequestedByUserId(null);
-    setLocation("");
-    setStateCode("");
-    setSizeMw("");
+    // Pre-fill the reusable project facts from the portfolio (editable per CO).
+    setLocation(currentProject?.location || "");
+    setStateCode(currentProject?.state || "");
+    setSizeMw(currentProject?.size_mw || "");
     setSignatoryName("");
     setSignatoryUserId(null);
     setSignatoryTitle("");

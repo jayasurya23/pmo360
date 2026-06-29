@@ -107,6 +107,10 @@ class Project(Base):
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
     name = Column(String(300), nullable=False)
     scope = Column(Text)
+    # Reusable project facts (shown on the CO header, deliverables, etc.).
+    location = Column(String(200))    # city / site, e.g. "Lawrenceburg"
+    state = Column(String(50))        # e.g. "TN"
+    size_mw = Column(String(50))      # e.g. "8" — free text (MW)
     schedule_version = Column(String(20), default="V1")
     # Curated list of sub-project names within this portfolio (e.g. for the
     # "Snapdragon and Two Blues" portfolio: ["Snapdragon", "Two Blues"]).

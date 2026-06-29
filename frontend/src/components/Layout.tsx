@@ -476,9 +476,9 @@ function ContextAdminGear({
                 ? "text-slate-700 hover:bg-slate-50"
                 : "text-slate-400 cursor-not-allowed",
             )}
-            title={hasProject ? "Rename the selected portfolio" : "Pick a portfolio first"}
+            title={hasProject ? "Edit the portfolio name, scope + project details (location, state, size)" : "Pick a portfolio first"}
           >
-            <span aria-hidden="true">✏️</span> Rename portfolio
+            <span aria-hidden="true">✏️</span> Edit portfolio details
           </button>
           <button
             type="button"

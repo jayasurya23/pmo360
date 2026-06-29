@@ -142,6 +142,9 @@ export const updateProject = (
   payload: Partial<{
     name: string;
     scope: string;
+    location: string;
+    state: string;
+    size_mw: string;
     schedule_version: string;
     sub_projects_json: string[];
   }>

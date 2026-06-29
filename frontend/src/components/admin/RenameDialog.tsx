@@ -31,6 +31,10 @@ export default function RenameDialog({ open, kind, onClose }: Props) {
   const entity = kind === "client" ? currentClient : currentProject;
   const [name, setName] = useState("");
   const [secondary, setSecondary] = useState(""); // email_domain | scope
+  // Portfolio-only reusable project facts.
+  const [location, setLocation] = useState("");
+  const [stateCode, setStateCode] = useState("");
+  const [sizeMw, setSizeMw] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +47,9 @@ export default function RenameDialog({ open, kind, onClose }: Props) {
         ? (currentClient?.email_domain ?? "")
         : (currentProject?.scope ?? ""),
     );
+    setLocation(currentProject?.location ?? "");
+    setStateCode(currentProject?.state ?? "");
+    setSizeMw(currentProject?.size_mw ?? "");
     setError(null);
     setSubmitting(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -80,6 +87,9 @@ export default function RenameDialog({ open, kind, onClose }: Props) {
         await updateProject(entity!.id, {
           name: trimmed,
           scope: secondary.trim(),
+          location: location.trim(),
+          state: stateCode.trim(),
+          size_mw: sizeMw.trim(),
         });
         await refreshProjects();
         setSelectedProjectId(entity!.id);
@@ -91,8 +101,6 @@ export default function RenameDialog({ open, kind, onClose }: Props) {
       setSubmitting(false);
     }
   }
-
-  const label = kind === "client" ? "client" : "portfolio";
 
   return createPortal(
     <div
@@ -110,7 +118,7 @@ export default function RenameDialog({ open, kind, onClose }: Props) {
         className="relative w-full max-w-md card p-5 space-y-4 shadow-xl"
       >
         <h3 id="rename-title" className="text-base font-semibold text-slate-900">
-          Rename {label}
+          {kind === "client" ? "Rename client" : "Edit portfolio"}
         </h3>
 
         <div>
@@ -137,6 +145,46 @@ export default function RenameDialog({ open, kind, onClose }: Props) {
             onChange={(e) => setSecondary(e.target.value)}
           />
         </div>
+
+        {kind === "portfolio" && (
+          <div className="space-y-3 border-t border-slate-100 pt-3">
+            <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
+              Project details — reused on Change Orders &amp; documents
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block col-span-2">
+                <span className="label">Location</span>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="City / site"
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="label">State</span>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="e.g. TN"
+                  value={stateCode}
+                  onChange={(e) => setStateCode(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="label">Size (MW)</span>
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="e.g. 8"
+                  value={sizeMw}
+                  onChange={(e) => setSizeMw(e.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
