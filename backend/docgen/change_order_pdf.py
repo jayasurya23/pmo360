@@ -23,6 +23,7 @@ from io import BytesIO
 from pathlib import Path
 
 import pikepdf
+from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.lib.colors import HexColor, white
@@ -84,6 +85,13 @@ def _amt(v) -> str:
 def _fmt_long_date(d) -> str:
     try:
         return f"{d.strftime('%B')} {d.day}, {d.year}" if d else ""
+    except Exception:
+        return ""
+
+
+def _fmt_short_date(d) -> str:
+    try:
+        return d.strftime("%m/%d/%Y") if d else ""
     except Exception:
         return ""
 
@@ -286,10 +294,15 @@ def _build_data_page(co) -> bytes:
     def sig_field(value):
         return [Paragraph(value or "&nbsp;", S["sig_v"])]
 
+    sig_date = _fmt_short_date(co.request_date)   # prepopulated document date
     fields = ["Company Name", "Print Name", "Title", "Signature", "Date"]
+    # Castillo dates the document on preparation; the client dates it when they
+    # counter-sign, so leave the client Date line blank for wet-ink.
     left_vals = ["Castillo Engineering Services",
-                 co.signatory_name or "", co.signatory_title or "", "", ""]
-    right_vals = [co.client_name or "", "", "", "", ""]
+                 co.signatory_name or "", co.signatory_title or "", "", sig_date]
+    right_vals = [co.client_name or "",
+                  co.client_signatory_name or "", co.client_signatory_title or "",
+                  "", ""]
 
     def sig_cell(value, label):
         t = Table([[Paragraph(value or "&nbsp;", S["sig_v"])],
@@ -321,6 +334,46 @@ def _build_data_page(co) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Dynamic "PREPARED BY" block overlaid on the static back cover (page 4)
+# ---------------------------------------------------------------------------
+# Default preparer (matches the baked-in back-cover text) used when no Castillo
+# signatory is set on the change order.
+_PREP_DEFAULT = ("Gary Joseph", "VP, Sales & Marketing",
+                 "702-573-9644", "gjoseph@castillope.com")
+
+
+def _preparer_overlay(co):
+    """A single-page overlay that paints the brand red over the back cover's
+    name/title/phone/email lines and redraws them from the change order's
+    signatory (falling back to the Castillo default). Returns a pikepdf.Pdf, or
+    None if nothing dynamic is needed. The static "PREPARED BY" header and the
+    company address below are left untouched."""
+    name = (co.signatory_name or "").strip()
+    if name:
+        lines = [s for s in (name, (co.signatory_title or "").strip(),
+                             (co.signatory_phone or "").strip(),
+                             (co.signatory_email or "").strip()) if s]
+    else:
+        lines = list(_PREP_DEFAULT)   # nothing to change vs the baked-in text
+
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    # The static back cover has its preparer lines redacted out (clean red), so
+    # we only need to draw the dynamic lines — no cover rectangle, no seam.
+    cx = PAGE_W / 2.0
+    c.setFillColor(white)
+    c.setFont(PRIMARY_BOLD, 8.5)
+    y = PAGE_H - 616.0   # first dynamic line baseline (just below PREPARED BY)
+    for ln in lines:
+        c.drawCentredString(cx, y, ln)
+        y -= 14.4        # template line spacing
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return pikepdf.open(buf)
+
+
+# ---------------------------------------------------------------------------
 # Merge: cover + generated data page(s) + services + back
 # ---------------------------------------------------------------------------
 def build_change_order_pdf(co) -> bytes:
@@ -341,7 +394,17 @@ def build_change_order_pdf(co) -> bytes:
         srcs.append(ds)
         dst.pages.extend(ds.pages)
         add_path(_SERVICES)
-        add_path(_BACK)
+        # back cover with a dynamic PREPARED BY block stamped over the static one
+        if _BACK.exists():
+            back = pikepdf.open(str(_BACK))
+            srcs.append(back)
+            try:
+                ov = _preparer_overlay(co)
+                srcs.append(ov)
+                back.pages[0].add_overlay(ov.pages[0])
+            except Exception:
+                pass   # fall back to the untouched static back cover
+            dst.pages.extend(back.pages)
 
         if len(dst.pages) == 0:   # paranoia: nothing assembled
             return data_bytes

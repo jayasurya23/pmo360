@@ -706,6 +706,10 @@ export interface ChangeOrder {
   size_mw?: string | null;
   signatory_name?: string | null;
   signatory_title?: string | null;
+  signatory_phone?: string | null;
+  signatory_email?: string | null;
+  client_signatory_name?: string | null;
+  client_signatory_title?: string | null;
   notes?: string | null;
   total_amount?: number | null;
   version?: number;

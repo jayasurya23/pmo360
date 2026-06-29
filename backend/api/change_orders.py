@@ -128,6 +128,10 @@ def create_change_order(
         size_mw=payload.size_mw,
         signatory_name=payload.signatory_name,
         signatory_title=payload.signatory_title,
+        signatory_phone=payload.signatory_phone,
+        signatory_email=payload.signatory_email,
+        client_signatory_name=payload.client_signatory_name,
+        client_signatory_title=payload.client_signatory_title,
         notes=payload.notes,
         created_by_id=actor.id if actor else None,
         updated_by_id=actor.id if actor else None,
@@ -157,7 +161,9 @@ def update_change_order(
     sent = payload.model_fields_set
     for field in ("co_version", "title", "rate_type", "request_date",
                   "requested_by", "requested_by_user_id", "location", "state",
-                  "size_mw", "signatory_name", "signatory_title", "notes"):
+                  "size_mw", "signatory_name", "signatory_title",
+                  "signatory_phone", "signatory_email",
+                  "client_signatory_name", "client_signatory_title", "notes"):
         if field in sent:
             setattr(co, field, getattr(payload, field))
     if co.rate_type not in _VALID_RATE:

@@ -111,6 +111,10 @@ export default function ChangeOrders() {
   const [signatoryName, setSignatoryName] = useState("");
   const [signatoryUserId, setSignatoryUserId] = useState<number | null>(null);
   const [signatoryTitle, setSignatoryTitle] = useState("");
+  const [signatoryPhone, setSignatoryPhone] = useState("");
+  const [signatoryEmail, setSignatoryEmail] = useState("");
+  const [clientSignatoryName, setClientSignatoryName] = useState("");
+  const [clientSignatoryTitle, setClientSignatoryTitle] = useState("");
   const [title, setTitle] = useState("");
   const [lines, setLines] = useState<LineRow[]>([blankLine()]);
   const [saving, setSaving] = useState(false);
@@ -162,6 +166,10 @@ export default function ChangeOrders() {
     setSignatoryName("");
     setSignatoryUserId(null);
     setSignatoryTitle("");
+    setSignatoryPhone("");
+    setSignatoryEmail("");
+    setClientSignatoryName("");
+    setClientSignatoryTitle("");
     setTitle("");
     setLines([blankLine()]);
     setErr(null);
@@ -182,6 +190,10 @@ export default function ChangeOrders() {
     setSignatoryName(co.signatory_name || "");
     setSignatoryUserId(null);
     setSignatoryTitle(co.signatory_title || "");
+    setSignatoryPhone(co.signatory_phone || "");
+    setSignatoryEmail(co.signatory_email || "");
+    setClientSignatoryName(co.client_signatory_name || "");
+    setClientSignatoryTitle(co.client_signatory_title || "");
     setTitle(co.title || "");
     setLines(
       (co.line_items.length ? co.line_items : [{}]).map((li: any) => {
@@ -231,6 +243,10 @@ export default function ChangeOrders() {
       size_mw: sizeMw || null,
       signatory_name: signatoryName || null,
       signatory_title: signatoryTitle || null,
+      signatory_phone: signatoryPhone || null,
+      signatory_email: signatoryEmail || null,
+      client_signatory_name: clientSignatoryName || null,
+      client_signatory_title: clientSignatoryTitle || null,
       line_items: lines
         .filter(
           (l) =>
@@ -486,6 +502,42 @@ export default function ChangeOrders() {
                   value={signatoryTitle}
                   onChange={(e) => setSignatoryTitle(e.target.value)}
                   placeholder="e.g. VP, Sales & Marketing"
+                />
+              </label>
+              <label className="block">
+                <span className="label">Signatory phone (optional)</span>
+                <input
+                  className="input"
+                  value={signatoryPhone}
+                  onChange={(e) => setSignatoryPhone(e.target.value)}
+                  placeholder='Shown under "Prepared by" on the PDF'
+                />
+              </label>
+              <label className="block">
+                <span className="label">Signatory email (optional)</span>
+                <input
+                  className="input"
+                  value={signatoryEmail}
+                  onChange={(e) => setSignatoryEmail(e.target.value)}
+                  placeholder='Shown under "Prepared by" on the PDF'
+                />
+              </label>
+              <label className="block">
+                <span className="label">Client — Print Name (optional)</span>
+                <input
+                  className="input"
+                  value={clientSignatoryName}
+                  onChange={(e) => setClientSignatoryName(e.target.value)}
+                  placeholder="Client signer's name"
+                />
+              </label>
+              <label className="block">
+                <span className="label">Client — title (optional)</span>
+                <input
+                  className="input"
+                  value={clientSignatoryTitle}
+                  onChange={(e) => setClientSignatoryTitle(e.target.value)}
+                  placeholder="Client signer's title"
                 />
               </label>
               <label className="block">
@@ -764,6 +816,9 @@ export default function ChangeOrders() {
                 onDelete={() => doDelete(co)}
                 actions={
                   <>
+                    <button className="btn-ghost" onClick={() => openPdf(co)}>
+                      👁 Preview PDF
+                    </button>
                     <button className="btn-primary" onClick={() => doApprove(co)}>
                       Approve
                     </button>
