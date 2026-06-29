@@ -504,7 +504,7 @@ export default function ChangeOrders() {
                   className="input"
                   value={signatoryTitle}
                   onChange={(e) => setSignatoryTitle(e.target.value)}
-                  placeholder="e.g. VP, Sales & Marketing"
+                  placeholder="e.g. Project Manager"
                 />
               </label>
               <label className="block">

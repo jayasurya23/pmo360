@@ -336,25 +336,16 @@ def _build_data_page(co) -> bytes:
 # ---------------------------------------------------------------------------
 # Dynamic "PREPARED BY" block overlaid on the static back cover (page 4)
 # ---------------------------------------------------------------------------
-# Default preparer (matches the baked-in back-cover text) used when no Castillo
-# signatory is set on the change order.
-_PREP_DEFAULT = ("Gary Joseph", "VP, Sales & Marketing",
-                 "702-573-9644", "gjoseph@castillope.com")
-
-
 def _preparer_overlay(co):
-    """A single-page overlay that paints the brand red over the back cover's
-    name/title/phone/email lines and redraws them from the change order's
-    signatory (falling back to the Castillo default). Returns a pikepdf.Pdf, or
-    None if nothing dynamic is needed. The static "PREPARED BY" header and the
-    company address below are left untouched."""
+    """A single-page overlay that draws the "PREPARED BY" preparer lines from the
+    change order's Castillo signatory. The back cover's baked-in preparer lines
+    were redacted out, so there is no hard-coded default — if no signatory is set
+    the block stays blank under the static "PREPARED BY" header. Returns a
+    pikepdf.Pdf."""
     name = (co.signatory_name or "").strip()
-    if name:
-        lines = [s for s in (name, (co.signatory_title or "").strip(),
-                             (co.signatory_phone or "").strip(),
-                             (co.signatory_email or "").strip()) if s]
-    else:
-        lines = list(_PREP_DEFAULT)   # nothing to change vs the baked-in text
+    lines = [s for s in (name, (co.signatory_title or "").strip(),
+                         (co.signatory_phone or "").strip(),
+                         (co.signatory_email or "").strip()) if s]
 
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=letter)
