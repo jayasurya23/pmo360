@@ -28,6 +28,7 @@ import type {
   MeetingTemplate,
   MeetingTemplateInput,
   MeResponse,
+  PortfolioProject,
   ProjectMember,
   ProposalBoard,
   ProposalListItem,
@@ -656,8 +657,50 @@ export const linkProposal = (id: number, portfolio_id: number) =>
   apiClient
     .patch<ProposalOut>(`/proposals/${id}/link`, { portfolio_id })
     .then((r) => r.data);
+/** Link a proposal to a Project (the tier under a Portfolio); the portfolio is
+ *  derived from the project server-side. */
+export const linkProposalProject = (id: number, project_id: number) =>
+  apiClient
+    .patch<ProposalOut>(`/proposals/${id}/link-project`, { project_id })
+    .then((r) => r.data);
 export const unlinkProposal = (id: number) =>
   apiClient.patch<ProposalOut>(`/proposals/${id}/unlink`).then((r) => r.data);
+
+// ---------- portfolio projects (the "Project" tier under a Portfolio) ----------
+export const listPortfolioProjects = (
+  portfolioId?: number | null,
+  clientId?: number | null,
+) =>
+  apiClient
+    .get<PortfolioProject[]>("/portfolio-projects", {
+      params: {
+        ...(portfolioId != null ? { portfolio_id: portfolioId } : {}),
+        ...(clientId != null ? { client_id: clientId } : {}),
+      },
+    })
+    .then((r) => r.data);
+export const createPortfolioProject = (payload: {
+  portfolio_id: number;
+  name: string;
+  location?: string | null;
+  state?: string | null;
+  size_mw?: string | null;
+}) =>
+  apiClient.post<PortfolioProject>("/portfolio-projects", payload).then((r) => r.data);
+export const updatePortfolioProject = (
+  id: number,
+  payload: Partial<{
+    name: string;
+    location: string | null;
+    state: string | null;
+    size_mw: string | null;
+    portfolio_id: number;
+    expected_version: number;
+  }>,
+) =>
+  apiClient.patch<PortfolioProject>(`/portfolio-projects/${id}`, payload).then((r) => r.data);
+export const deletePortfolioProject = (id: number) =>
+  apiClient.delete(`/portfolio-projects/${id}`);
 export const syncProposal = (
   id: number,
   body: { version_id?: number; seed_deliverables: boolean },
