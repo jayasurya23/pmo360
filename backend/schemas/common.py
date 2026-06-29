@@ -1082,20 +1082,29 @@ ProposalTreePut.model_rebuild()
 
 
 # ---------- Change Orders ----------
+class COAllocation(BaseModel):
+    """One person's contribution to an hourly task: role · rate · hours."""
+    role: Optional[str] = None
+    rate: Optional[float] = None
+    hours: Optional[float] = None
+
+
 class ChangeOrderLineItemOut(ORMModel):
     id: int
     order_index: int = 0
     details: Optional[str] = None
     cost: Optional[float] = None           # fixed mode
-    role: Optional[str] = None             # hourly mode: rate-card role label
-    hourly_rate: Optional[float] = None    # hourly mode
-    hours: Optional[float] = None          # hourly mode
+    allocations: Optional[list[COAllocation]] = None  # hourly: people × rates
+    role: Optional[str] = None             # legacy single-person hourly
+    hourly_rate: Optional[float] = None    # legacy single-person hourly
+    hours: Optional[float] = None          # legacy single-person hourly
     internal_notes: Optional[str] = None
 
 
 class ChangeOrderLineItemIn(BaseModel):
     details: str = ""
     cost: Optional[float] = None
+    allocations: Optional[list[COAllocation]] = None
     role: Optional[str] = None
     hourly_rate: Optional[float] = None
     hours: Optional[float] = None

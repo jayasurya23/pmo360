@@ -27,10 +27,20 @@ _VALID_STATUS = ("draft", "pending", "approved")
 _VALID_RATE = ("fixed", "hourly")
 
 
+def _num(v) -> float:
+    try:
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _line_total(li: ChangeOrderLineItem, rate_type: str) -> float:
     if rate_type == "hourly":
-        return float(li.hourly_rate or 0) * float(li.hours or 0)
-    return float(li.cost or 0)
+        allocs = li.allocations or []
+        if allocs:   # multiple people at different rates -> sum(rate*hours)
+            return sum(_num(a.get("rate")) * _num(a.get("hours")) for a in allocs)
+        return _num(li.hourly_rate) * _num(li.hours)   # legacy single-person
+    return _num(li.cost)
 
 
 def _recompute_total(co: ChangeOrder) -> None:
@@ -43,9 +53,17 @@ def _apply_line_items(co: ChangeOrder, items: "list[ChangeOrderLineItemIn]") -> 
     """Replace all line items (the editor sends the full list each save)."""
     co.line_items.clear()
     for i, it in enumerate(items):
+        allocs = None
+        if it.allocations:
+            allocs = [
+                {"role": a.role, "rate": a.rate, "hours": a.hours}
+                for a in it.allocations
+                if (a.role or a.rate is not None or a.hours is not None)
+            ] or None
         co.line_items.append(ChangeOrderLineItem(
             order_index=i, details=it.details or "",
-            cost=it.cost, role=it.role, hourly_rate=it.hourly_rate, hours=it.hours,
+            cost=it.cost, allocations=allocs,
+            role=it.role, hourly_rate=it.hourly_rate, hours=it.hours,
             internal_notes=it.internal_notes,
         ))
 

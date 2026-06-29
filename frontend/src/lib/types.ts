@@ -668,14 +668,21 @@ export interface Settings {
 }
 
 // ---------- Change Orders ----------
+export interface COAllocation {
+  role?: string | null;
+  rate?: number | null;
+  hours?: number | null;
+}
+
 export interface ChangeOrderLineItem {
   id?: number;
   order_index?: number;
   details?: string | null;
   cost?: number | null; // fixed mode
-  role?: string | null; // hourly mode: rate-card role label
-  hourly_rate?: number | null; // hourly mode
-  hours?: number | null; // hourly mode
+  allocations?: COAllocation[] | null; // hourly: people × rates
+  role?: string | null; // legacy single-person hourly
+  hourly_rate?: number | null; // legacy single-person hourly
+  hours?: number | null; // legacy single-person hourly
   internal_notes?: string | null;
 }
 

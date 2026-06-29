@@ -849,9 +849,14 @@ class ChangeOrderLineItem(Base):
     order_index = Column(Integer, default=0)
     details = Column(Text)
     cost = Column(Float)            # fixed mode
-    role = Column(String(100))      # hourly mode: rate-card role label (informational)
-    hourly_rate = Column(Float)     # hourly mode
-    hours = Column(Float)           # hourly mode
+    # hourly mode: one task can span several people at different rates ->
+    # allocations is [{"role": str, "rate": float, "hours": float}, ...] and the
+    # line total is sum(rate*hours). role/hourly_rate/hours are the legacy
+    # single-person fields, kept as a fallback when allocations is empty.
+    allocations = Column(JSON)
+    role = Column(String(100))      # legacy single-person hourly
+    hourly_rate = Column(Float)     # legacy single-person hourly
+    hours = Column(Float)           # legacy single-person hourly
     internal_notes = Column(Text)
 
     change_order = relationship("ChangeOrder", back_populates="line_items")

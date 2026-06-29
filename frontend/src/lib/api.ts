@@ -977,9 +977,15 @@ export const fetchBriefing = () =>
 
 // ---------- change orders ----------
 /** Line-item payload for create/update (server replaces the full list). */
+export interface ChangeOrderAllocationInput {
+  role?: string | null;
+  rate?: number | null;
+  hours?: number | null;
+}
 export interface ChangeOrderLineItemInput {
   details?: string;
   cost?: number | null;
+  allocations?: ChangeOrderAllocationInput[] | null;
   role?: string | null;
   hourly_rate?: number | null;
   hours?: number | null;

@@ -34,14 +34,21 @@ const RATE_CARD: { role: string; rate: number }[] = [
   { role: "Administrative Tasks", rate: 150 },
 ];
 
+// One person's slice of an hourly task: role · rate · hours (kept as strings
+// for clean controlled inputs). A task can have several of these.
+interface AllocRow {
+  role: string;
+  rate: string;
+  hours: string;
+}
+const blankAlloc = (): AllocRow => ({ role: "", rate: "", hours: "" });
+
 // Editor row — numeric fields kept as strings for clean controlled inputs.
 interface LineRow {
   id: string;
   details: string;
-  cost: string;
-  role: string;
-  hourly_rate: string;
-  hours: string;
+  cost: string; // fixed mode
+  allocations: AllocRow[]; // hourly mode: 1+ people at their own rates
   internal_notes: string;
 }
 
@@ -49,11 +56,13 @@ const blankLine = (): LineRow => ({
   id: newLineId(),
   details: "",
   cost: "",
-  role: "",
-  hourly_rate: "",
-  hours: "",
+  allocations: [blankAlloc()],
   internal_notes: "",
 });
+
+// Sum of rate × hours over a task's people.
+const allocLineTotal = (allocs: AllocRow[]) =>
+  allocs.reduce((s, a) => s + (Number(a.rate) || 0) * (Number(a.hours) || 0), 0);
 
 const money = (n: number | null | undefined) =>
   `$${(Number(n) || 0).toLocaleString("en-US", {
@@ -133,8 +142,7 @@ export default function ChangeOrders() {
 
   const total = useMemo(() => {
     return lines.reduce((sum, l) => {
-      if (rateType === "hourly")
-        return sum + (num(l.hourly_rate) || 0) * (num(l.hours) || 0);
+      if (rateType === "hourly") return sum + allocLineTotal(l.allocations);
       return sum + (num(l.cost) || 0);
     }, 0);
   }, [lines, rateType]);
@@ -176,15 +184,34 @@ export default function ChangeOrders() {
     setSignatoryTitle(co.signatory_title || "");
     setTitle(co.title || "");
     setLines(
-      (co.line_items.length ? co.line_items : [{}]).map((li) => ({
-        id: newLineId(),
-        details: li.details || "",
-        cost: li.cost != null ? String(li.cost) : "",
-        role: li.role || "",
-        hourly_rate: li.hourly_rate != null ? String(li.hourly_rate) : "",
-        hours: li.hours != null ? String(li.hours) : "",
-        internal_notes: li.internal_notes || "",
-      })),
+      (co.line_items.length ? co.line_items : [{}]).map((li: any) => {
+        let allocations: AllocRow[];
+        if (li.allocations && li.allocations.length) {
+          allocations = li.allocations.map((a: any) => ({
+            role: a.role || "",
+            rate: a.rate != null ? String(a.rate) : "",
+            hours: a.hours != null ? String(a.hours) : "",
+          }));
+        } else if (li.role || li.hourly_rate != null || li.hours != null) {
+          // legacy single-person hourly -> one allocation
+          allocations = [
+            {
+              role: li.role || "",
+              rate: li.hourly_rate != null ? String(li.hourly_rate) : "",
+              hours: li.hours != null ? String(li.hours) : "",
+            },
+          ];
+        } else {
+          allocations = [blankAlloc()];
+        }
+        return {
+          id: newLineId(),
+          details: li.details || "",
+          cost: li.cost != null ? String(li.cost) : "",
+          allocations,
+          internal_notes: li.internal_notes || "",
+        };
+      }),
     );
     setErr(null);
     setTab("create");
@@ -209,17 +236,22 @@ export default function ChangeOrders() {
           (l) =>
             l.details.trim() ||
             l.cost ||
-            l.role ||
-            l.hourly_rate ||
-            l.hours ||
-            l.internal_notes.trim(),
+            l.internal_notes.trim() ||
+            l.allocations.some((a) => a.role || a.rate || a.hours),
         )
         .map((l) => ({
           details: l.details,
           cost: rateType === "fixed" ? num(l.cost) : null,
-          role: rateType === "hourly" ? l.role || null : null,
-          hourly_rate: rateType === "hourly" ? num(l.hourly_rate) : null,
-          hours: rateType === "hourly" ? num(l.hours) : null,
+          allocations:
+            rateType === "hourly"
+              ? l.allocations
+                  .filter((a) => a.role || a.rate || a.hours)
+                  .map((a) => ({
+                    role: a.role || null,
+                    rate: num(a.rate),
+                    hours: num(a.hours),
+                  }))
+              : null,
           internal_notes: l.internal_notes || null,
         })),
     };
@@ -482,7 +514,7 @@ export default function ChangeOrders() {
                       setLines((ls) =>
                         ls.map((l) =>
                           rt === "fixed"
-                            ? { ...l, role: "", hourly_rate: "", hours: "" }
+                            ? { ...l, allocations: [blankAlloc()] }
                             : { ...l, cost: "" },
                         ),
                       );
@@ -507,9 +539,15 @@ export default function ChangeOrders() {
               {lines.map((l, idx) => {
                 const set = (patch: Partial<LineRow>) =>
                   setLines(lines.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
+                const setAlloc = (ai: number, patch: Partial<AllocRow>) =>
+                  set({
+                    allocations: l.allocations.map((a, j) =>
+                      j === ai ? { ...a, ...patch } : a,
+                    ),
+                  });
                 const lineTotal =
                   rateType === "hourly"
-                    ? (num(l.hourly_rate) || 0) * (num(l.hours) || 0)
+                    ? allocLineTotal(l.allocations)
                     : num(l.cost) || 0;
                 return (
                   <div
@@ -536,46 +574,9 @@ export default function ChangeOrders() {
                           onChange={(e) => set({ cost: e.target.value })}
                         />
                       ) : (
-                        <>
-                          <select
-                            className="input w-36 text-sm"
-                            value={l.role}
-                            title="Pick a rate-card role to pre-fill the rate"
-                            onChange={(e) => {
-                              const role = e.target.value;
-                              const card = RATE_CARD.find((r) => r.role === role);
-                              set(
-                                card
-                                  ? { role, hourly_rate: String(card.rate) }
-                                  : { role },
-                              );
-                            }}
-                          >
-                            <option value="">Role…</option>
-                            {RATE_CARD.map((r) => (
-                              <option key={r.role} value={r.role}>
-                                {r.role} (${r.rate})
-                              </option>
-                            ))}
-                          </select>
-                          <input
-                            className="input w-20 text-right"
-                            inputMode="decimal"
-                            placeholder="Rate"
-                            value={l.hourly_rate}
-                            onChange={(e) => set({ hourly_rate: e.target.value })}
-                          />
-                          <input
-                            className="input w-16 text-right"
-                            inputMode="decimal"
-                            placeholder="Hrs"
-                            value={l.hours}
-                            onChange={(e) => set({ hours: e.target.value })}
-                          />
-                          <span className="w-24 text-right text-sm font-medium text-brand-black pt-2 tabular-nums">
-                            {money(lineTotal)}
-                          </span>
-                        </>
+                        <span className="w-24 text-right text-sm font-semibold text-brand-black pt-2 tabular-nums">
+                          {money(lineTotal)}
+                        </span>
                       )}
                       <button
                         className="btn-danger"
@@ -591,6 +592,95 @@ export default function ChangeOrders() {
                         ×
                       </button>
                     </div>
+
+                    {/* hourly: one task may span several people at different rates */}
+                    {rateType === "hourly" && (
+                      <div className="pl-7 space-y-1.5">
+                        <div className="text-[11px] uppercase tracking-wider text-brand-gray font-semibold">
+                          People &amp; hours
+                        </div>
+                        {l.allocations.map((a, ai) => {
+                          const sub = (num(a.rate) || 0) * (num(a.hours) || 0);
+                          return (
+                            <div key={ai} className="flex items-center gap-2">
+                              <select
+                                className="input w-40 text-sm"
+                                value={a.role}
+                                title="Pick a rate-card role to pre-fill the rate"
+                                onChange={(e) => {
+                                  const role = e.target.value;
+                                  const card = RATE_CARD.find(
+                                    (r) => r.role === role,
+                                  );
+                                  setAlloc(
+                                    ai,
+                                    card
+                                      ? { role, rate: String(card.rate) }
+                                      : { role },
+                                  );
+                                }}
+                              >
+                                <option value="">Role…</option>
+                                {RATE_CARD.map((r) => (
+                                  <option key={r.role} value={r.role}>
+                                    {r.role} (${r.rate})
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                className="input w-20 text-right"
+                                inputMode="decimal"
+                                placeholder="Rate"
+                                value={a.rate}
+                                onChange={(e) =>
+                                  setAlloc(ai, { rate: e.target.value })
+                                }
+                              />
+                              <span className="text-xs text-brand-gray">×</span>
+                              <input
+                                className="input w-16 text-right"
+                                inputMode="decimal"
+                                placeholder="Hrs"
+                                value={a.hours}
+                                onChange={(e) =>
+                                  setAlloc(ai, { hours: e.target.value })
+                                }
+                              />
+                              <span className="w-24 text-right text-xs tabular-nums text-brand-black">
+                                {money(sub)}
+                              </span>
+                              <button
+                                className="btn-danger"
+                                title="Remove person"
+                                onClick={() =>
+                                  set({
+                                    allocations:
+                                      l.allocations.length > 1
+                                        ? l.allocations.filter(
+                                            (_, j) => j !== ai,
+                                          )
+                                        : [blankAlloc()],
+                                  })
+                                }
+                              >
+                                ×
+                              </button>
+                            </div>
+                          );
+                        })}
+                        <button
+                          className="btn-ghost text-xs"
+                          onClick={() =>
+                            set({
+                              allocations: [...l.allocations, blankAlloc()],
+                            })
+                          }
+                        >
+                          + Add person
+                        </button>
+                      </div>
+                    )}
+
                     <input
                       className="input text-xs"
                       placeholder="Internal note (not shown on the client PDF)"

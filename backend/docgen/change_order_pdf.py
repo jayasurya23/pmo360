@@ -222,9 +222,30 @@ def _build_data_page(co) -> bytes:
     hourly = (co.rate_type or "fixed") == "hourly"
     running_total = 0.0
     for li in items:
-        line_total = (_num(li.hourly_rate) * _num(li.hours)) if hourly else _num(li.cost)
-        running_total += line_total
         details = (li.details or "").strip().replace("\n", "<br/>")
+        allocs = (li.allocations or []) if hourly else []
+        if hourly and allocs:
+            # one task, several people at different rates: sum the line, and
+            # list the per-role hour breakdown as sub-bullets (template style).
+            line_total = sum(_num(a.get("rate")) * _num(a.get("hours")) for a in allocs)
+            subs = []
+            for a in allocs:
+                hrs, role = _num(a.get("hours")), (a.get("role") or "").strip()
+                if not hrs and not role:
+                    continue
+                label = (f"{hrs:g} hours" if hrs else "")
+                if role:
+                    label = f"{label} — {role}" if label else role
+                subs.append(f"&#8594;&nbsp;{label}")
+            if subs:
+                bullets = "<br/>".join(f'<font color="#4d4d4f" size="8">{s}</font>'
+                                       for s in subs)
+                details = (details + "<br/>" if details else "") + bullets
+        elif hourly:
+            line_total = _num(li.hourly_rate) * _num(li.hours)
+        else:
+            line_total = _num(li.cost)
+        running_total += line_total
         data.append([
             Paragraph(details or "&nbsp;", S["td"]),
             Paragraph("$", S["td"]),
