@@ -98,6 +98,9 @@ export default function ChangeOrders() {
 
   const clientName =
     clients.find((c) => c.id === selectedClientId)?.name || "";
+  // No portfolio picked ("All clients" / "all portfolios") → aggregate, read +
+  // approve view across every portfolio (optionally narrowed to a client).
+  const inAll = !currentProject;
 
   // ---- lists per tab ----
   const [drafts, setDrafts] = useState<ChangeOrder[]>([]);
@@ -136,10 +139,11 @@ export default function ChangeOrders() {
   const [emailFor, setEmailFor] = useState<ChangeOrder | null>(null);
 
   const load = async () => {
-    if (!currentProject) return;
     setLoading(true);
     try {
-      const all = await listChangeOrders(currentProject.id);
+      const all = currentProject
+        ? await listChangeOrders(currentProject.id)
+        : await listChangeOrders(undefined, undefined, selectedClientId || undefined);
       setDrafts(all.filter((c) => c.status === "draft"));
       setPending(all.filter((c) => c.status === "pending"));
       setApproved(all.filter((c) => c.status === "approved"));
@@ -151,8 +155,11 @@ export default function ChangeOrders() {
   useEffect(() => {
     void load();
     resetForm();
+    // In the aggregate (no-portfolio) view the Create tab can't be used, so land
+    // on Pending ("open") where the cross-portfolio list lives.
+    if (!currentProject) setTab((t) => (t === "create" ? "pending" : t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentProject?.id]);
+  }, [currentProject?.id, selectedClientId]);
 
   // Seed the create form from a "Create change order" hand-off (e.g. the meeting
   // Review page passes { coPrefill: { title, details } } via router state).
@@ -397,14 +404,15 @@ export default function ChangeOrders() {
     await load();
   }
 
-  if (!currentProject)
-    return <EmptyState title="Pick a client + portfolio first" />;
-
   return (
     <div className="space-y-6">
       <PageHeader
         title="Change Orders"
-        subtitle={`${clientName ? clientName + " · " : ""}${currentProject.name}`}
+        subtitle={
+          inAll
+            ? `${clientName ? clientName + " · " : "All clients · "}every portfolio — viewing all change orders`
+            : `${clientName ? clientName + " · " : ""}${currentProject!.name}`
+        }
       />
 
       <div className="flex border-b border-brand-lightgray gap-6">
@@ -426,7 +434,13 @@ export default function ChangeOrders() {
       )}
 
       {/* ============ CREATE / EDIT ============ */}
-      {tab === "create" && (
+      {tab === "create" && inAll && (
+        <EmptyState
+          title="Select a portfolio to create a change order"
+          hint="Pick a client and portfolio in the context switcher above. The Pending Approval and Approved tabs show every change order across all portfolios."
+        />
+      )}
+      {tab === "create" && !inAll && (
         <div className="space-y-5">
           {!editingId && !rateChosen ? (
             <RateChooser
@@ -861,8 +875,9 @@ export default function ChangeOrders() {
               <CoRow
                 key={co.id}
                 co={co}
-                onEdit={() => loadForEdit(co)}
-                onDelete={() => doDelete(co)}
+                context={inAll}
+                onEdit={inAll ? undefined : () => loadForEdit(co)}
+                onDelete={inAll ? undefined : () => doDelete(co)}
                 actions={
                   <>
                     <button className="btn-ghost" onClick={() => openPdf(co)}>
@@ -896,7 +911,8 @@ export default function ChangeOrders() {
               <CoRow
                 key={co.id}
                 co={co}
-                onDelete={() => doDelete(co)}
+                context={inAll}
+                onDelete={inAll ? undefined : () => doDelete(co)}
                 actions={
                   <>
                     <button className="btn-primary" onClick={() => openPdf(co)}>
@@ -972,11 +988,15 @@ function CoRow({
   onEdit,
   onDelete,
   actions,
+  context,
 }: {
   co: ChangeOrder;
   onEdit?: () => void;
   onDelete?: () => void;
   actions?: React.ReactNode;
+  /** Show the owning client / portfolio — set in the cross-portfolio view
+   *  where rows from many portfolios are mixed together. */
+  context?: boolean;
 }) {
   return (
     <div className="px-5 py-3 grid grid-cols-[1fr_auto] gap-4 items-center">
@@ -991,6 +1011,19 @@ function CoRow({
             {co.rate_type === "hourly" ? "Hourly" : "Fixed"}
           </span>
         </div>
+        {context && (co.project_name || co.client_name) && (
+          <div className="text-xs text-brand-gray mt-0.5 truncate">
+            {co.client_name && (
+              <>
+                {co.client_name}
+                <span className="px-1">/</span>
+              </>
+            )}
+            <span className="font-medium text-brand-black">
+              {co.project_name || "—"}
+            </span>
+          </div>
+        )}
         <div className="text-xs text-brand-gray mt-0.5">
           <b className="text-brand-black">{money(co.total_amount)}</b>
           {co.title ? ` · ${co.title}` : ""}

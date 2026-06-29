@@ -110,15 +110,30 @@ def _archive_pdf(co: ChangeOrder) -> None:
 
 @router.get("", response_model=list[ChangeOrderOut])
 def list_change_orders(
-    project_id: int = Query(...),
+    project_id: "int | None" = Query(None),
+    client_id: "int | None" = Query(None),
     status: "str | None" = Query(None),
     db: Session = Depends(get_db),
 ):
-    q = db.query(ChangeOrder).filter(ChangeOrder.project_id == project_id)
+    """List change orders. Scoped to one portfolio (project_id) for the module's
+    per-portfolio tabs; with project_id omitted it aggregates across portfolios
+    (optionally narrowed to a client) for the "all clients" view + Home rollup."""
+    q = db.query(ChangeOrder)
+    if project_id is not None:
+        q = q.filter(ChangeOrder.project_id == project_id)
+    if client_id is not None:
+        q = q.join(Project, ChangeOrder.project_id == Project.id).filter(
+            Project.client_id == client_id
+        )
     if status in _VALID_STATUS:
         q = q.filter(ChangeOrder.status == status)
-    rows = q.order_by(ChangeOrder.co_number.desc()).all()
-    return [_out(co, db) for co in rows]
+    if project_id is not None:
+        # Per-portfolio: keep CO-number ordering (newest CO first).
+        q = q.order_by(ChangeOrder.co_number.desc())
+    else:
+        # Aggregate: newest first so the cross-portfolio list reads chronologically.
+        q = q.order_by(ChangeOrder.created_at.desc(), ChangeOrder.id.desc())
+    return [_out(co, db) for co in q.all()]
 
 
 @router.get("/{co_id}", response_model=ChangeOrderOut)
