@@ -21,6 +21,7 @@ const Settings = lazy(() => import("./pages/Settings"));
 const LeadDashboard = lazy(() => import("./pages/LeadDashboard"));
 const Timeline = lazy(() => import("./pages/Timeline"));
 const Proposals = lazy(() => import("./pages/Proposals"));
+const ChangeOrders = lazy(() => import("./pages/ChangeOrders"));
 
 export default function App() {
   return (
@@ -39,6 +40,7 @@ export default function App() {
         <Route path="/schedule" element={<Schedule />} />
         <Route path="/timeline" element={<Timeline />} />
         <Route path="/proposals" element={<Proposals />} />
+        <Route path="/change-orders" element={<ChangeOrders />} />
         <Route path="/lead" element={<LeadDashboard />} />
         <Route path="/settings" element={<Settings />} />
       </Route>

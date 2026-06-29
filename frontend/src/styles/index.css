@@ -22,6 +22,19 @@
     U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
+/* Hide the up/down spin buttons on number inputs — cleaner dense data tables
+ * (Proposals price/duration/hours, etc.). Numeric semantics + mobile keypad
+ * are preserved; only the arrow affordance is removed. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
 @layer base {
   html,
   body,

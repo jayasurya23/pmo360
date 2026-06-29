@@ -666,3 +666,57 @@ export interface Settings {
   openai: { model: string | null };
   brand: Record<string, any>;
 }
+
+// ---------- Change Orders ----------
+export interface COAllocation {
+  role?: string | null;
+  rate?: number | null;
+  hours?: number | null;
+}
+
+export interface ChangeOrderLineItem {
+  id?: number;
+  order_index?: number;
+  details?: string | null;
+  cost?: number | null; // fixed mode
+  allocations?: COAllocation[] | null; // hourly: people × rates
+  role?: string | null; // legacy single-person hourly
+  hourly_rate?: number | null; // legacy single-person hourly
+  hours?: number | null; // legacy single-person hourly
+  internal_notes?: string | null;
+}
+
+export interface ChangeOrder {
+  id: number;
+  project_id: number;
+  co_number: number;
+  co_version?: string | null;
+  title?: string | null;
+  rate_type: "fixed" | "hourly";
+  status: "draft" | "pending" | "approved";
+  request_date?: string | null;
+  requested_by?: string | null;
+  requested_by_user_id?: number | null;
+  approved_by?: string | null;
+  approved_by_user_id?: number | null;
+  approved_at?: string | null;
+  client_name?: string | null;
+  location?: string | null;
+  state?: string | null;
+  size_mw?: string | null;
+  signatory_name?: string | null;
+  signatory_title?: string | null;
+  signatory_phone?: string | null;
+  signatory_email?: string | null;
+  client_signatory_name?: string | null;
+  client_signatory_title?: string | null;
+  notes?: string | null;
+  total_amount?: number | null;
+  version?: number;
+  line_items: ChangeOrderLineItem[];
+  created_by?: UserStub | null;
+  updated_by?: UserStub | null;
+  created_at?: string;
+  updated_at?: string;
+  project_name?: string | null;
+}

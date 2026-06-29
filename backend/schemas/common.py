@@ -1079,3 +1079,111 @@ ProposalItemNode.model_rebuild()
 ProposalVersionDetail.model_rebuild()
 ProposalBoardResponse.model_rebuild()
 ProposalTreePut.model_rebuild()
+
+
+# ---------- Change Orders ----------
+class COAllocation(BaseModel):
+    """One person's contribution to an hourly task: role · rate · hours."""
+    role: Optional[str] = None
+    rate: Optional[float] = None
+    hours: Optional[float] = None
+
+
+class ChangeOrderLineItemOut(ORMModel):
+    id: int
+    order_index: int = 0
+    details: Optional[str] = None
+    cost: Optional[float] = None           # fixed mode
+    allocations: Optional[list[COAllocation]] = None  # hourly: people × rates
+    role: Optional[str] = None             # legacy single-person hourly
+    hourly_rate: Optional[float] = None    # legacy single-person hourly
+    hours: Optional[float] = None          # legacy single-person hourly
+    internal_notes: Optional[str] = None
+
+
+class ChangeOrderLineItemIn(BaseModel):
+    details: str = ""
+    cost: Optional[float] = None
+    allocations: Optional[list[COAllocation]] = None
+    role: Optional[str] = None
+    hourly_rate: Optional[float] = None
+    hours: Optional[float] = None
+    internal_notes: Optional[str] = None
+
+
+class ChangeOrderOut(ORMModel):
+    id: int
+    project_id: int
+    co_number: int
+    co_version: Optional[str] = None
+    title: Optional[str] = None
+    rate_type: str
+    status: str
+    request_date: Optional[date] = None
+    requested_by: Optional[str] = None
+    requested_by_user_id: Optional[int] = None
+    approved_by: Optional[str] = None
+    approved_by_user_id: Optional[int] = None
+    approved_at: Optional[datetime] = None
+    client_name: Optional[str] = None
+    location: Optional[str] = None
+    state: Optional[str] = None
+    size_mw: Optional[str] = None
+    signatory_name: Optional[str] = None
+    signatory_title: Optional[str] = None
+    signatory_phone: Optional[str] = None
+    signatory_email: Optional[str] = None
+    client_signatory_name: Optional[str] = None
+    client_signatory_title: Optional[str] = None
+    notes: Optional[str] = None
+    total_amount: Optional[float] = None
+    version: int = 1
+    line_items: list[ChangeOrderLineItemOut] = Field(default_factory=list)
+    created_by: Optional[UserStub] = None
+    updated_by: Optional[UserStub] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    # Set by the list/detail endpoints for display (not an ORM column).
+    project_name: Optional[str] = None
+
+
+class ChangeOrderIn(BaseModel):
+    project_id: int
+    co_version: str = "V1"
+    title: Optional[str] = None
+    rate_type: str = "fixed"   # fixed | hourly
+    request_date: Optional[date] = None
+    requested_by: Optional[str] = None
+    requested_by_user_id: Optional[int] = None
+    location: Optional[str] = None
+    state: Optional[str] = None
+    size_mw: Optional[str] = None
+    signatory_name: Optional[str] = None
+    signatory_title: Optional[str] = None
+    signatory_phone: Optional[str] = None
+    signatory_email: Optional[str] = None
+    client_signatory_name: Optional[str] = None
+    client_signatory_title: Optional[str] = None
+    notes: Optional[str] = None
+    line_items: list[ChangeOrderLineItemIn] = Field(default_factory=list)
+
+
+class ChangeOrderUpdate(BaseModel):
+    expected_version: Optional[int] = None
+    co_version: Optional[str] = None
+    title: Optional[str] = None
+    rate_type: Optional[str] = None
+    request_date: Optional[date] = None
+    requested_by: Optional[str] = None
+    requested_by_user_id: Optional[int] = None
+    location: Optional[str] = None
+    state: Optional[str] = None
+    size_mw: Optional[str] = None
+    signatory_name: Optional[str] = None
+    signatory_title: Optional[str] = None
+    signatory_phone: Optional[str] = None
+    signatory_email: Optional[str] = None
+    client_signatory_name: Optional[str] = None
+    client_signatory_title: Optional[str] = None
+    notes: Optional[str] = None
+    line_items: Optional[list[ChangeOrderLineItemIn]] = None

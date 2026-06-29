@@ -785,3 +785,82 @@ class ProposalDocument(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     version = relationship("ProposalVersion", back_populates="documents")
+
+
+class ChangeOrder(Base):
+    """An internal Change Order Request for a portfolio — the online form that
+    replaces the Excel "Change Order Request Form". Workflow:
+    draft -> pending (submitted for approval) -> approved (final, downloadable as
+    a Castillo-branded PDF).
+
+    ``rate_type`` switches the line shape: 'fixed' sums each line's ``cost``;
+    'hourly' sums ``hourly_rate`` * ``hours``. ``total_amount`` is recomputed
+    server-side on every save. Internal notes live on the line items but never
+    render on the client-facing PDF.
+    """
+    __tablename__ = "change_orders"
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    co_number = Column(Integer, nullable=False, default=1)   # per-portfolio seq -> "CO-{n}"
+    co_version = Column(String(20), default="V1")            # workbook "Version" label
+    title = Column(String(300))                              # optional short label
+    rate_type = Column(String(10), nullable=False, default="fixed")  # fixed | hourly
+    status = Column(String(20), nullable=False, default="draft")     # draft|pending|approved
+    request_date = Column(Date)
+    requested_by = Column(String(200))
+    requested_by_user_id = Column(Integer, ForeignKey("users.id"))
+    approved_by = Column(String(200))
+    approved_by_user_id = Column(Integer, ForeignKey("users.id"))
+    approved_at = Column(DateTime)
+    client_name = Column(String(200))     # snapshot for the PDF + History
+    location = Column(String(200))         # PDF header (e.g. "Lawrenceburg")
+    state = Column(String(50))             # PDF header (e.g. "TN")
+    size_mw = Column(String(50))           # PDF header (e.g. "8") — free text
+    signatory_name = Column(String(200))   # Castillo signature block: Print Name
+    signatory_title = Column(String(200))  # Castillo signature block: Title
+    signatory_phone = Column(String(50))   # back-cover "PREPARED BY" contact
+    signatory_email = Column(String(200))  # back-cover "PREPARED BY" contact
+    client_signatory_name = Column(String(200))   # Client signature block: Print Name
+    client_signatory_title = Column(String(200))  # Client signature block: Title
+    notes = Column(Text)
+    total_amount = Column(Float, default=0.0)
+    version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic lock
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    updated_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship(
+        "Project",
+        backref=backref("change_orders", cascade="all, delete-orphan"),
+    )
+    line_items = relationship(
+        "ChangeOrderLineItem", back_populates="change_order",
+        cascade="all, delete-orphan", order_by="ChangeOrderLineItem.order_index",
+    )
+    requested_by_user = relationship("User", foreign_keys=[requested_by_user_id])
+    approved_by_user = relationship("User", foreign_keys=[approved_by_user_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+
+class ChangeOrderLineItem(Base):
+    """One line of a Change Order. Fixed mode uses ``cost``; hourly mode uses
+    ``hourly_rate`` * ``hours``. ``internal_notes`` is app-only (off the PDF)."""
+    __tablename__ = "change_order_line_items"
+    id = Column(Integer, primary_key=True)
+    change_order_id = Column(Integer, ForeignKey("change_orders.id"), nullable=False)
+    order_index = Column(Integer, default=0)
+    details = Column(Text)
+    cost = Column(Float)            # fixed mode
+    # hourly mode: one task can span several people at different rates ->
+    # allocations is [{"role": str, "rate": float, "hours": float}, ...] and the
+    # line total is sum(rate*hours). role/hourly_rate/hours are the legacy
+    # single-person fields, kept as a fallback when allocations is empty.
+    allocations = Column(JSON)
+    role = Column(String(100))      # legacy single-person hourly
+    hourly_rate = Column(Float)     # legacy single-person hourly
+    hours = Column(Float)           # legacy single-person hourly
+    internal_notes = Column(Text)
+
+    change_order = relationship("ChangeOrder", back_populates="line_items")
