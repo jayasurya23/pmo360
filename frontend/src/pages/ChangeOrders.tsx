@@ -13,10 +13,14 @@ import {
   approveChangeOrder,
   rejectChangeOrder,
   deleteChangeOrder,
+  markChangeOrderSent,
+  listProjectRoster,
   fetchChangeOrderPdfBlob,
   type ChangeOrderCreate,
 } from "@/lib/api";
 import type { ChangeOrder } from "@/lib/types";
+import { useAuth } from "@/auth/useAuth";
+import { sendMail, blobToBase64 } from "@/lib/graph";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
@@ -124,6 +128,7 @@ export default function ChangeOrders() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfFor, setPdfFor] = useState<ChangeOrder | null>(null);
+  const [emailFor, setEmailFor] = useState<ChangeOrder | null>(null);
 
   const load = async () => {
     if (!currentProject) return;
@@ -863,9 +868,14 @@ export default function ChangeOrders() {
                 co={co}
                 onDelete={() => doDelete(co)}
                 actions={
-                  <button className="btn-primary" onClick={() => openPdf(co)}>
-                    📄 Final PDF
-                  </button>
+                  <>
+                    <button className="btn-primary" onClick={() => openPdf(co)}>
+                      📄 Final PDF
+                    </button>
+                    <button className="btn-ghost" onClick={() => setEmailFor(co)}>
+                      📧 Email to client
+                    </button>
+                  </>
                 }
               />
             ))}
@@ -910,6 +920,18 @@ export default function ChangeOrders() {
           </div>
         </div>
       )}
+
+      {/* Email-to-client modal */}
+      {emailFor && (
+        <CoEmailModal
+          co={emailFor}
+          onClose={() => setEmailFor(null)}
+          onSent={() => {
+            setEmailFor(null);
+            void load();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -949,6 +971,14 @@ function CoRow({
           {co.status === "approved" && co.approved_by
             ? ` · approved by ${co.approved_by}`
             : ""}
+          {co.sent_at ? (
+            <span className="text-emerald-700">
+              {" · ✉ emailed "}
+              {format(parseISO(co.sent_at), "MMM d")}
+            </span>
+          ) : (
+            ""
+          )}
         </div>
       </div>
       <div className="flex items-center gap-2 flex-wrap justify-end">
@@ -1047,5 +1077,215 @@ function TabBtn({
     >
       {children}
     </button>
+  );
+}
+
+// ---- email-to-client modal (Graph send, mailto fallback) ----
+function CoEmailModal({
+  co,
+  onClose,
+  onSent,
+}: {
+  co: ChangeOrder;
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const { isAuthenticated, getMailSendToken } = useAuth();
+  const project = co.project_name || co.client_name || "this project";
+  const filename =
+    `${(co.client_name || "Castillo").replace(/[^A-Za-z0-9]+/g, "_")}-CO-${co.co_number}-${
+      co.co_version || "V1"
+    }.pdf`;
+
+  const [to, setTo] = useState("");
+  const [cc, setCc] = useState("");
+  const [subject, setSubject] = useState(
+    `Change Order CO-${co.co_number} (${co.co_version || "V1"}) — ${project}`,
+  );
+  const [body, setBody] = useState(
+    `Hello,\n\nPlease find attached Change Order CO-${co.co_number} for ${project}, ` +
+      `totaling ${money(co.total_amount)}.\n\n` +
+      `Kindly review and return a signed copy at your convenience.\n\nBest regards,`,
+  );
+  const [contacts, setContacts] = useState<{ name: string; email: string }[]>([]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+
+  // Portfolio contacts (with email) shown as one-click chips for the To line.
+  useEffect(() => {
+    listProjectRoster(co.project_id)
+      .then((rows: any[]) =>
+        setContacts(
+          (rows || [])
+            .filter((r) => r.email)
+            .map((r) => ({ name: r.full_name || r.email, email: r.email })),
+        ),
+      )
+      .catch(() => setContacts([]));
+  }, [co.project_id]);
+
+  const addTo = (email: string) =>
+    setTo((cur) => {
+      const have = cur.split(/[,;\s]+/).map((s) => s.trim());
+      return have.includes(email) ? cur : cur ? `${cur}, ${email}` : email;
+    });
+
+  function mailtoFallback() {
+    void fetchChangeOrderPdfBlob(co.id).then((b) =>
+      window.open(URL.createObjectURL(b), "_blank"),
+    );
+    const q = [`subject=${encodeURIComponent(subject)}`, `body=${encodeURIComponent(body)}`];
+    if (cc.trim()) q.unshift(`cc=${encodeURIComponent(cc.trim())}`);
+    setTimeout(() => {
+      window.location.href = `mailto:${encodeURIComponent(to.trim())}?${q.join("&")}`;
+    }, 250);
+  }
+
+  async function send() {
+    setError(null);
+    if (!to.trim()) {
+      setError("Add at least one recipient.");
+      return;
+    }
+    setSending(true);
+    try {
+      const blob = await fetchChangeOrderPdfBlob(co.id);
+      const contentBytesBase64 = await blobToBase64(blob);
+      const token = await getMailSendToken();
+      await sendMail(
+        {
+          to: to.trim(),
+          cc: cc.trim() || undefined,
+          subject,
+          body,
+          attachments: [
+            { name: filename, contentType: "application/pdf", contentBytesBase64 },
+          ],
+        },
+        token,
+      );
+      await markChangeOrderSent(
+        co.id,
+        [to, cc].filter((s) => s.trim()).join(", "),
+      );
+      setOk(true);
+      setTimeout(onSent, 900);
+    } catch (e: any) {
+      setError(e?.message || "Send failed");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !sending) onClose();
+      }}
+    >
+      <div className="w-full max-w-2xl card p-5 shadow-xl max-h-[90vh] overflow-y-auto space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="section-title">Email CO-{co.co_number} to client</h3>
+          <button
+            className="text-xs text-slate-400 hover:text-slate-600"
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </div>
+
+        {contacts.length > 0 && (
+          <div className="text-xs">
+            <span className="text-brand-gray">Portfolio contacts: </span>
+            {contacts.map((c) => (
+              <button
+                key={c.email}
+                type="button"
+                className="inline-block mr-1 mb-1 px-2 py-0.5 rounded border border-slate-200 hover:border-brand-red hover:text-brand-red"
+                onClick={() => addTo(c.email)}
+                title={`Add ${c.email}`}
+              >
+                + {c.name}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <label className="block">
+          <span className="label">To</span>
+          <input
+            className="input"
+            value={to}
+            onChange={(e) => setTo(e.target.value)}
+            placeholder="client@example.com, …"
+          />
+        </label>
+        <label className="block">
+          <span className="label">Cc (optional)</span>
+          <input className="input" value={cc} onChange={(e) => setCc(e.target.value)} />
+        </label>
+        <label className="block">
+          <span className="label">Subject</span>
+          <input
+            className="input"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+          />
+        </label>
+        <label className="block">
+          <span className="label">Body</span>
+          <textarea
+            className="textarea font-sans"
+            rows={8}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+          />
+        </label>
+        <div className="text-xs text-brand-gray">
+          📎 {filename} (the branded PDF) is attached automatically.
+        </div>
+
+        {error && (
+          <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+            {error}
+          </div>
+        )}
+        {ok && (
+          <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
+            ✓ Sent — check your Outlook Sent Items.
+          </div>
+        )}
+
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <button
+            className="btn-ghost"
+            onClick={mailtoFallback}
+            disabled={!to.trim()}
+            title="Opens your mail client; the PDF opens in a new tab to attach manually."
+          >
+            ✉ Open in Outlook
+          </button>
+          <button
+            className="btn-primary"
+            onClick={() => void send()}
+            disabled={sending || !to.trim() || !isAuthenticated}
+            title={
+              isAuthenticated
+                ? "Send via Microsoft Graph from your mailbox — PDF attached."
+                : "Sign in to send via Graph."
+            }
+          >
+            {sending ? "Sending…" : "🚀 Send via Graph"}
+          </button>
+        </div>
+        {!isAuthenticated && (
+          <p className="text-xs text-brand-gray">
+            One-click send needs sign-in; the Outlook fallback works without it.
+          </p>
+        )}
+      </div>
+    </div>
   );
 }

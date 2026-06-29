@@ -715,6 +715,9 @@ export interface ChangeOrder {
   client_signatory_title?: string | null;
   notes?: string | null;
   total_amount?: number | null;
+  pdf_storage_path?: string | null;
+  sent_at?: string | null;
+  sent_to?: string | null;
   version?: number;
   line_items: ChangeOrderLineItem[];
   created_by?: UserStub | null;

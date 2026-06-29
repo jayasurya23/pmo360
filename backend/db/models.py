@@ -828,6 +828,9 @@ class ChangeOrder(Base):
     client_signatory_title = Column(String(200))  # Client signature block: Title
     notes = Column(Text)
     total_amount = Column(Float, default=0.0)
+    pdf_storage_path = Column(String(500))  # archived approved PDF (storage backend)
+    sent_at = Column(DateTime)              # when emailed to the client
+    sent_to = Column(Text)                  # recipients it was emailed to
     version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic lock
     created_by_id = Column(Integer, ForeignKey("users.id"))
     updated_by_id = Column(Integer, ForeignKey("users.id"))
