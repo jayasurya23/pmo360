@@ -114,6 +114,7 @@ def list_change_orders(
     client_id: "int | None" = Query(None),
     status: "str | None" = Query(None),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     """List change orders. Scoped to one portfolio (project_id) for the module's
     per-portfolio tabs; with project_id omitted it aggregates across portfolios
@@ -137,7 +138,11 @@ def list_change_orders(
 
 
 @router.get("/{co_id}", response_model=ChangeOrderOut)
-def get_change_order(co_id: int, db: Session = Depends(get_db)):
+def get_change_order(
+    co_id: int,
+    db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+):
     return _out(_get(db, co_id), db)
 
 
