@@ -28,12 +28,12 @@ from auth import require_db_user
 from core.deps import get_db
 from db.models import (
     Proposal, ProposalVersion, ProposalDocument, Project, Deliverable, Schedule,
-    TimelineProject, TimelineAssignment, TimelineResource,
+    TimelineProject, TimelineAssignment, TimelineResource, PortfolioProject,
 )
 from schemas.common import (
     ProposalOut, ProposalListItem, ProposalVersionOut, ProposalVersionDetail,
     ProposalBoardResponse, ProposalPatch, ProposalTreePut, ProposalRecomputeRequest,
-    ProposalLinkRequest, ProposalSyncRequest, ProposalSyncResult,
+    ProposalLinkRequest, ProposalLinkProjectRequest, ProposalSyncRequest, ProposalSyncResult,
     ProposalToTimelineRequest, ProposalToTimelineResult,
     ProposalTimelineMilestonesOut, ProposalTimelineMilestoneOut,
     ProposalTimelineBarRequest, ProposalTimelineBarResult,
@@ -444,12 +444,15 @@ async def upload_proposal(
 @router.get("", response_model=list[ProposalListItem])
 def list_proposals(
     portfolio_id: Optional[int] = Query(None),
+    project_id: Optional[int] = Query(None),
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
 ):
     q = db.query(Proposal)
     if portfolio_id is not None:
         q = q.filter(Proposal.portfolio_id == portfolio_id)
+    if project_id is not None:
+        q = q.filter(Proposal.project_id == project_id)
     out = []
     for p in q.order_by(Proposal.updated_at.desc()).all():
         active = db.get(ProposalVersion, p.current_version_id) if p.current_version_id else None
@@ -872,6 +875,30 @@ def link_portfolio(
     if not db.get(Project, payload.portfolio_id):
         raise HTTPException(404, "Portfolio not found")
     p.portfolio_id = payload.portfolio_id
+    # A direct portfolio link bypasses the project tier — clear any project so it
+    # can't dangle against a different portfolio.
+    p.project_id = None
+    p.updated_by_id = actor.id
+    p.version = (p.version or 1) + 1
+    db.flush()
+    return p
+
+
+@router.patch("/{pid}/link-project", response_model=ProposalOut)
+def link_project(
+    pid: int, payload: ProposalLinkProjectRequest,
+    db: Session = Depends(get_db), actor=Depends(require_db_user),
+):
+    """Link a proposal to a Project (the tier under a Portfolio). The proposal's
+    ``portfolio_id`` is derived from the project's portfolio so portfolio-scoped
+    behavior (Sync, lists, CO rollups) keeps working."""
+    p = _get_proposal(pid, db)
+    _check_stale(payload.expected_version, p.version)
+    proj = db.get(PortfolioProject, payload.project_id)
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    p.project_id = proj.id
+    p.portfolio_id = proj.portfolio_id   # derive the portfolio from the project
     p.updated_by_id = actor.id
     p.version = (p.version or 1) + 1
     db.flush()
@@ -882,6 +909,7 @@ def link_portfolio(
 def unlink_portfolio(pid: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
     p = _get_proposal(pid, db)
     p.portfolio_id = None
+    p.project_id = None   # project implies a portfolio, so clear both
     p.updated_by_id = actor.id
     p.version = (p.version or 1) + 1
     db.flush()

@@ -925,6 +925,10 @@ class ProposalOut(ORMModel):
     project_state: Optional[str] = None
     project_size_mw: Optional[str] = None
     portfolio_id: Optional[int] = None
+    # Project tier (a site under the portfolio). When set, portfolio_id is the
+    # project's portfolio. project_name is a read-only derived label.
+    project_id: Optional[int] = None
+    project_name: Optional[str] = None
     linked_schedule_id: Optional[int] = None
     current_version_id: Optional[int] = None
     version: int = 1
@@ -937,6 +941,40 @@ class ProposalListItem(ProposalOut):
     current_label: Optional[str] = None
     version_count: int = 0
     portfolio_name: Optional[str] = None
+
+
+class PortfolioProjectOut(ORMModel):
+    id: int
+    portfolio_id: int
+    name: str
+    location: Optional[str] = None
+    state: Optional[str] = None
+    size_mw: Optional[str] = None
+    version: int = 1
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class PortfolioProjectCreate(BaseModel):
+    portfolio_id: int
+    name: str
+    location: Optional[str] = None
+    state: Optional[str] = None
+    size_mw: Optional[str] = None
+
+
+class PortfolioProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    location: Optional[str] = None
+    state: Optional[str] = None
+    size_mw: Optional[str] = None
+    portfolio_id: Optional[int] = None
+    expected_version: Optional[int] = None
+
+
+class ProposalLinkProjectRequest(BaseModel):
+    project_id: int
+    expected_version: Optional[int] = None
 
 
 class ProposalVersionOut(ORMModel):

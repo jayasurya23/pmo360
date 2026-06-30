@@ -492,8 +492,25 @@ export interface ProposalOut {
   project_state: string | null;
   project_size_mw: string | null;
   portfolio_id: number | null;
+  // Project tier (a site under the portfolio). When set, portfolio_id is the
+  // project's portfolio; project_name is a read-only derived label.
+  project_id: number | null;
+  project_name: string | null;
   linked_schedule_id: number | null;
   current_version_id: number | null;
+  version: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** The "Project" tier: a site (e.g. "Cobra") under a Portfolio. */
+export interface PortfolioProject {
+  id: number;
+  portfolio_id: number;
+  name: string;
+  location: string | null;
+  state: string | null;
+  size_mw: string | null;
   version: number;
   created_at: string | null;
   updated_at: string | null;

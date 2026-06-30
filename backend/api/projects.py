@@ -10,7 +10,7 @@ from core.deps import get_db
 from auth import get_current_db_user
 from db.models import (
     Project, Client, Meeting, ActionItem, Deliverable, Agenda,
-    Schedule, Proposal, ProposalVersion,
+    Schedule, Proposal, ProposalVersion, PortfolioProject,
 )
 from db.repository import (
     list_projects, get_project, set_portfolio_sub_projects, list_deliverables,
@@ -139,6 +139,16 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
     ).update({Proposal.linked_schedule_id: None}, synchronize_session=False)
     db.query(Proposal).filter(Proposal.portfolio_id == project_id).update(
         {Proposal.portfolio_id: None}, synchronize_session=False)
+    # Project-tier rows (sites) belong to this portfolio. Null any proposal
+    # pointers into them so those proposals survive standalone, then drop the
+    # project rows (their FK to projects.id would otherwise block the delete).
+    pp_ids = select(PortfolioProject.id).where(
+        PortfolioProject.portfolio_id == project_id)
+    db.query(Proposal).filter(Proposal.project_id.in_(pp_ids)).update(
+        {Proposal.project_id: None}, synchronize_session=False)
+    db.query(PortfolioProject).filter(
+        PortfolioProject.portfolio_id == project_id
+    ).delete(synchronize_session=False)
     db.delete(project)
     return None
 

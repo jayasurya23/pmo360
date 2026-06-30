@@ -47,13 +47,15 @@ import {
   downloadProposalTemplate,
   downloadProposalBundle,
   importProposalTemplate,
-  linkProposal,
   unlinkProposal,
   syncProposal,
   sendProposalToTimeline,
   fetchProposalLogos,
   updateProposalLogos,
   listChangeOrders,
+  linkProposalProject,
+  listPortfolioProjects,
+  createPortfolioProject,
 } from "@/lib/api";
 import type {
   ProposalBoard,
@@ -61,6 +63,7 @@ import type {
   ProposalItemNode,
   ProposalOut,
   ProposalLogos,
+  PortfolioProject,
   SplitDepositMemory,
   SplitHistoryEntry,
 } from "@/lib/types";
@@ -514,6 +517,9 @@ export default function Proposals() {
   const { currentProject, selectedSubProject } = useApp();
 
   const [list, setList] = useState<ProposalListItem[]>([]);
+  // Project tier (sites under the header's portfolio) for the proposal link picker.
+  const [projectsForPortfolio, setProjectsForPortfolio] = useState<PortfolioProject[]>([]);
+  const [newProjectName, setNewProjectName] = useState("");
   const [board, setBoard] = useState<ProposalBoard | null>(null);
   const [loading, setLoading] = useState(true);
   const [boardLoading, setBoardLoading] = useState(false);
@@ -635,6 +641,26 @@ export default function Proposals() {
   useEffect(() => {
     void loadList();
   }, [loadList, isAuthenticated]);
+
+  // Projects (sites) under the header's portfolio — drives the proposal's
+  // Project link picker. Re-fetched whenever the portfolio selection changes.
+  useEffect(() => {
+    if (!currentProject) {
+      setProjectsForPortfolio([]);
+      return;
+    }
+    let cancelled = false;
+    void listPortfolioProjects(currentProject.id)
+      .then((rows) => {
+        if (!cancelled) setProjectsForPortfolio(rows);
+      })
+      .catch(() => {
+        if (!cancelled) setProjectsForPortfolio([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProject?.id]);
 
   // Re-seed the info/config working copies from a freshly-fetched version.
   const seedDrafts = useCallback((v: { info?: Record<string, any>; config?: Record<string, any> }) => {
@@ -1546,27 +1572,47 @@ export default function Proposals() {
     }
   }
 
-  // ---- portfolio link / unlink ----
-  async function doLink() {
-    if (!proposalId || !currentProject) return;
-    try {
-      const updated = await linkProposal(proposalId, currentProject.id);
-      setBoard((b) => (b ? { ...b, proposal: updated } : b));
-      flashToast(`Linked to portfolio “${currentProject.name}”.`);
-      void loadList();
-    } catch (e: any) {
-      setError(e?.message || "Could not link to portfolio");
-    }
-  }
+  // ---- unlink (clears both project + portfolio) ----
   async function doUnlink() {
     if (!proposalId) return;
     try {
       const updated = await unlinkProposal(proposalId);
       setBoard((b) => (b ? { ...b, proposal: updated } : b));
-      flashToast("Unlinked from portfolio.");
+      flashToast("Unlinked.");
       void loadList();
     } catch (e: any) {
       setError(e?.message || "Could not unlink");
+    }
+  }
+
+  // ---- project link (the tier under a portfolio; portfolio derived) ----
+  async function doLinkProject(projectId: number) {
+    if (!proposalId) return;
+    try {
+      const updated = await linkProposalProject(proposalId, projectId);
+      setBoard((b) => (b ? { ...b, proposal: updated } : b));
+      flashToast(`Linked to project “${updated.project_name || ""}”.`);
+      void loadList();
+    } catch (e: any) {
+      setError(e?.message || "Could not link to project");
+    }
+  }
+  async function doCreateAndLinkProject() {
+    if (!proposalId || !currentProject) return;
+    const name = newProjectName.trim();
+    if (!name) return;
+    try {
+      const proj = await createPortfolioProject({
+        portfolio_id: currentProject.id,
+        name,
+      });
+      setProjectsForPortfolio((ps) =>
+        [...ps, proj].sort((a, b) => a.name.localeCompare(b.name)),
+      );
+      setNewProjectName("");
+      await doLinkProject(proj.id);
+    } catch (e: any) {
+      setError(e?.message || "Could not create project");
     }
   }
 
@@ -2202,15 +2248,21 @@ export default function Proposals() {
           {/* project summary (collapsible) */}
           <SummaryPanel summary={summary} coApproved={coApproved} />
 
-          {/* portfolio tie-in */}
+          {/* project / portfolio tie-in (proposal → Project → Portfolio) */}
           <section className="card flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
             <span className="text-[11px] uppercase tracking-wider text-brand-gray">
-              Portfolio
+              Project
             </span>
-            {board.proposal.portfolio_id ? (
+            {board.proposal.project_id ? (
               <>
                 <span className="font-medium text-brand-black">
-                  🔗 {linkedPortfolioName || `#${board.proposal.portfolio_id}`}
+                  🔗 {board.proposal.project_name || `#${board.proposal.project_id}`}
+                  {linkedPortfolioName ? (
+                    <span className="font-normal text-brand-gray">
+                      {" · in "}
+                      {linkedPortfolioName}
+                    </span>
+                  ) : null}
                 </span>
                 <button className="text-xs text-brand-gray hover:text-brand-red hover:underline" onClick={() => void doUnlink()}>
                   Unlink
@@ -2221,14 +2273,54 @@ export default function Proposals() {
               </>
             ) : currentProject ? (
               <>
-                <span className="text-brand-gray">Not linked.</span>
-                <button className="btn-ghost text-xs py-1" onClick={() => void doLink()}>
-                  🔗 Link to “{currentProject.name}”
+                <span className="text-brand-gray">
+                  Assign to a project in “{currentProject.name}”:
+                </span>
+                <select
+                  className="rounded border border-brand-lightgray/70 px-2 py-1 text-xs"
+                  value=""
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (v) void doLinkProject(v);
+                  }}
+                >
+                  <option value="">Select a project…</option>
+                  {projectsForPortfolio.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-brand-gray">or</span>
+                <input
+                  className="rounded border border-brand-lightgray/70 px-2 py-1 text-xs w-40"
+                  placeholder="New project name"
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void doCreateAndLinkProject();
+                  }}
+                />
+                <button
+                  className="btn-ghost text-xs py-1"
+                  disabled={!newProjectName.trim()}
+                  onClick={() => void doCreateAndLinkProject()}
+                >
+                  ＋ Create + link
                 </button>
+                {board.proposal.portfolio_id ? (
+                  <button
+                    className="text-xs text-brand-gray hover:text-brand-red hover:underline"
+                    onClick={() => void doUnlink()}
+                    title="This proposal is linked at the portfolio level only (no project)"
+                  >
+                    (portfolio-only — unlink)
+                  </button>
+                ) : null}
               </>
             ) : (
               <span className="text-brand-gray">
-                Not linked. Pick a client + portfolio in the header to enable linking — a proposal works fully standalone without one.
+                Pick a client + portfolio in the header to assign this proposal to a project — a proposal works fully standalone without one.
               </span>
             )}
           </section>

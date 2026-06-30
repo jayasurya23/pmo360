@@ -685,6 +685,35 @@ class TimelineTimeOff(Base):
 # ============================================================
 # Proposal builder (ported Castillo Proposal Generator)
 # ============================================================
+class PortfolioProject(Base):
+    """The user-facing "Project" tier: a site (e.g. "Cobra") that belongs to a
+    Portfolio (the ``projects`` table). Proposals link here via
+    ``Proposal.project_id`` and derive their portfolio from this row.
+
+    Naming: the existing ``Project`` model / ``projects`` table IS the Portfolio
+    (a long-ago UI rename); this new tier is ``PortfolioProject`` to avoid a
+    class/table collision. Scoped to proposals for now — meetings, schedules and
+    change orders still attach directly to the Portfolio.
+    """
+    __tablename__ = "portfolio_projects"
+    id = Column(Integer, primary_key=True)
+    portfolio_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    name = Column(String(300), nullable=False)
+    # Reusable site facts (mirror Project's), e.g. for proposal/CO headers.
+    location = Column(String(200))
+    state = Column(String(50))
+    size_mw = Column(String(50))
+    version = Column(Integer, nullable=False, default=1, server_default="1")
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    updated_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    portfolio = relationship("Project", foreign_keys=[portfolio_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+
 class Proposal(Base):
     """A proposal document. Self-contained: usable with NO client/portfolio.
 
@@ -709,6 +738,10 @@ class Proposal(Base):
     company_logo = Column(Text)
     client_logo = Column(Text)
     portfolio_id = Column(Integer, ForeignKey("projects.id"))      # nullable hinge
+    # The Project tier (a site under the portfolio). When set, the backend keeps
+    # ``portfolio_id`` in sync = this project's portfolio, so portfolio-scoped
+    # behavior is unchanged. NULL => no project assigned (legacy/standalone).
+    project_id = Column(Integer, ForeignKey("portfolio_projects.id"))
     linked_schedule_id = Column(Integer, ForeignKey("schedules.id"))  # last synced schedule
     # use_alter=True so create_all (fresh-DB path) can break the circular
     # proposals↔proposal_versions FK by adding this one via a post-create ALTER.
@@ -736,8 +769,14 @@ class Proposal(Base):
         post_update=True,
     )
     portfolio = relationship("Project", foreign_keys=[portfolio_id])
+    project = relationship("PortfolioProject", foreign_keys=[project_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
     updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+    @property
+    def project_name(self):
+        """Derived label for ProposalOut (the Project tier this proposal sits in)."""
+        return self.project.name if self.project else None
 
 
 class ProposalVersion(Base):
