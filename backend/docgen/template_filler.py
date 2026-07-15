@@ -308,6 +308,66 @@ def _table_after_heading(doc, heading_text: str):
     return None
 
 
+# Status → (cell fill, text color) — mirrors the PDF's status pills
+# (docgen/pdf_builder.py STATUS_COLORS / STATUS_TEXT_COLORS) so the Word minutes
+# color the Action Items Status column the same way.
+_STATUS_FILL = {
+    "open":      "1AA6C9",   # blue
+    "pending":   "C7BB2E",   # gold
+    "completed": "278747",   # green
+    "cancelled": "E6E7E8",   # light gray
+}
+_STATUS_TEXT = "1A1A1A"      # black on all (matches the PDF)
+
+
+def _shade_tc(tc, fill_hex: str):
+    """Set/replace a table cell's background shading (w:shd fill)."""
+    tcPr = tc.find(qn("w:tcPr"))
+    if tcPr is None:
+        tcPr = tc.makeelement(qn("w:tcPr"), {})
+        tc.insert(0, tcPr)
+    shd = tcPr.find(qn("w:shd"))
+    if shd is None:
+        shd = tcPr.makeelement(qn("w:shd"), {})
+        tcPr.append(shd)
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), fill_hex)
+
+
+def _set_tc_font_color(tc, hex_color: str):
+    """Force the font color of every run in a cell."""
+    for r in tc.findall(f".//{qn('w:r')}"):
+        rPr = r.find(qn("w:rPr"))
+        if rPr is None:
+            rPr = r.makeelement(qn("w:rPr"), {})
+            r.insert(0, rPr)
+        color = rPr.find(qn("w:color"))
+        if color is None:
+            color = rPr.makeelement(qn("w:color"), {})
+            rPr.append(color)
+        color.set(qn("w:val"), hex_color)
+
+
+def _color_action_status(doc, actions):
+    """Shade the Action Items Status cell (last column) per status, matching the
+    PDF's colored status pills. Data rows follow the action order 1:1."""
+    tbl = _table_after_heading(doc, "Action Items")
+    if tbl is None:
+        return
+    for ri, a in enumerate(actions, start=1):
+        if ri >= len(tbl.rows):
+            break
+        fill = _STATUS_FILL.get((getattr(a, "status", "") or "open").lower())
+        if not fill:
+            continue
+        tcs = tbl.rows[ri]._tr.findall(qn("w:tc"))
+        if not tcs:
+            continue
+        _shade_tc(tcs[-1], fill)          # Status is the last column
+        _set_tc_font_color(tcs[-1], _STATUS_TEXT)
+
+
 def _set_cell_text(cell, text: str):
     """Replace cell text while preserving run-level formatting from the first
     run of the first paragraph. Removes extra paragraphs in the cell."""
@@ -483,6 +543,7 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
         ])
     _rewrite_table(doc, "Action Items", act_rows,
                    header_labels=["#", "Action", "Owner", "Due", "Status"])
+    _color_action_status(doc, meeting.raised_actions)
 
     # --- Closing Remarks ---
     # Keep template's "Thank you to everyone..." text as-is, unless the meeting
