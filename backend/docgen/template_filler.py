@@ -29,6 +29,7 @@ from typing import Iterable
 
 from docx import Document
 from docx.oxml.ns import qn
+from docx.table import _Cell
 
 from db.models import Meeting
 
@@ -326,25 +327,51 @@ def _set_cell_text(cell, text: str):
         extra.getparent().remove(extra)
 
 
-def _rewrite_table(doc, heading_text: str, rows_data: list[list[str]]):
+def _rewrite_table(doc, heading_text: str, rows_data: list[list[str]],
+                   header_labels: "list[str] | None" = None):
     tbl = _table_after_heading(doc, heading_text)
     if tbl is None or len(tbl.rows) < 2:
         return
-    # Use the first data row as the clone template for new rows
+    header_el = tbl.rows[0]._tr
+    ncols = len(header_el.findall(qn("w:tc")))
+
+    # Optionally (re)label the header. The template's Action Items table ships
+    # with a blank Status header; fill it by cloning a styled neighbour cell
+    # (so the red shading + white bold carry over) before setting the text.
+    if header_labels:
+        htcs = header_el.findall(qn("w:tc"))
+        for i in range(min(ncols, len(header_labels))):
+            tc = htcs[i]
+            if not (_Cell(tc, tbl).text or "").strip() and i > 0:
+                clone = deepcopy(htcs[i - 1])
+                header_el.replace(tc, clone)
+                tc = clone
+            _set_cell_text(_Cell(tc, tbl), header_labels[i])
+
+    # Clone the first data row as the row template. Some template rows have
+    # FEWER <w:tc> than the header (the Action Items rows omit the Due cell, so
+    # the Due value would otherwise shift left into the Status cell) — pad the
+    # clone up to the header's column count, inserting the missing cell(s)
+    # before the last cell with a normal body style.
     template_row_el = deepcopy(tbl.rows[1]._tr)
+    tcs = template_row_el.findall(qn("w:tc"))
+    if tcs and len(tcs) < ncols:
+        style_ref = tcs[-2] if len(tcs) >= 2 else tcs[-1]
+        while len(tcs) < ncols:
+            tcs[-1].addprevious(deepcopy(style_ref))
+            tcs = template_row_el.findall(qn("w:tc"))
+
     # Remove every existing data row (keep header at index 0)
     for row in list(tbl.rows)[1:]:
         tbl._tbl.remove(row._tr)
-    # Insert one cloned row per data tuple, set cell texts
+
+    # Insert one cloned row per data tuple, writing straight to the raw <w:tc>
+    # so value i lands in column i regardless of python-docx grid quirks.
     for row_values in rows_data:
         new_row_el = deepcopy(template_row_el)
         tbl._tbl.append(new_row_el)
-        new_row = tbl.rows[-1]
-        for i, cell in enumerate(new_row.cells):
-            if i < len(row_values):
-                _set_cell_text(cell, row_values[i])
-            else:
-                _set_cell_text(cell, "")
+        for i, tc in enumerate(new_row_el.findall(qn("w:tc"))):
+            _set_cell_text(_Cell(tc, tbl), row_values[i] if i < len(row_values) else "")
 
 
 # ============================================================
@@ -454,7 +481,8 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
             a.due_date.strftime("%m/%d/%Y") if a.due_date else "",
             a.status.capitalize(),
         ])
-    _rewrite_table(doc, "Action Items", act_rows)
+    _rewrite_table(doc, "Action Items", act_rows,
+                   header_labels=["#", "Action", "Owner", "Due", "Status"])
 
     # --- Closing Remarks ---
     # Keep template's "Thank you to everyone..." text as-is, unless the meeting
