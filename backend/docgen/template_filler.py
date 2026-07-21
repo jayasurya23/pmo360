@@ -740,10 +740,10 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
     # Column widths (twips, ~7.75" text area): a wide Action column and a
     # compact Due column (its font is shrunk below), proportioned to match the
     # PDF's Action Items table.
-    #   #=560  Action=5170  Owner=2450  Due=1340  Status=1640  (sum 11160)
+    #   #=570  Action=5750  Owner=2220  Due=1320  Status=1300  (sum 11160)
     _rewrite_table(doc, "Action Items", act_rows,
                    header_labels=["#", "Action", "Owner", "Due", "Status"],
-                   col_widths=[560, 5170, 2450, 1340, 1640])
+                   col_widths=[570, 5750, 2220, 1320, 1300])
     _color_action_status(doc, meeting.raised_actions)
     # Compact Due column: smaller font (matches the PDF), so a full m/d/yyyy
     # date fits on one line despite the narrower column.

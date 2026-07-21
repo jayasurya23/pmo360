@@ -199,8 +199,8 @@ def _styles() -> dict:
         # colour renders in every viewer (no form-field highlight) and matches
         # the Word document.
         "status_label": ParagraphStyle(
-            "status_label", fontName=PRIMARY_BOLD, fontSize=9,
-            textColor=NEAR_BLACK, leading=11, alignment=TA_LEFT,
+            "status_label", fontName=PRIMARY_BOLD, fontSize=8,
+            textColor=NEAR_BLACK, leading=10, alignment=TA_LEFT,
         ),
     }
 
@@ -606,9 +606,9 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
                 Paragraph(_status_pill_text(status), s["status_label"]),
             ])
 
-        # Wide Action column; compact Due (small font) so more room goes to
-        # the Action text. Sums to the 6.8" text area.
-        act_col_widths = [0.35 * inch, 3.15 * inch, 1.5 * inch, 0.8 * inch, 1.0 * inch]
+        # Wide Action column; compact Due + Status (both small font) so most of
+        # the room goes to the Action text. Sums to the 6.8" text area.
+        act_col_widths = [0.35 * inch, 3.5 * inch, 1.35 * inch, 0.8 * inch, 0.8 * inch]
         act_table = Table(
             table_data,
             colWidths=act_col_widths,
@@ -633,10 +633,10 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
             ("LEFTPADDING",   (0, 0), (-1, -1), 8),
             ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
             ("LINEBELOW",     (0, 0), (-1, -1), 0.5, LIGHT_GRAY),
-            # Tighter horizontal padding on the compact Due column so the date
-            # still fits on one line despite the narrower width.
-            ("LEFTPADDING",   (3, 1), (3, -1), 4),
-            ("RIGHTPADDING",  (3, 1), (3, -1), 4),
+            # Tighter horizontal padding on the compact Due + Status columns so
+            # the date / status label still fit despite their narrower widths.
+            ("LEFTPADDING",   (3, 1), (4, -1), 4),
+            ("RIGHTPADDING",  (3, 1), (4, -1), 4),
         ])
         # Per-row status cell background — the status colour, as page content.
         for row_idx, a in enumerate(meeting.raised_actions, start=1):
