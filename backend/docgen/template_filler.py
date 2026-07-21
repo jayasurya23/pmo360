@@ -420,6 +420,8 @@ _STATUS_FILL = {
     "cancelled": "E6E7E8",   # light gray
 }
 _STATUS_TEXT = "1A1A1A"      # black on all (matches the PDF)
+_STATUS_FONT = "Jost"        # keep the Status label on the brand font
+_STATUS_SIZE = 16            # half-points → 8pt, slightly smaller than the 9pt body
 
 
 def _shade_tc(tc, fill_hex: str):
@@ -451,6 +453,28 @@ def _set_tc_font_color(tc, hex_color: str):
         color.set(qn("w:val"), hex_color)
 
 
+def _set_tc_font(tc, font_name: str, half_pt_size: int):
+    """Force the font family + size of every run in a cell (the template's
+    Status cell inherits a non-Jost style at a larger size)."""
+    for r in tc.findall(f".//{qn('w:r')}"):
+        rPr = r.find(qn("w:rPr"))
+        if rPr is None:
+            rPr = r.makeelement(qn("w:rPr"), {})
+            r.insert(0, rPr)
+        rf = rPr.find(qn("w:rFonts"))
+        if rf is None:
+            rf = rPr.makeelement(qn("w:rFonts"), {})
+            rPr.append(rf)
+        for attr in ("w:ascii", "w:hAnsi", "w:cs"):
+            rf.set(qn(attr), font_name)
+        for tag in ("w:sz", "w:szCs"):
+            el = rPr.find(qn(tag))
+            if el is None:
+                el = rPr.makeelement(qn(tag), {})
+                rPr.append(el)
+            el.set(qn("w:val"), str(half_pt_size))
+
+
 def _color_action_status(doc, actions):
     """Shade the Action Items Status cell (last column) per status, matching the
     PDF's colored status pills. Data rows follow the action order 1:1."""
@@ -468,6 +492,7 @@ def _color_action_status(doc, actions):
             continue
         _shade_tc(tcs[-1], fill)          # Status is the last column
         _set_tc_font_color(tcs[-1], _STATUS_TEXT)
+        _set_tc_font(tcs[-1], _STATUS_FONT, _STATUS_SIZE)
 
 
 def _set_cell_text(cell, text: str):
@@ -690,11 +715,12 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
             a.status.capitalize(),
         ])
     # Column widths (twips, ~7.75" text area): wide Action, roomier Owner so
-    # names like "Roashaael Mary John" don't over-wrap, and a compact Due.
-    #   #=460  Action=6100  Owner=1900  Due=1200  Status=1500  (sum 11160)
+    # names like "Roashaael Mary John" don't over-wrap, and a Due column wide
+    # enough to keep a full mm/dd/yyyy date on one line.
+    #   #=460  Action=5850  Owner=1900  Due=1450  Status=1500  (sum 11160)
     _rewrite_table(doc, "Action Items", act_rows,
                    header_labels=["#", "Action", "Owner", "Due", "Status"],
-                   col_widths=[460, 6100, 1900, 1200, 1500])
+                   col_widths=[460, 5850, 1900, 1450, 1500])
     _color_action_status(doc, meeting.raised_actions)
 
     # --- Closing Remarks ---
