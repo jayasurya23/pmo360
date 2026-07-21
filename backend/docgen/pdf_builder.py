@@ -583,7 +583,9 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
                 # (multiple comma-separated full names) wrap inside the cell
                 # instead of overflowing into the Due column.
                 Paragraph(a.owner or "", s["table_body"]),
-                due_str,
+                # Due wrapped in a Paragraph so the date can never overflow the
+                # column and print underneath the Status pill.
+                Paragraph(due_str, s["table_body"]),
                 StatusFormField(
                     field_name=f"action_status_{idx}",
                     value=status,
@@ -596,8 +598,9 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
         act_table = Table(
             table_data,
             # Owner column widened to fit full names (initials would have
-            # been ambiguous when two people share them).
-            colWidths=[0.35 * inch, 3.0 * inch, 1.65 * inch, 0.85 * inch, 0.95 * inch],
+            # been ambiguous when two people share them); Due widened so a full
+            # mm/dd/yyyy date stays on one line and never reaches the Status pill.
+            colWidths=[0.35 * inch, 2.85 * inch, 1.65 * inch, 1.0 * inch, 0.95 * inch],
             repeatRows=1,
         )
         ts = TableStyle([
