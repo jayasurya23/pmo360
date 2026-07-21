@@ -44,9 +44,17 @@ input[type="number"] {
   body {
     @apply font-sans bg-slate-50 text-slate-900 antialiased;
   }
+  /* Jost everywhere — cover form controls, their <option> popups and buttons
+     so nothing falls back to a system font (Tailwind Preflight sets these to
+     `font-family: inherit`, but being explicit keeps native dropdown lists on
+     Jost too). Monospace elements are handled via the Jost `mono` stack in
+     tailwind.config.js. */
   input,
   textarea,
-  select {
+  select,
+  option,
+  optgroup,
+  button {
     @apply font-sans;
   }
 }
