@@ -56,6 +56,17 @@ SECTION_HEADINGS = (
 )
 
 
+def _fmt_date(d) -> str:
+    """Format a date as m/d/yyyy with no leading zeros, matching the PDF.
+    `%#m` is the Windows no-pad flag; POSIX uses `%-m`."""
+    if not d:
+        return ""
+    try:
+        return d.strftime("%#m/%#d/%Y")
+    except ValueError:
+        return d.strftime("%-m/%-d/%Y")
+
+
 # ============================================================
 # Zip-level conversion: .docm → in-memory .docx stream
 # ============================================================
@@ -605,7 +616,7 @@ def _gather_deliverable_rows(meeting: Meeting) -> list[list[str]]:
             d.project_segment or meeting.project.name,
             d.task,
             d.start_status or "In Progress",
-            d.delivery_date.strftime("%m/%d/%Y") if d.delivery_date else "",
+            _fmt_date(d.delivery_date),
         ])
     return rows
 
@@ -711,7 +722,7 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
             str(idx),
             a.text,
             a.owner or "",
-            a.due_date.strftime("%m/%d/%Y") if a.due_date else "",
+            _fmt_date(a.due_date),
             a.status.capitalize(),
         ])
     # Column widths (twips, ~7.75" text area): wide Action, roomier Owner so
