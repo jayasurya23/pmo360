@@ -7,6 +7,11 @@ export default {
         // Falls back to Helvetica when Jost isn't loaded (matches the
         // Castillo brand style guide).
         sans: ["Jost", "Helvetica", "system-ui", "sans-serif"],
+        // Castillo uses Jost EVERYWHERE — there is no monospace in the brand.
+        // Mapping `mono` to Jost too means every `font-mono` utility and the
+        // elements Tailwind Preflight defaults to monospace (code/kbd/pre/samp)
+        // render in Jost as well. Keep in sync with `sans`.
+        mono: ["Jost", "Helvetica", "system-ui", "sans-serif"],
       },
       colors: {
         // Castillo brand palette. Keep these in sync with backend
