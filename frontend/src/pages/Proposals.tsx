@@ -2327,7 +2327,8 @@ export default function Proposals() {
 
           {/* schedule tree */}
           <section className="card p-0">
-            <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-brand-lightgray/60">
+            {/* Toolbar pins below the app header (h-16) while scrolling the rows. */}
+            <div className="sticky top-16 z-20 flex flex-wrap items-center gap-2 px-4 py-3 border-b border-brand-lightgray/60 bg-white rounded-t-xl">
               <h3 className="section-title">Schedule</h3>
               {dirty && (
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
@@ -2374,9 +2375,11 @@ export default function Proposals() {
               ))}
             </datalist>
 
-            <div className="overflow-x-auto">
+            {/* Bounded scroll box so the header (and toolbar above) stay put
+                while paging through a long schedule. */}
+            <div className="overflow-auto max-h-[calc(100vh-11rem)]">
               <table className="min-w-full text-xs">
-                <thead className="bg-brand-red text-white">
+                <thead className="bg-brand-red text-white sticky top-0 z-10 [&_th]:bg-brand-red">
                   <tr>
                     <th className="px-1 py-2 w-6" title="Drag to reorder"></th>
                     <th className="text-center px-2 py-2 min-w-[300px]">Name</th>
@@ -3288,7 +3291,17 @@ function Row({
           >
             <option value="">— none —</option>
             {predOptions.map((o) => (
-              <option key={o.key} value={o.node.id!}>
+              <option
+                key={o.key}
+                value={o.node.id!}
+                // Section headings + milestones in Castillo red (bold) so they
+                // stand out from leaf tasks and are easier to pick.
+                style={
+                  o.node.is_milestone
+                    ? { color: "#ad1f2b", fontWeight: 600 }
+                    : undefined
+                }
+              >
                 {o.node.name || `#${o.node.id}`}
               </option>
             ))}
