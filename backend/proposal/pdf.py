@@ -460,7 +460,13 @@ def render_schedule_table_bytes(
         mode = "both"
 
     buf = BytesIO()
-    doc = BaseDocTemplate(buf, topMargin=0.5 * inch, bottomMargin=0.4 * inch,
+    # pagesize=letter is required: without it BaseDocTemplate defaults to A4, so
+    # doc.width/doc.height (used to build the Frame below) are computed for A4 —
+    # on a letter page the frame then spills ~14pt off the top, killing the top
+    # margin (most visible on page 2, where the repeated header sits at the very
+    # top edge).
+    doc = BaseDocTemplate(buf, pagesize=letter,
+                          topMargin=0.5 * inch, bottomMargin=0.4 * inch,
                           leftMargin=0.3 * inch, rightMargin=0.3 * inch)
     doc.addPageTemplates([PageTemplate(
         id="PortraitPage",
