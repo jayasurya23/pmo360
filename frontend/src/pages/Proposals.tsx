@@ -2325,10 +2325,12 @@ export default function Proposals() {
             )}
           </section>
 
-          {/* schedule tree */}
-          <section className="card p-0">
+          {/* schedule tree — the card grows to the table's width (w-max) so its
+              border always wraps the (wide) schedule and horizontal scrolling
+              happens at the page level, never in a nested scrollbar. */}
+          <section className="card p-0 w-max min-w-full">
             {/* Toolbar pins below the app header (h-16) while scrolling the rows. */}
-            <div className="sticky top-16 z-20 flex flex-wrap items-center gap-2 px-4 py-3 border-b border-brand-lightgray/60 bg-white rounded-t-xl">
+            <div className="sticky top-16 z-20 flex items-center gap-2 px-4 py-3 border-b border-brand-lightgray/60 bg-white rounded-t-xl">
               <h3 className="section-title">Schedule</h3>
               {dirty && (
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
@@ -2336,30 +2338,34 @@ export default function Proposals() {
                 </span>
               )}
               <div className="flex-1" />
-              <AddMenu onAdd={(type) => addTyped(type, selectedKey)} onSeed={seedStandardStructure} />
-              <button
-                className="btn-ghost text-xs py-1"
-                onClick={() => setShowSplit(true)}
-                title="Split a deposit (or due-diligence) amount out of selected tasks"
-              >
-                ✂ Split Deposit
-              </button>
-              <button
-                className="btn-ghost text-xs py-1"
-                onClick={() => void recompute()}
-                disabled={saving}
-                title="Re-run the scheduler from the project start date"
-              >
-                ↻ Recompute
-              </button>
-              <button
-                className="btn-primary text-sm"
-                onClick={() => void save()}
-                disabled={saving || !dirty}
-                title="Save edits + recompute dates server-side"
-              >
-                {saving ? "Saving…" : "Save / Recompute"}
-              </button>
+              {/* Controls stay pinned to the right edge even when the table is
+                  wider than the viewport and scrolled horizontally. */}
+              <div className="sticky right-4 flex items-center gap-2 bg-white pl-3">
+                <AddMenu onAdd={(type) => addTyped(type, selectedKey)} onSeed={seedStandardStructure} />
+                <button
+                  className="btn-ghost text-xs py-1"
+                  onClick={() => setShowSplit(true)}
+                  title="Split a deposit (or due-diligence) amount out of selected tasks"
+                >
+                  ✂ Split Deposit
+                </button>
+                <button
+                  className="btn-ghost text-xs py-1"
+                  onClick={() => void recompute()}
+                  disabled={saving}
+                  title="Re-run the scheduler from the project start date"
+                >
+                  ↻ Recompute
+                </button>
+                <button
+                  className="btn-primary text-sm"
+                  onClick={() => void save()}
+                  disabled={saving || !dirty}
+                  title="Save edits + recompute dates server-side"
+                >
+                  {saving ? "Saving…" : "Save / Recompute"}
+                </button>
+              </div>
             </div>
 
             {/* shortcuts hint bar (verbatim desktop) */}
@@ -2375,11 +2381,13 @@ export default function Proposals() {
               ))}
             </datalist>
 
-            {/* Bounded scroll box so the header (and toolbar above) stay put
-                while paging through a long schedule. */}
-            <div className="overflow-auto max-h-[calc(100vh-11rem)]">
+            {/* No inner scroll box — the table flows in the page like before
+                (older style). The header row floats on its own via the sticky
+                <thead>, which pins just below the sticky toolbar (64px app
+                header + ~61px toolbar = 125px). */}
+            <div>
               <table className="min-w-full text-xs">
-                <thead className="bg-brand-red text-white sticky top-0 z-10 [&_th]:bg-brand-red">
+                <thead className="bg-brand-red text-white sticky top-[125px] z-10 [&_th]:bg-brand-red">
                   <tr>
                     <th className="px-1 py-2 w-6" title="Drag to reorder"></th>
                     <th className="text-center px-2 py-2 min-w-[300px]">Name</th>
