@@ -185,9 +185,22 @@ def _styles() -> dict:
             "table_body", fontName=PRIMARY_FONT, fontSize=9,
             textColor=NEAR_BLACK, leading=12,
         ),
+        # Compact Due column — smaller so it takes less room and the Action
+        # column can be wider.
+        "table_due": ParagraphStyle(
+            "table_due", fontName=PRIMARY_FONT, fontSize=8,
+            textColor=NEAR_BLACK, leading=11,
+        ),
         "table_status": ParagraphStyle(
             "table_status", fontName=PRIMARY_BOLD, fontSize=10,
             textColor=white, leading=12, alignment=TA_LEFT,
+        ),
+        # Static status label: bold, black, drawn on the coloured cell so the
+        # colour renders in every viewer (no form-field highlight) and matches
+        # the Word document.
+        "status_label": ParagraphStyle(
+            "status_label", fontName=PRIMARY_BOLD, fontSize=9,
+            textColor=NEAR_BLACK, leading=11, alignment=TA_LEFT,
         ),
     }
 
@@ -567,12 +580,6 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
         story.append(Paragraph("Action Items", s["section"]))
         # Header row + data rows
         table_data = [["#", "Action", "Owner", "Due", "Status"]]
-        # Status cell footprint — the AcroForm widget needs to know its size
-        # at build time. Match the table's column width + a comfortable row
-        # height (the colored pill background fills this exact area).
-        STATUS_CELL_W = 0.95 * inch
-        STATUS_CELL_H = 26
-        status_fields = []
         for idx, a in enumerate(meeting.raised_actions, start=1):
             status = (a.status or "open").lower()
             # No-leading-zero date (Windows uses %#m/%#d, POSIX uses %-m/%-d)
@@ -583,15 +590,6 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
                     due_str = a.due_date.strftime("%-m/%-d/%Y")
             else:
                 due_str = ""
-            fld = StatusFormField(
-                field_name=f"action_status_{idx}",
-                value=status,
-                width_pt=STATUS_CELL_W,
-                height_pt=STATUS_CELL_H,
-                text_color=STATUS_TEXT_COLORS.get(status, white),
-                fill_color=STATUS_COLORS.get(status, STATUS_COLORS["open"]),
-            )
-            status_fields.append(fld)
             table_data.append([
                 str(idx),
                 Paragraph(a.text or "", s["table_body"]),
@@ -599,18 +597,20 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
                 # (multiple comma-separated full names) wrap inside the cell
                 # instead of overflowing into the Due column.
                 Paragraph(a.owner or "", s["table_body"]),
-                # Due wrapped in a Paragraph so the date can never overflow the
-                # column and print underneath the Status pill.
-                Paragraph(due_str, s["table_body"]),
-                fld,
+                # Due: compact, smaller font, wrapped so it never overflows.
+                Paragraph(due_str, s["table_due"]),
+                # Status as static bold text on the coloured cell (set below).
+                # Page content, not a form field — so the colour renders the
+                # same in every viewer (no field highlight washing it out) and
+                # matches the Word document.
+                Paragraph(_status_pill_text(status), s["status_label"]),
             ])
 
-        act_col_widths = [0.35 * inch, 2.85 * inch, 1.65 * inch, 1.0 * inch, 0.95 * inch]
+        # Wide Action column; compact Due (small font) so more room goes to
+        # the Action text. Sums to the 6.8" text area.
+        act_col_widths = [0.35 * inch, 3.15 * inch, 1.5 * inch, 0.8 * inch, 1.0 * inch]
         act_table = Table(
             table_data,
-            # Owner column widened to fit full names (initials would have
-            # been ambiguous when two people share them); Due widened so a full
-            # mm/dd/yyyy date stays on one line and never reaches the Status pill.
             colWidths=act_col_widths,
             repeatRows=1,
         )
@@ -633,31 +633,17 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
             ("LEFTPADDING",   (0, 0), (-1, -1), 8),
             ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
             ("LINEBELOW",     (0, 0), (-1, -1), 0.5, LIGHT_GRAY),
+            # Tighter horizontal padding on the compact Due column so the date
+            # still fits on one line despite the narrower width.
+            ("LEFTPADDING",   (3, 1), (3, -1), 4),
+            ("RIGHTPADDING",  (3, 1), (3, -1), 4),
         ])
-        # Status data cells: no padding so the interactive form field can fill
-        # the whole cell (its own background carries the status colour and is
-        # recoloured by the on-change JavaScript in Adobe Reader).
-        for _pad in ("TOPPADDING", "BOTTOMPADDING", "LEFTPADDING", "RIGHTPADDING"):
-            ts.add(_pad, (4, 1), (4, -1), 0)
-        # Per-row status pill background — colors the Status cell as a fallback
-        # for viewers that don't paint the form field's own background.
+        # Per-row status cell background — the status colour, as page content.
         for row_idx, a in enumerate(meeting.raised_actions, start=1):
             status = (a.status or "open").lower()
             bg = STATUS_COLORS.get(status, STATUS_COLORS["open"])
             ts.add("BACKGROUND", (4, row_idx), (4, row_idx), bg)
         act_table.setStyle(ts)
-        # Two-pass sizing: measure the row heights, then stretch each Status
-        # field to fill its cell so the colour (and the recolour on change)
-        # covers the whole Status cell rather than just a 26pt strip.
-        try:
-            act_table.wrap(width - 96, height)
-            row_heights = getattr(act_table, "_rowHeights", None)
-            if row_heights:
-                for i, fld in enumerate(status_fields, start=1):
-                    if i < len(row_heights) and row_heights[i]:
-                        fld.height = row_heights[i]
-        except Exception:
-            pass
         story.append(act_table)
 
     # ---- Closing Remarks ----
@@ -679,73 +665,21 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
 
     doc.build(story)
     data = buf.getvalue()
-    # Make the Status dropdowns recolour their cell on change (Adobe Reader).
-    data = add_status_form_fields(data, len(meeting.raised_actions))
     if output_path:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(data)
     return data
 
 
-# On-change JavaScript for the Action Items Status dropdowns: recolour the
-# field's background to the selected status's colour (Adobe Reader / Acrobat).
-# RGB triples mirror STATUS_COLORS (#1aa6c9 / #c7bb2e / #278747 / #e6e7e8).
-_STATUS_RECOLOR_JS = (
-    "var m={"
-    "'Open':['RGB',0.102,0.651,0.788],"
-    "'Pending':['RGB',0.780,0.733,0.180],"
-    "'Completed':['RGB',0.153,0.529,0.278],"
-    "'Cancelled':['RGB',0.902,0.906,0.910]"
-    "};"
-    "var c=m[event.value];"
-    "if(c!=null){event.target.fillColor=c;}"
-)
-
-
 def add_status_form_fields(pdf_bytes: bytes, action_count: int = 0) -> bytes:
-    """Attach an on-change JavaScript action to every Action Items Status
-    dropdown so the cell recolours to match the newly selected status in
-    Adobe Reader / Acrobat. Safe no-op (returns the input unchanged) if pikepdf
-    is unavailable, there are no status fields, or anything goes wrong — the
-    PDF stays valid either way. (Browser PDF viewers don't run form JS, so they
-    keep the status colour the document was generated with.)"""
-    try:
-        import pikepdf
-    except Exception:
-        return pdf_bytes
-    try:
-        pdf = pikepdf.open(BytesIO(pdf_bytes))
-        root = pdf.Root
-        if "/AcroForm" not in root:
-            return pdf_bytes
-        fields = root.AcroForm.get("/Fields", [])
-        touched = 0
-        for f in fields:
-            try:
-                if not str(f.get("/T", "")).startswith("action_status_"):
-                    continue
-            except Exception:
-                continue
-            f.AA = pikepdf.Dictionary(
-                V=pikepdf.Dictionary(
-                    S=pikepdf.Name.JavaScript,
-                    JS=pikepdf.String(_STATUS_RECOLOR_JS),
-                )
-            )
-            # CommitOnSelChange (field-flag bit 27) so picking an item fires the
-            # validate action immediately instead of only on blur.
-            try:
-                f.Ff = int(f.get("/Ff", 0)) | (1 << 26)
-            except Exception:
-                pass
-            touched += 1
-        if not touched:
-            return pdf_bytes
-        out = BytesIO()
-        pdf.save(out)
-        return out.getvalue()
-    except Exception:
-        return pdf_bytes
+    """No-op. The Action Items Status colour is drawn as static page content
+    (the table cell background) rather than an interactive form field, so it
+    renders identically in every PDF viewer and matches the Word document. An
+    interactive dropdown was tried, but every viewer paints a translucent
+    "field highlight" over form fields that washed all the status colours to
+    the same grey-blue; static cells avoid that entirely. Kept for API
+    compatibility."""
+    return pdf_bytes
 
 
 # ============================================================

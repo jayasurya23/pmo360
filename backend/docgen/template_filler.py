@@ -506,6 +506,18 @@ def _color_action_status(doc, actions):
         _set_tc_font(tcs[-1], _STATUS_FONT, _STATUS_SIZE)
 
 
+def _shrink_action_due_font(doc):
+    """Set the Action Items Due column (index 3) to a slightly smaller Jost
+    size so a full m/d/yyyy date fits on one line in the compact column."""
+    tbl = _table_after_heading(doc, "Action Items")
+    if tbl is None:
+        return
+    for ri in range(1, len(tbl.rows)):
+        tcs = tbl.rows[ri]._tr.findall(qn("w:tc"))
+        if len(tcs) >= 4:
+            _set_tc_font(tcs[3], _STATUS_FONT, _STATUS_SIZE)  # Jost, 8pt
+
+
 def _set_cell_text(cell, text: str):
     """Replace cell text while preserving run-level formatting from the first
     run of the first paragraph. Removes extra paragraphs in the cell."""
@@ -725,14 +737,17 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
             _fmt_date(a.due_date),
             a.status.capitalize(),
         ])
-    # Column widths (twips, ~7.75" text area): wide Action, roomier Owner so
-    # names like "Roashaael Mary John" don't over-wrap, and a Due column wide
-    # enough to keep a full mm/dd/yyyy date on one line.
-    #   #=460  Action=5850  Owner=1900  Due=1450  Status=1500  (sum 11160)
+    # Column widths (twips, ~7.75" text area): a wide Action column and a
+    # compact Due column (its font is shrunk below), proportioned to match the
+    # PDF's Action Items table.
+    #   #=560  Action=5170  Owner=2450  Due=1340  Status=1640  (sum 11160)
     _rewrite_table(doc, "Action Items", act_rows,
                    header_labels=["#", "Action", "Owner", "Due", "Status"],
-                   col_widths=[460, 5850, 1900, 1450, 1500])
+                   col_widths=[560, 5170, 2450, 1340, 1640])
     _color_action_status(doc, meeting.raised_actions)
+    # Compact Due column: smaller font (matches the PDF), so a full m/d/yyyy
+    # date fits on one line despite the narrower column.
+    _shrink_action_due_font(doc)
 
     # --- Closing Remarks ---
     # Keep template's "Thank you to everyone..." text as-is, unless the meeting
