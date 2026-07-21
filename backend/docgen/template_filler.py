@@ -351,25 +351,34 @@ def _text_width_twips(doc) -> int:
     return int(emu / 914400 * 1440)
 
 
-def _normalize_table_columns(tbl, max_width_twips: int) -> None:
+def _normalize_table_columns(tbl, max_width_twips: int,
+                             col_widths: "list[int] | None" = None) -> None:
     """Force every cell in every row to the table's grid column widths and fix
     the layout, so a cloned/relabelled header cell can't widen a column past
-    the page. If the grid is wider than the text area, scale it down to fit."""
+    the page. If the grid is wider than the text area, scale it down to fit.
+
+    `col_widths` overrides the template's grid entirely (e.g. to give the
+    Action column more room and shrink the Due column) — it is scaled to fit
+    the text width like any other grid."""
     tblEl = tbl._tbl
     grid = tblEl.find(qn("w:tblGrid"))
     if grid is None:
         return
     cols = grid.findall(qn("w:gridCol"))
-    widths = [int(c.get(qn("w:w")) or 0) for c in cols]
+    if col_widths and len(col_widths) == len(cols):
+        widths = [int(w) for w in col_widths]
+    else:
+        widths = [int(c.get(qn("w:w")) or 0) for c in cols]
     if not widths or sum(widths) <= 0:
         return
     total = sum(widths)
     if total > max_width_twips:
         scale = max_width_twips / total
         widths = [max(1, int(round(w * scale))) for w in widths]
-        for c, w in zip(cols, widths):
-            c.set(qn("w:w"), str(w))
         total = sum(widths)
+    # Write the (overridden and/or scaled) widths back into the grid.
+    for c, w in zip(cols, widths):
+        c.set(qn("w:w"), str(w))
     # Every row's cells snap to the grid column widths.
     for tr in tblEl.findall(qn("w:tr")):
         for i, tc in enumerate(tr.findall(qn("w:tc"))):
@@ -499,7 +508,8 @@ def _flatten_cell_sdts(tr) -> None:
 
 
 def _rewrite_table(doc, heading_text: str, rows_data: list[list[str]],
-                   header_labels: "list[str] | None" = None):
+                   header_labels: "list[str] | None" = None,
+                   col_widths: "list[int] | None" = None):
     tbl = _table_after_heading(doc, heading_text)
     if tbl is None or len(tbl.rows) < 2:
         return
@@ -548,8 +558,9 @@ def _rewrite_table(doc, heading_text: str, rows_data: list[list[str]],
 
     # Snap every cell to the grid so a cloned/relabelled header cell (e.g. the
     # Status column, cloned from the wider Due cell) can't push the table past
-    # the page margin and spill the last column outside the table.
-    _normalize_table_columns(tbl, _text_width_twips(doc))
+    # the page margin and spill the last column outside the table. `col_widths`
+    # (when given) also re-proportions the columns.
+    _normalize_table_columns(tbl, _text_width_twips(doc), col_widths)
 
 
 # ============================================================
@@ -678,8 +689,12 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
             a.due_date.strftime("%m/%d/%Y") if a.due_date else "",
             a.status.capitalize(),
         ])
+    # Column widths (twips, ~7.75" text area): wide Action, roomier Owner so
+    # names like "Roashaael Mary John" don't over-wrap, and a compact Due.
+    #   #=460  Action=6100  Owner=1900  Due=1200  Status=1500  (sum 11160)
     _rewrite_table(doc, "Action Items", act_rows,
-                   header_labels=["#", "Action", "Owner", "Due", "Status"])
+                   header_labels=["#", "Action", "Owner", "Due", "Status"],
+                   col_widths=[460, 6100, 1900, 1200, 1500])
     _color_action_status(doc, meeting.raised_actions)
 
     # --- Closing Remarks ---
