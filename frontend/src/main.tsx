@@ -5,6 +5,7 @@ import App from "./App";
 import { AppProvider } from "./lib/state";
 import { ConfirmProvider } from "./components/ConfirmDialog";
 import AuthProvider from "./auth/AuthProvider";
+import AuthGate from "./auth/AuthGate";
 import { msalInstance } from "./auth/msalConfig";
 import "./styles/index.css";
 
@@ -20,11 +21,13 @@ function mount() {
     <React.StrictMode>
       <BrowserRouter>
         <AuthProvider>
-          <AppProvider>
-            <ConfirmProvider>
-              <App />
-            </ConfirmProvider>
-          </AppProvider>
+          <AuthGate>
+            <AppProvider>
+              <ConfirmProvider>
+                <App />
+              </ConfirmProvider>
+            </AppProvider>
+          </AuthGate>
         </AuthProvider>
       </BrowserRouter>
     </React.StrictMode>,
