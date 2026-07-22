@@ -463,22 +463,38 @@ def render_schedule_table_bytes(
     # pagesize=letter is required: without it BaseDocTemplate defaults to A4, so
     # doc.width/doc.height (used to build the Frame below) are computed for A4 —
     # on a letter page the frame then spills ~14pt off the top, killing the top
-    # margin (most visible on page 2, where the repeated header sits at the very
-    # top edge).
+    # margin.
     doc = BaseDocTemplate(buf, pagesize=letter,
                           topMargin=0.5 * inch, bottomMargin=0.4 * inch,
                           leftMargin=0.3 * inch, rightMargin=0.3 * inch)
-    doc.addPageTemplates([PageTemplate(
-        id="PortraitPage",
-        frames=[Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="f")],
-        pagesize=letter,
-    )])
 
     style_settings = _setup_reportlab_styles(mode)
     styles = style_settings["styles"]
+
+    # Running header: the company/project + logo band is repeated at the top of
+    # every page (like the desktop tool), so page 2+ carries the branding too —
+    # not just the table's repeated column header. Reserve room for it at the
+    # top of the frame and paint it via the page template's onPage hook.
+    header_h = _create_pdf_header(style_settings, info).wrap(doc.width, doc.height)[1]
+    header_gap = 0.12 * inch
+
+    def _draw_running_header(canvas, _doc):
+        hdr = _create_pdf_header(style_settings, info)
+        _hw, _hh = hdr.wrapOn(canvas, _doc.width, _doc.height)
+        # Header top aligns with the top margin; it extends down by its height.
+        hdr.drawOn(canvas, _doc.leftMargin, letter[1] - _doc.topMargin - _hh)
+
+    doc.addPageTemplates([PageTemplate(
+        id="PortraitPage",
+        frames=[Frame(doc.leftMargin, doc.bottomMargin, doc.width,
+                      doc.height - header_h - header_gap, id="f")],
+        pagesize=letter,
+        onPage=_draw_running_header,
+    )])
+
+    # The centered title stays on page 1 only (first flowable in the flow); the
+    # running header above is what repeats on continuation pages.
     elements = [
-        _create_pdf_header(style_settings, info),
-        Spacer(1, 0.12 * inch),
         Paragraph(_table_title(mode), styles["doc_title"]),
         Spacer(1, 0.08 * inch),
     ]
