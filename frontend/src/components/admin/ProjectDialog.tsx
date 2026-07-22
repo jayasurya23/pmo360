@@ -1,18 +1,29 @@
 /**
- * Modal for managing the Project tier — the free-text tags stored on the
- * selected portfolio's `sub_projects_json`.
+ * Modal for managing the Project tier under a Portfolio.
  *
  *   mode="new"     → add a new project to the current portfolio
  *   mode="rename"  → relabel the currently-selected project
  *   mode="delete"  → remove the currently-selected project (confirm)
  *
- * Each persists via PATCH /api/projects/{id} { sub_projects_json }, then
- * refreshes the portfolio list (so the picker's Project dropdown updates) and
- * re-syncs the active Project selection.
+ * Each action maintains BOTH representations of a "Project" so the whole app
+ * agrees on it:
+ *   1. A real `PortfolioProject` row (POST/PATCH/DELETE /api/portfolio-projects)
+ *      — this is what a Proposal links to (Proposal.project_id). Without it a
+ *      project created here would be invisible to the proposal link picker.
+ *   2. The portfolio's `sub_projects_json` tag (PATCH /api/projects/{id}) —
+ *      drives the header breadcrumb dropdown and Notes filtering.
+ * Then it refreshes the portfolio list and re-syncs the active selection.
  */
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { updateProject } from "@/lib/api";
+import {
+  updateProject,
+  listPortfolioProjects,
+  createPortfolioProject,
+  updatePortfolioProject,
+  deletePortfolioProject,
+} from "@/lib/api";
+import type { PortfolioProject } from "@/lib/types";
 import { useApp } from "@/lib/state";
 
 export type ProjectMode = "new" | "rename" | "delete";
@@ -39,8 +50,22 @@ export default function ProjectDialog({
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Real PortfolioProject rows under this portfolio — used to keep the linkable
+  // project entities in sync with the sub_projects_json tags (match by name).
+  const [ppList, setPpList] = useState<PortfolioProject[]>([]);
 
   const open = mode !== null;
+
+  useEffect(() => {
+    if (!open || !currentProject) return;
+    let cancelled = false;
+    listPortfolioProjects(currentProject.id)
+      .then((rows) => !cancelled && setPpList(rows))
+      .catch(() => !cancelled && setPpList([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [open, currentProject?.id]);
 
   // Seed the field whenever the dialog opens (rename pre-fills the current tag).
   useEffect(() => {
@@ -88,6 +113,30 @@ export default function ProjectDialog({
     setSubmitting(true);
     setError(null);
     try {
+      // 1) Maintain the real PortfolioProject row (what proposals link to) so a
+      //    project created here is immediately selectable in the proposal link
+      //    picker. Match existing rows by name (case-insensitive).
+      const findPP = (n: string) =>
+        ppList.find(
+          (p) => (p.name || "").trim().toLowerCase() === n.trim().toLowerCase(),
+        );
+      if (mode === "new") {
+        if (!findPP(trimmed)) {
+          await createPortfolioProject({
+            portfolio_id: currentProject!.id,
+            name: trimmed,
+          });
+        }
+      } else if (mode === "rename") {
+        const pp = selectedSubProject ? findPP(selectedSubProject) : undefined;
+        if (pp) await updatePortfolioProject(pp.id, { name: trimmed });
+      } else {
+        const pp = selectedSubProject ? findPP(selectedSubProject) : undefined;
+        if (pp) await deletePortfolioProject(pp.id);
+      }
+
+      // 2) Mirror into the portfolio's sub_projects_json tags (header breadcrumb
+      //    dropdown + Notes filtering).
       let next: string[];
       if (mode === "new") next = [...list, trimmed];
       else if (mode === "rename")
