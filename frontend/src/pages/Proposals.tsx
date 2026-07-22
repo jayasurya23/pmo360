@@ -643,7 +643,10 @@ export default function Proposals() {
   }, [loadList, isAuthenticated]);
 
   // Projects (sites) under the header's portfolio — drives the proposal's
-  // Project link picker. Re-fetched whenever the portfolio selection changes.
+  // Project link picker. Re-fetched whenever the portfolio selection changes,
+  // and also whenever the portfolio list is refreshed (keying on the
+  // currentProject object, not just its id) so a project created via the header
+  // "＋ New project" dialog shows up here without a reload.
   useEffect(() => {
     if (!currentProject) {
       setProjectsForPortfolio([]);
@@ -660,7 +663,7 @@ export default function Proposals() {
     return () => {
       cancelled = true;
     };
-  }, [currentProject?.id]);
+  }, [currentProject]);
 
   // Re-seed the info/config working copies from a freshly-fetched version.
   const seedDrafts = useCallback((v: { info?: Record<string, any>; config?: Record<string, any> }) => {
