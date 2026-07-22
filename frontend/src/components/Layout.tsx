@@ -86,7 +86,7 @@ export default function Layout() {
         onDeleteProject={() => setProjectMode("delete")}
       />
       <MeetingStepper currentPath={location.pathname} />
-      <main className="flex-1 px-6 md:px-10 py-8 max-w-screen-2xl w-full mx-auto">
+      <main className="flex-1 px-6 md:px-10 py-8 max-w-[1800px] w-full mx-auto">
         <Suspense
           fallback={
             <div className="flex items-center justify-center py-24 text-sm text-brand-gray">
@@ -133,7 +133,7 @@ function TopNav() {
   const navItems = PRIMARY_NAV;
   return (
     <header className="sticky top-0 z-40 bg-white/90 backdrop-blur border-b border-slate-200">
-      <div className="max-w-screen-2xl mx-auto px-6 md:px-10 h-16 flex items-center gap-6">
+      <div className="max-w-[1800px] mx-auto px-6 md:px-10 h-16 flex items-center gap-6">
         <NavLink
           to={LEAD_PATH}
           className="shrink-0"
@@ -296,7 +296,7 @@ function ContextBar({
 
   return (
     <div className="bg-white border-b border-slate-200">
-      <div className="max-w-screen-2xl mx-auto px-6 md:px-10 py-3 flex items-center gap-2">
+      <div className="max-w-[1800px] mx-auto px-6 md:px-10 py-3 flex items-center gap-2">
         <ContextSwitcher />
         <ContextAdminGear
           hasClient={!!client}
@@ -827,7 +827,7 @@ function MeetingStepper({ currentPath }: { currentPath: string }) {
   // minutes flow itself.
   return (
     <div className="bg-gradient-to-b from-white to-slate-50 border-b border-slate-200">
-      <div className="max-w-screen-2xl mx-auto px-6 md:px-10 py-3">
+      <div className="max-w-[1800px] mx-auto px-6 md:px-10 py-3">
         <div className="flex items-center gap-2 overflow-x-auto">
           <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold pr-1 shrink-0">
             This meeting
@@ -911,7 +911,7 @@ function firstNameOf(value: string): string {
 function Footer() {
   return (
     <footer className="border-t border-slate-200 bg-white py-4 mt-auto">
-      <div className="max-w-screen-2xl mx-auto px-6 md:px-10 text-xs text-slate-500 flex justify-between">
+      <div className="max-w-[1800px] mx-auto px-6 md:px-10 text-xs text-slate-500 flex justify-between">
         <span>Castillo Engineering · Project Management Office</span>
         <span className="hidden md:inline">© {new Date().getFullYear()}</span>
       </div>
