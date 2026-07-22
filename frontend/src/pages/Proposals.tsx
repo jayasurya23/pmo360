@@ -1881,7 +1881,12 @@ export default function Proposals() {
   }
 
   return (
-    <div className="space-y-4">
+    // Grow the page column to its widest child (the schedule table) so every
+    // card — Project Information, Project Summary, Schedule Drivers, the version
+    // bar, the project tie-in — stretches to the same width as the Schedule and
+    // their right edges line up. min-w-full keeps it full-width when no wide
+    // schedule is present (e.g. before a proposal is picked).
+    <div className="space-y-4 w-max min-w-full">
       <PageHeader
         title="Proposals"
         subtitle="Upload a Castillo cost workbook, edit the computed schedule, version it, and generate the branded Project Schedule PDF. Works standalone — link to a portfolio only when you want to project it into the schedule."
