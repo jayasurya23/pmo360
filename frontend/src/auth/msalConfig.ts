@@ -2,8 +2,10 @@
  * MSAL.js configuration for Microsoft Entra ID sign-in.
  *
  * The tenant + client ID come from Vite-inlined env vars (see frontend/.env).
- * Tokens are cached in sessionStorage so each tab gets its own session — that
- * avoids the "two tabs interfere" footgun you get with localStorage caching.
+ * Tokens are cached in localStorage so the session is shared across every tab
+ * and window and survives a browser restart — users sign in once, not once per
+ * tab. (sessionStorage would give each tab its own cache, forcing a fresh
+ * sign-in on every new tab/window, which is what we're avoiding here.)
  *
  * SCOPES — what we ask the user to consent to:
  *
@@ -67,7 +69,10 @@ export const msalConfig: Configuration = {
     navigateToLoginRequestUrl: true,
   },
   cache: {
-    cacheLocation: "sessionStorage",
+    // localStorage (not sessionStorage) so the signed-in session persists
+    // across tabs, new windows, and browser restarts. Users authenticate once
+    // instead of being re-prompted every time they open the app in a new tab.
+    cacheLocation: "localStorage",
     storeAuthStateInCookie: false,
   },
   system: {
@@ -153,7 +158,7 @@ export const GRAPH_PLANNER_REQUEST: RedirectRequest = {
 /**
  * The PublicClientApplication singleton.
  *
- * Construction itself can throw — invalid `redirectUri` format, sessionStorage
+ * Construction itself can throw — invalid `redirectUri` format, localStorage
  * blocked by the browser, etc. Wrapping in try/catch so that a failure here
  * doesn't kill the entire app boot. Callers (`AuthProvider`, `useAuth`) must
  * be defensive and handle the null case.
