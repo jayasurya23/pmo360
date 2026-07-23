@@ -1006,12 +1006,18 @@ export default function Proposals() {
 
   // Client Review Days is an action, not a stored display field: it stamps the
   // duration onto every "client review" node, then persists the value in
-  // infoDraft so it survives reloads (matches the desktop tool).
-  function applyClientReviewDays(value: number) {
-    // Desktop _apply_client_review_change ignores values <= 0
-    // (Full_proposal_V9.py:2353-2355), so clearing/zeroing the field can't wipe
-    // the Client Review row durations.
-    if (value <= 0) return;
+  // infoDraft so it survives reloads. 0 and any positive number are valid
+  // (0 = no client-review time); an empty field just clears the input without
+  // stamping. Dates refresh on Recompute / Save (same as any duration edit).
+  function applyClientReviewDays(raw: string) {
+    // Allow the field to go blank while editing without snapping back.
+    if (raw.trim() === "") {
+      setInfoDraft((d) => ({ ...d, client_review_days: null }));
+      return;
+    }
+    const value = Number(raw);
+    // Ignore only invalid or negative input — 0 is explicitly allowed.
+    if (!Number.isFinite(value) || value < 0) return;
     setFlat((rows) =>
       rows.map((n) =>
         (n.name || "").toLowerCase().includes("client review")
@@ -2058,12 +2064,11 @@ export default function Proposals() {
               <Field label="Client Review Days">
                 <input
                   type="number"
+                  min={0}
                   className={inputCls}
                   value={infoDraft.client_review_days ?? ""}
-                  onChange={(e) =>
-                    applyClientReviewDays(Number(e.target.value) || 0)
-                  }
-                  title="Stamps this duration onto every “client review” task"
+                  onChange={(e) => applyClientReviewDays(e.target.value)}
+                  title="Stamps this duration onto every “client review” task (0 allowed). Recompute to refresh dates."
                 />
               </Field>
               <div className="flex flex-col gap-2 pb-1">
