@@ -364,6 +364,50 @@ function milestoneRollup(flat: ProposalItemNode[], index: number): number {
   return sum;
 }
 
+/** True when the row at `index` is a descendant of a "Project Initiation"
+ *  milestone. Mirrors backend calendar.adjusted_duration / scheduling
+ *  is_in_project_initiation: those tasks are exempt from utilization scaling. */
+function isUnderProjectInitiation(flat: ProposalItemNode[], index: number): boolean {
+  const cur = flat[index];
+  if (!cur) return false;
+  let targetIndent = cur.indent_level;
+  for (let i = index - 1; i >= 0 && targetIndent > 0; i--) {
+    const n = flat[i];
+    if (n.indent_level < targetIndent) {
+      if (n.is_milestone && (n.name || "").trim().toLowerCase() === "project initiation")
+        return true;
+      targetIndent = n.indent_level; // climb to this ancestor's parent next
+    }
+  }
+  return false;
+}
+
+/** Utilization-adjusted (effective) working-day duration a leaf task will take,
+ *  = ceil(duration / (util/100)). Faithful to backend calendar.adjusted_duration:
+ *  milestones, Project-Initiation and Client-Review tasks are never adjusted,
+ *  a per-task utilization overrides the project rate, and adjustment only
+ *  applies when 0 < util < 100. Returns the base duration otherwise. */
+function effectiveDuration(
+  node: ProposalItemNode,
+  index: number,
+  flat: ProposalItemNode[],
+  projectUtil: number,
+): number {
+  const base = Number(node.duration) || 0;
+  if (node.is_milestone || base <= 0) return base;
+  if ((node.name || "").toLowerCase().includes("client review")) return base;
+  if (isUnderProjectInitiation(flat, index)) return base;
+  let util: number;
+  if (node.task_utilization != null && String(node.task_utilization) !== "") {
+    const t = Number(node.task_utilization);
+    util = t > 0 ? t : 100;
+  } else {
+    util = projectUtil > 0 ? projectUtil : 100;
+  }
+  if (util <= 0 || util >= 100) return base;
+  return Math.ceil(base / (util / 100));
+}
+
 // ---------------- Split Deposit helpers (pure, on the flat tree) ----------------
 /** Stable per-node key for split memory: id-bearing nodes only. New unsaved
  *  rows (id null) are NOT eligible — keeps memory round-trip-safe. */
@@ -3235,15 +3279,28 @@ function Row({
       </td>
       <td className="px-1 py-1.5 text-center">
         {isLeaf ? (
-          <input
-            type="number"
-            className={cellNum}
-            value={node.duration}
-            disabled={isLocked}
-            onChange={(e) =>
-              onUpdate(rowKey, { duration: Number(e.target.value) || 0 })
-            }
-          />
+          <div className="flex items-center justify-center gap-1">
+            <input
+              type="number"
+              className={cellNum}
+              value={node.duration}
+              disabled={isLocked}
+              onChange={(e) =>
+                onUpdate(rowKey, { duration: Number(e.target.value) || 0 })
+              }
+            />
+            {(() => {
+              const eff = effectiveDuration(node, rowIndex, flat, projectUtil);
+              return eff !== (Number(node.duration) || 0) ? (
+                <span
+                  className="text-[10px] leading-none text-brand-red/80 tabular-nums whitespace-nowrap"
+                  title={`Effective ${eff} working days at the applied utilization (base ${node.duration}). Recompute to roll the dates.`}
+                >
+                  →{eff}
+                </span>
+              ) : null;
+            })()}
+          </div>
         ) : (
           <span className="block w-14 text-right tabular-nums text-xs px-1">
             {node.duration}
