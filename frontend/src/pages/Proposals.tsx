@@ -3279,7 +3279,7 @@ function Row({
       </td>
       <td className="px-1 py-1.5 text-center">
         {isLeaf ? (
-          <div className="flex items-center justify-center gap-1">
+          <div className="flex flex-col items-center gap-0.5">
             <input
               type="number"
               className={cellNum}
@@ -3293,10 +3293,10 @@ function Row({
               const eff = effectiveDuration(node, rowIndex, flat, projectUtil);
               return eff !== (Number(node.duration) || 0) ? (
                 <span
-                  className="text-[10px] leading-none text-brand-red/80 tabular-nums whitespace-nowrap"
+                  className="text-[10px] leading-none text-slate-400 tabular-nums"
                   title={`Effective ${eff} working days at the applied utilization (base ${node.duration}). Recompute to roll the dates.`}
                 >
-                  →{eff}
+                  {eff} d
                 </span>
               ) : null;
             })()}
