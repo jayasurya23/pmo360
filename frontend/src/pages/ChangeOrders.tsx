@@ -114,6 +114,7 @@ export default function ChangeOrders() {
   const [rateType, setRateType] = useState<RateType>("fixed");
   const [rateChosen, setRateChosen] = useState(false); // gate: pick fixed/hourly first
   const [coVersion, setCoVersion] = useState("V1");
+  const [projectName, setProjectName] = useState("");
   const [requestDate, setRequestDate] = useState(today());
   const [requestedBy, setRequestedBy] = useState("");
   const [requestedByUserId, setRequestedByUserId] = useState<number | null>(null);
@@ -199,6 +200,7 @@ export default function ChangeOrders() {
     setRateType("fixed");
     setRateChosen(false);
     setCoVersion("V1");
+    setProjectName(currentProject?.name || "");
     setRequestDate(today());
     setRequestedBy("");
     setRequestedByUserId(null);
@@ -224,6 +226,7 @@ export default function ChangeOrders() {
     setRateType((co.rate_type as RateType) || "fixed");
     setRateChosen(true);
     setCoVersion(co.co_version || "V1");
+    setProjectName(co.project_name || currentProject?.name || "");
     setRequestDate(co.request_date || today());
     setRequestedBy(co.requested_by || "");
     setRequestedByUserId(co.requested_by_user_id ?? null);
@@ -276,6 +279,7 @@ export default function ChangeOrders() {
     return {
       project_id: currentProject!.id,
       co_version: coVersion,
+      project_name: projectName.trim() || null,
       title: title || null,
       rate_type: rateType,
       request_date: requestDate || null,
@@ -471,9 +475,11 @@ export default function ChangeOrders() {
               <label className="block">
                 <span className="label">Project</span>
                 <input
-                  className="input bg-slate-50"
-                  value={currentProject.name}
-                  disabled
+                  className="input"
+                  value={projectName}
+                  onChange={(e) => setProjectName(e.target.value)}
+                  placeholder={currentProject.name}
+                  title="Pre-filled from the portfolio; edit to set a custom project label on this change order and its PDF."
                 />
               </label>
               <label className="block">

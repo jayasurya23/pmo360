@@ -1200,6 +1200,7 @@ class ChangeOrderOut(ORMModel):
 class ChangeOrderIn(BaseModel):
     project_id: int
     co_version: str = "V1"
+    project_name: Optional[str] = None   # editable Project label (snapshot)
     title: Optional[str] = None
     rate_type: str = "fixed"   # fixed | hourly
     request_date: Optional[date] = None
@@ -1225,6 +1226,7 @@ class ChangeOrderMarkSent(BaseModel):
 class ChangeOrderUpdate(BaseModel):
     expected_version: Optional[int] = None
     co_version: Optional[str] = None
+    project_name: Optional[str] = None
     title: Optional[str] = None
     rate_type: Optional[str] = None
     request_date: Optional[date] = None

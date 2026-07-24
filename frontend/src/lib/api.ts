@@ -1040,6 +1040,7 @@ export interface ChangeOrderLineItemInput {
 export interface ChangeOrderCreate {
   project_id: number;
   co_version?: string;
+  project_name?: string | null;
   title?: string | null;
   rate_type: "fixed" | "hourly";
   request_date?: string | null;

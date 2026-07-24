@@ -168,7 +168,12 @@ def _build_data_page(co) -> bytes:
     el = []
 
     # ---- header band: Castillo color logo (left) + meta grid (right) ----
-    proj_name = co.project.name if getattr(co, "project", None) else (co.client_name or "")
+    # Editable Project label snapshot wins; fall back to the portfolio name.
+    proj_name = (
+        getattr(co, "project_name", None)
+        or (co.project.name if getattr(co, "project", None) else None)
+        or (co.client_name or "")
+    )
     logo_cell = ""
     logo_path = _LOGO_PATHS.get("castillo_color")
     if logo_path and logo_path.exists():

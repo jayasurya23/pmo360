@@ -856,6 +856,10 @@ class ChangeOrder(Base):
     approved_by_user_id = Column(Integer, ForeignKey("users.id"))
     approved_at = Column(DateTime)
     client_name = Column(String(200))     # snapshot for the PDF + History
+    # Editable Project label snapshot for the PDF + History. Pre-filled from the
+    # portfolio name on create but overridable; falls back to the portfolio name
+    # when null (legacy rows).
+    project_name = Column(String(200))
     location = Column(String(200))         # PDF header (e.g. "Lawrenceburg")
     state = Column(String(50))             # PDF header (e.g. "TN")
     size_mw = Column(String(50))           # PDF header (e.g. "8") — free text
