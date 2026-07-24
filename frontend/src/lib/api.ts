@@ -1063,7 +1063,7 @@ export interface ChangeOrderCreate {
 // client). Used by the "All clients" CO view + the Home rollup card.
 export const listChangeOrders = (
   projectId?: number | null,
-  status?: "draft" | "pending" | "approved",
+  status?: "draft" | "pending" | "sent_back" | "approved",
   clientId?: number | null,
 ) =>
   apiClient

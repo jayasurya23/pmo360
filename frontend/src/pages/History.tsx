@@ -718,6 +718,7 @@ function CoHistoryBadge({ status }: { status: string }) {
   const cfg: Record<string, { label: string; bg: string; text: string }> = {
     draft: { label: "Draft", bg: "#e6e7e8", text: "#4d4d4f" },
     pending: { label: "Pending", bg: "#f3eecf", text: "#7a7320" },
+    sent_back: { label: "Sent back", bg: "#fde2e2", text: "#ad1f2b" },
     approved: { label: "Approved", bg: "#d6f0e0", text: "#278747" },
   };
   const c = cfg[status] || cfg.draft;
