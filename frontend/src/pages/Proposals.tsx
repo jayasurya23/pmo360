@@ -2443,7 +2443,12 @@ export default function Proposals() {
                   <tr>
                     <th className="px-1 py-2 w-6" title="Drag to reorder"></th>
                     <th className="text-center px-2 py-2 min-w-[300px]">Name</th>
-                    <th className="text-center px-2 py-2">Dur</th>
+                    <th
+                      className="text-center px-2 py-2"
+                      title="Duration in working days (Mon–Fri, excluding holidays). The Project Summary shows calendar days, which are larger."
+                    >
+                      Dur <span className="font-normal opacity-80">(work days)</span>
+                    </th>
                     <th className="text-center px-2 py-2">Hrs</th>
                     <th className="text-center px-2 py-2">Price</th>
                     <th className="text-center px-2 py-2">Start</th>
@@ -2919,8 +2924,8 @@ function SummaryPanel({
                         {d.present ? datesLabel(d.start, d.end) : "—"}
                       </b>
                     </span>
-                    <span>
-                      Days{" "}
+                    <span title="Calendar days between the start and finish dates (every day counted). The Schedule table's Dur column is in working days, so the two differ.">
+                      Calendar days{" "}
                       <b className="text-brand-black">{days != null ? days : ""}</b>
                     </span>
                   </div>
@@ -2928,6 +2933,13 @@ function SummaryPanel({
               );
             })}
           </div>
+          <p className="md:col-span-2 border-t border-brand-lightgray/50 pt-2 mt-1 text-[11px] leading-snug text-brand-gray">
+            <b className="text-brand-black">Calendar days</b> count every day between
+            the start and finish dates. The Schedule table's <b className="text-brand-black">Dur</b>{" "}
+            column is in <b className="text-brand-black">working days</b> (Mon–Fri,
+            excluding holidays), so a discipline's calendar-day span is larger than
+            its working-day Dur — they measure different things.
+          </p>
         </div>
       )}
     </section>
