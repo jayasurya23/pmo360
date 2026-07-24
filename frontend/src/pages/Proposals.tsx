@@ -259,6 +259,9 @@ interface DisciplineLine {
   amount: number;
   start: Date | null;
   end: Date | null;
+  // Working days = the discipline milestone's rolled-up duration (business days),
+  // i.e. the exact value shown in the Schedule tree's Dur column.
+  workingDays: number | null;
 }
 interface ProjectSummary {
   total: number;
@@ -320,7 +323,14 @@ function computeSummary(
       (n) => n.indent_level === 0 && (n.name || "").trim() === name,
     );
     if (!node) {
-      return { name, present: false, amount: 0, start: null, end: null };
+      return {
+        name,
+        present: false,
+        amount: 0,
+        start: null,
+        end: null,
+        workingDays: null,
+      };
     }
     return {
       name,
@@ -328,6 +338,9 @@ function computeSummary(
       amount: Number(node.price) || 0,
       start: parseMdy(node.start_date),
       end: parseMdy(node.end_date),
+      // Same rolled-up business-day duration the Schedule tree shows for this
+      // milestone (node.duration), so the two views agree.
+      workingDays: node.duration != null ? Number(node.duration) : null,
     };
   });
 
@@ -2924,7 +2937,16 @@ function SummaryPanel({
                         {d.present ? datesLabel(d.start, d.end) : "—"}
                       </b>
                     </span>
-                    <span title="Calendar days between the start and finish dates (every day counted). The Schedule table's Dur column is in working days, so the two differ.">
+                    <span title="Working days = the same Dur shown for this discipline in the Schedule table (business days: Mon–Fri, excluding holidays).">
+                      Working days{" "}
+                      <b className="text-brand-black">
+                        {d.workingDays != null ? d.workingDays : ""}
+                      </b>
+                    </span>
+                    <span
+                      className="text-brand-gray"
+                      title="Calendar days count every day between the start and finish dates."
+                    >
                       Calendar days{" "}
                       <b className="text-brand-black">{days != null ? days : ""}</b>
                     </span>
@@ -2934,11 +2956,11 @@ function SummaryPanel({
             })}
           </div>
           <p className="md:col-span-2 border-t border-brand-lightgray/50 pt-2 mt-1 text-[11px] leading-snug text-brand-gray">
-            <b className="text-brand-black">Calendar days</b> count every day between
-            the start and finish dates. The Schedule table's <b className="text-brand-black">Dur</b>{" "}
-            column is in <b className="text-brand-black">working days</b> (Mon–Fri,
-            excluding holidays), so a discipline's calendar-day span is larger than
-            its working-day Dur — they measure different things.
+            <b className="text-brand-black">Working days</b> here are the same as each
+            discipline's <b className="text-brand-black">Dur</b> in the Schedule table
+            (Mon–Fri, excluding holidays). <b className="text-brand-black">Calendar days</b>{" "}
+            count every day between the start and finish dates, so they're larger — the
+            two are different measures of the same span.
           </p>
         </div>
       )}
