@@ -25,7 +25,7 @@ import { sendMail, blobToBase64 } from "@/lib/graph";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
-type Tab = "create" | "pending" | "approved";
+type Tab = "create" | "pending" | "sent_back" | "approved";
 type RateType = "fixed" | "hourly";
 
 // Standard Castillo hourly billing rates (from the request-form rate card).
@@ -105,6 +105,7 @@ export default function ChangeOrders() {
   // ---- lists per tab ----
   const [drafts, setDrafts] = useState<ChangeOrder[]>([]);
   const [pending, setPending] = useState<ChangeOrder[]>([]);
+  const [sentBack, setSentBack] = useState<ChangeOrder[]>([]);
   const [approved, setApproved] = useState<ChangeOrder[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -147,6 +148,7 @@ export default function ChangeOrders() {
         : await listChangeOrders(undefined, undefined, selectedClientId || undefined);
       setDrafts(all.filter((c) => c.status === "draft"));
       setPending(all.filter((c) => c.status === "pending"));
+      setSentBack(all.filter((c) => c.status === "sent_back"));
       setApproved(all.filter((c) => c.status === "approved"));
     } finally {
       setLoading(false);
@@ -387,13 +389,25 @@ export default function ChangeOrders() {
   }
   async function doReject(co: ChangeOrder) {
     const ok = await confirm({
-      title: `Send CO-${co.co_number} back to draft?`,
-      body: "It returns to drafts on the Create tab for edits.",
+      title: `Send CO-${co.co_number} back?`,
+      body: "It moves to the “Sent back” tab for edits, then can be re-submitted.",
       confirmLabel: "Send back",
     });
     if (!ok) return;
     await rejectChangeOrder(co.id);
     await load();
+    setTab("sent_back");
+  }
+  async function doResubmit(co: ChangeOrder) {
+    const ok = await confirm({
+      title: `Re-submit CO-${co.co_number} for approval?`,
+      body: "It moves back to Pending Approval.",
+      confirmLabel: "Re-submit",
+    });
+    if (!ok) return;
+    await submitChangeOrder(co.id);
+    await load();
+    setTab("pending");
   }
   async function doDelete(co: ChangeOrder) {
     const ok = await confirm({
@@ -425,6 +439,9 @@ export default function ChangeOrders() {
         </TabBtn>
         <TabBtn active={tab === "pending"} onClick={() => setTab("pending")}>
           Pending Approval ({pending.length})
+        </TabBtn>
+        <TabBtn active={tab === "sent_back"} onClick={() => setTab("sent_back")}>
+          Sent back ({sentBack.length})
         </TabBtn>
         <TabBtn active={tab === "approved"} onClick={() => setTab("approved")}>
           Approved ({approved.length})
@@ -902,6 +919,41 @@ export default function ChangeOrders() {
           </div>
         ))}
 
+      {/* ============ SENT BACK ============ */}
+      {tab === "sent_back" &&
+        (loading ? (
+          <div className="card p-5 text-sm">Loading…</div>
+        ) : sentBack.length === 0 ? (
+          <EmptyState
+            title="Nothing sent back"
+            hint="When a pending change order is sent back, it lands here to revise and re-submit."
+          />
+        ) : (
+          <div className="card divide-y divide-brand-lightgray/60">
+            {sentBack.map((co) => (
+              <CoRow
+                key={co.id}
+                co={co}
+                context={inAll}
+                onEdit={inAll ? undefined : () => loadForEdit(co)}
+                onDelete={inAll ? undefined : () => doDelete(co)}
+                actions={
+                  <>
+                    <button className="btn-ghost" onClick={() => openPdf(co)}>
+                      👁 Preview PDF
+                    </button>
+                    {!inAll && (
+                      <button className="btn-primary" onClick={() => doResubmit(co)}>
+                        Re-submit
+                      </button>
+                    )}
+                  </>
+                }
+              />
+            ))}
+          </div>
+        ))}
+
       {/* ============ APPROVED ============ */}
       {tab === "approved" &&
         (loading ? (
@@ -1071,6 +1123,7 @@ function CoStatusBadge({ status }: { status: string }) {
   const cfg: Record<string, { label: string; bg: string; text: string }> = {
     draft: { label: "Draft", bg: "#e6e7e8", text: "#4d4d4f" },
     pending: { label: "Pending", bg: "#f3eecf", text: "#7a7320" },
+    sent_back: { label: "Sent back", bg: "#fde2e2", text: "#ad1f2b" },
     approved: { label: "Approved", bg: "#d6f0e0", text: "#278747" },
   };
   const c = cfg[status] || cfg.draft;

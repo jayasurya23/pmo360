@@ -713,7 +713,7 @@ export interface ChangeOrder {
   co_version?: string | null;
   title?: string | null;
   rate_type: "fixed" | "hourly";
-  status: "draft" | "pending" | "approved";
+  status: "draft" | "pending" | "sent_back" | "approved";
   request_date?: string | null;
   requested_by?: string | null;
   requested_by_user_id?: number | null;

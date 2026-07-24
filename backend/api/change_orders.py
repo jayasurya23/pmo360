@@ -25,7 +25,7 @@ from schemas.common import (
 
 router = APIRouter(prefix="/api/change-orders", tags=["change-orders"])
 
-_VALID_STATUS = ("draft", "pending", "approved")
+_VALID_STATUS = ("draft", "pending", "approved", "sent_back")
 _VALID_RATE = ("fixed", "hourly")
 
 
@@ -273,9 +273,13 @@ def mark_change_order_sent(
 
 @router.post("/{co_id}/reject", response_model=ChangeOrderOut)
 def reject_change_order(co_id: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
-    """Send a pending CO back to draft (clears the approval stamp)."""
+    """Send a pending CO back to the requester (clears the approval stamp).
+
+    Distinct 'sent_back' status (not plain 'draft') so returned COs surface in
+    their own tab instead of blending in with fresh drafts. Editable + can be
+    re-submitted (submit -> pending) from there."""
     co = _get(db, co_id)
-    co.status = "draft"
+    co.status = "sent_back"
     co.approved_by = None
     co.approved_by_user_id = None
     co.approved_at = None
