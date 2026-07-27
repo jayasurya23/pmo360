@@ -2288,6 +2288,13 @@ export default function Proposals() {
               Total <b className="text-brand-black">{fmtPrice(activeVersion?.total_price)}</b>
             </span>
             <div className="flex-1" />
+            <button
+              className="btn-ghost text-xs py-1"
+              onClick={() => void openPdf("schedule")}
+              title="Preview the Project Schedule PDF — deliverables with dates and prices"
+            >
+              👁 Preview
+            </button>
             <button className="btn-ghost text-xs py-1" onClick={() => void saveExcel()}>
               ⬇ Save Excel
             </button>
