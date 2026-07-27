@@ -426,7 +426,14 @@ def calculate_all_dates(template_items, item_id_map, cfg: ScheduleConfig, unpin_
                 pred_item = None
 
             if pred_item and pred_item.enabled and pred_item.end_date:
-                if item.predecessor_type == "FS":
+                if is_cr and adj_dur == 0:
+                    # A zero-day Client Review is a marker that sits ON its
+                    # predecessor's end date: both start and end equal the
+                    # dependent task/milestone's end (no "next business day"
+                    # FS offset). end_date below resolves to the same date since
+                    # add_business_days(pred_end, 0) == pred_end.
+                    item.start_date = pred_item.end_date
+                elif item.predecessor_type == "FS":
                     fs_offset = 2 if cfg.fs_start_next_day else 1
                     item.start_date = add_business_days(pred_item.end_date, item.lag + fs_offset, cfg)
                 elif item.predecessor_type == "SS":
