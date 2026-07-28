@@ -29,6 +29,22 @@ export default {
           green: "#278747",
           brightgreen: "#4ab751",
           gold: "#c7bb2e",
+          // Readable text-weight variants — the base gold and blue are too
+          // light to sit on white at body sizes.
+          deepgold: "#8a8021",
+          deepblue: "#0e6b85",
+        },
+        // Warm neutral surfaces derived from the brand near-black. These
+        // replace Tailwind's slate scale app-wide: slate reads cool/blue
+        // beside Castillo red, these sit with it.
+        surface: {
+          page: "#f5f4f3",      // app background
+          card: "#ffffff",
+          border: "#e6e7e8",    // card + control borders (= brand.nearwhite)
+          hairline: "#f0efee",  // dividers inside cards
+          rowhover: "#faf9f9",  // row hover + table headers
+          ghost: "#d8d6d5",     // ghost-button border
+          mute: "#eceae9",      // disabled / inactive fills
         },
         status: {
           open: {
@@ -53,8 +69,17 @@ export default {
           },
         },
       },
+      maxWidth: {
+        // Content widths from the redesign: wide boards vs document-like pages.
+        shell: "1560px",
+        doc: "1240px",
+        narrow: "860px",
+      },
       boxShadow: {
         card: "0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.04)",
+        // Document page (Preview/Send paper) and timeline bars.
+        page: "0 6px 18px rgba(51,49,50,0.08)",
+        bar: "0 1px 2px rgba(51,49,50,0.15)",
       },
     },
   },

@@ -42,7 +42,7 @@ input[type="number"] {
     height: 100%;
   }
   body {
-    @apply font-sans bg-slate-50 text-slate-900 antialiased;
+    @apply font-sans bg-surface-page text-brand-black antialiased;
   }
   /* Jost everywhere — cover form controls, their <option> popups and buttons
      so nothing falls back to a system font (Tailwind Preflight sets these to
@@ -67,62 +67,85 @@ input[type="number"] {
       whitespace-nowrap;
   }
   .btn-primary {
-    @apply btn bg-brand-red text-white shadow-sm hover:bg-brand-darkred
-      focus:outline-none focus:ring-2 focus:ring-brand-red/30;
+    @apply btn bg-brand-red text-white hover:bg-brand-darkred;
   }
+  /* Ghost buttons and links share one hover language across the app: the
+     border and the text both go brand red. */
   .btn-ghost {
-    @apply btn border border-slate-200 bg-white text-slate-700
-      hover:border-slate-300 hover:bg-slate-50;
+    @apply btn border border-surface-ghost bg-white text-brand-gray
+      hover:border-brand-red hover:text-brand-red;
   }
   .btn-danger {
-    @apply btn bg-white border border-rose-300 text-rose-600
-      hover:bg-rose-50 hover:border-rose-400;
+    @apply btn bg-white border border-surface-ghost text-brand-gray
+      hover:border-brand-brightred hover:text-brand-brightred;
   }
 
   /* ---------- Form controls ---------- */
   .input,
   .select,
   .textarea {
-    @apply w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm
-      text-slate-900 placeholder:text-slate-400
-      focus:outline-none focus:ring-2 focus:ring-brand-red/30 focus:border-brand-red/60;
+    @apply w-full rounded-md border border-surface-border bg-white px-3 py-2 text-sm
+      text-brand-black placeholder:text-brand-lightgray
+      focus:outline-none focus:border-brand-red;
+  }
+  /* A soft outline rather than Tailwind's ring utility — the ring renders as a
+     hard second border at these radii, which fights the flat card treatment. */
+  .input:focus,
+  .select:focus,
+  .textarea:focus {
+    outline: 2px solid rgba(173, 31, 43, 0.15);
+    outline-offset: 0;
   }
   .textarea {
     @apply leading-relaxed;
   }
   .label {
-    @apply text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5 block;
+    @apply text-[11px] font-semibold uppercase tracking-wider text-brand-gray mb-1.5 block;
+  }
+
+  /* ---------- Typography ---------- */
+  /* Page titles are a kicker + title pair; see components/PageHeader.tsx. */
+  .kicker {
+    @apply text-xs font-semibold uppercase tracking-[0.12em] text-brand-gray;
+  }
+  .page-title {
+    @apply text-[28px] font-bold tracking-[-0.02em] text-brand-black leading-tight;
+  }
+  /* Small all-caps labels that title a region without being a heading
+     ("CONTEXT", "PINNED", "THIS MEETING"). */
+  .micro-label {
+    @apply text-[10px] font-semibold uppercase tracking-[0.1em] text-brand-lightgray;
   }
 
   /* ---------- Surfaces ---------- */
+  /* Cards are flat — a hairline border, no shadow. Depth is reserved for
+     things that are literally paper (the Preview/Send document page). */
   .card {
-    @apply bg-white rounded-xl border border-slate-200 shadow-sm;
+    @apply bg-white rounded-[10px] border border-surface-border;
   }
   .surface {
-    @apply bg-white rounded-2xl border border-slate-200;
+    @apply bg-white rounded-[10px] border border-surface-border;
   }
   .section-title {
-    @apply text-slate-900 font-semibold text-base flex items-center gap-2;
-  }
-  .section-title::before {
-    content: "";
-    @apply inline-block h-4 w-1 rounded-full bg-brand-red;
+    @apply text-brand-black font-bold text-[15px] flex items-center gap-2;
   }
 
   /* ---------- Pills ---------- */
   .pill {
     @apply inline-flex items-center px-2.5 py-0.5 text-xs font-semibold rounded-full border;
   }
+  /* Status tints come straight from config.BrandColors so the app, the PDFs
+     and the Excel action log all read the same. */
   .pill-open {
-    @apply pill bg-rose-50 text-rose-700 border-rose-200;
+    @apply pill bg-status-open-bg text-status-open-text border-status-open-border;
   }
   .pill-pending {
-    @apply pill bg-amber-50 text-amber-700 border-amber-200;
+    @apply pill bg-status-pending-bg text-status-pending-text border-status-pending-border;
   }
   .pill-completed {
-    @apply pill bg-emerald-50 text-emerald-700 border-emerald-200;
+    @apply pill bg-status-completed-bg text-status-completed-text border-status-completed-border;
   }
   .pill-cancelled {
-    @apply pill bg-slate-100 text-slate-600 border-slate-200;
+    @apply pill bg-surface-border text-brand-gray border-brand-lightgray;
   }
 }
