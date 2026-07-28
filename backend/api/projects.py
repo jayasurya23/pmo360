@@ -7,7 +7,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from core.deps import get_db
-from auth import get_current_db_user
+from auth import get_current_db_user, require_db_user
 from db.models import (
     Project, Client, Meeting, ActionItem, Deliverable, Agenda,
     Schedule, Proposal, ProposalVersion, PortfolioProject,
@@ -57,7 +57,7 @@ def get_projects(
 
 
 @router.get("/{project_id}", response_model=ProjectOut)
-def get_one(project_id: int, db: Session = Depends(get_db)):
+def get_one(project_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     project = get_project(db, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
@@ -98,7 +98,7 @@ def create_project(
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)
-def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depends(get_db)):
+def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
@@ -121,7 +121,7 @@ def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depend
 
 
 @router.delete("/{project_id}", status_code=204)
-def delete_project(project_id: int, db: Session = Depends(get_db)):
+def delete_project(project_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
@@ -154,7 +154,7 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{project_id}/deliverables", response_model=list[DeliverableOut])
-def get_project_deliverables(project_id: int, db: Session = Depends(get_db)):
+def get_project_deliverables(project_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     """All Deliverable rows for a project (used by Notes to auto-discover
     sub-project names from `project_segment`)."""
     project = db.get(Project, project_id)
@@ -183,6 +183,7 @@ def _iso_week_window(d: date) -> tuple[date, date]:
 def get_project_metrics(
     project_id: int = Path(..., ge=1, description="Portfolio (project) id"),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     """Roll up health metrics for a single portfolio.
 

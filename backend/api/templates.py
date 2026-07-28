@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from auth import get_current_db_user
+from auth import get_current_db_user, require_db_user
 from core.deps import get_db
 from db.models import MeetingTemplate, Project
 from schemas.common import (
@@ -29,6 +29,7 @@ router = APIRouter(prefix="/api/templates", tags=["templates"])
 def list_templates(
     project_id: int = Query(...),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     """Templates for a single portfolio, alphabetical by name (matches the
     Capture page dropdown — PMs scan by name, not by last-edited)."""
@@ -41,7 +42,7 @@ def list_templates(
 
 
 @router.get("/{template_id}", response_model=MeetingTemplateOut)
-def get_template(template_id: int, db: Session = Depends(get_db)):
+def get_template(template_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     t = db.get(MeetingTemplate, template_id)
     if not t:
         raise HTTPException(404, "Template not found")
@@ -79,6 +80,7 @@ def update_template(
     template_id: int,
     payload: MeetingTemplateUpdate,
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     t = db.get(MeetingTemplate, template_id)
     if not t:
@@ -102,7 +104,7 @@ def update_template(
 
 
 @router.delete("/{template_id}", status_code=204)
-def delete_template(template_id: int, db: Session = Depends(get_db)):
+def delete_template(template_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     t = db.get(MeetingTemplate, template_id)
     if not t:
         raise HTTPException(404, "Template not found")
@@ -111,7 +113,7 @@ def delete_template(template_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{template_id}/touch", response_model=MeetingTemplateOut)
-def touch_template(template_id: int, db: Session = Depends(get_db)):
+def touch_template(template_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     """Bump ``last_used_at`` to now() — called by the Capture page after
     cloning the template. Lets the next /api/templates fetch sort by
     "most recently used" so the PM's daily-driver templates float to the

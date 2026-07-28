@@ -10,13 +10,14 @@ Public API:
     - `get_current_user`  — optional dependency, returns User|None
     - `require_user`      — required dependency, 401s on missing/invalid
     - `User`              — Pydantic model with oid / email / name
+    - `require_admin`     — required + ADMIN_EMAILS membership, else 403
 """
 from auth.dependencies import (
     get_current_user, require_user, User,
-    get_current_db_user, require_db_user,
+    get_current_db_user, require_db_user, require_admin,
 )
 
 __all__ = [
     "get_current_user", "require_user", "User",
-    "get_current_db_user", "require_db_user",
+    "get_current_db_user", "require_db_user", "require_admin",
 ]

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from core.deps import get_db
-from auth import get_current_db_user
+from auth import get_current_db_user, require_db_user
 from db.models import Project, Schedule, ProjectAttendee, GlobalAttendee, Agenda
 from db.repository import (
     list_agendas, get_agenda, save_agenda, delete_agenda,
@@ -25,12 +25,12 @@ router = APIRouter(prefix="/api/agendas", tags=["agendas"])
 
 
 @router.get("", response_model=list[AgendaOut])
-def get_agendas(project_id: int = Query(...), db: Session = Depends(get_db)):
+def get_agendas(project_id: int = Query(...), db: Session = Depends(get_db), _user=Depends(require_db_user)):
     return list_agendas(db, project_id)
 
 
 @router.get("/{agenda_id}", response_model=AgendaOut)
-def get_one(agenda_id: int, db: Session = Depends(get_db)):
+def get_one(agenda_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     a = get_agenda(db, agenda_id)
     if not a:
         raise HTTPException(404, "Agenda not found")
@@ -99,7 +99,7 @@ def upsert_agenda(
 
 
 @router.delete("/{agenda_id}", status_code=204)
-def remove(agenda_id: int, db: Session = Depends(get_db)):
+def remove(agenda_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     delete_agenda(db, agenda_id)
     return None
 
@@ -126,6 +126,7 @@ def generate_doc(
     payload: AgendaDocRequest,
     fmt: str = Query("pdf", pattern="^(pdf|docx)$"),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     project = db.get(Project, payload.project_id)
     if not project:
@@ -221,7 +222,7 @@ def generate_doc(
 
 # ---------- iCalendar (.ics) export ----------
 @router.get("/{agenda_id}/ics")
-def export_agenda_ics(agenda_id: int, db: Session = Depends(get_db)):
+def export_agenda_ics(agenda_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     """Download a single-event .ics file for the upcoming agenda.
 
     Pulls attendee emails by matching the agenda's saved attendees against
@@ -381,6 +382,7 @@ def auto_draft_agenda(
         ),
     ),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     """Assemble a NextAgenda draft from the portfolio's history.
 
