@@ -326,14 +326,14 @@ export default function SendAgendaDialog({ open, onClose, payload }: Props) {
       aria-labelledby="send-agenda-title"
     >
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => !sending && onClose()}
       />
       <div className="relative w-full max-w-3xl card p-5 space-y-4 shadow-xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <h3
             id="send-agenda-title"
-            className="text-base font-semibold text-slate-900"
+            className="text-base font-semibold text-brand-black"
           >
             📧 Send pre-meeting agenda
           </h3>
@@ -341,7 +341,7 @@ export default function SendAgendaDialog({ open, onClose, payload }: Props) {
             type="button"
             onClick={onClose}
             disabled={sending}
-            className="text-slate-400 hover:text-slate-700 text-xl leading-none px-2 disabled:opacity-40"
+            className="text-brand-lightgray hover:text-brand-black text-xl leading-none px-2 disabled:opacity-40"
             aria-label="Close"
           >
             ×
@@ -376,7 +376,7 @@ export default function SendAgendaDialog({ open, onClose, payload }: Props) {
               before sending.
             </div>
           ) : (
-            <div className="rounded border border-slate-200 divide-y divide-slate-100 text-xs">
+            <div className="rounded-[10px] border border-surface-border divide-y divide-surface-hairline text-xs">
               {resolved.map((r, i) => (
                 <div
                   key={`${r.full_name}-${i}`}
@@ -420,7 +420,7 @@ export default function SendAgendaDialog({ open, onClose, payload }: Props) {
             </div>
           )}
           {withoutEmail > 0 && (
-            <div className="text-[11px] text-amber-700 mt-1">
+            <div className="text-[11px] text-brand-deepgold mt-1">
               {withoutEmail} attendee{withoutEmail === 1 ? "" : "s"} ha
               {withoutEmail === 1 ? "s" : "ve"} no email on file. Add their
               address to the project roster (Capture page) so they auto-fill
@@ -491,18 +491,18 @@ export default function SendAgendaDialog({ open, onClose, payload }: Props) {
 
         {/* ---- Status row ---- */}
         {sendOk && (
-          <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
+          <div className="text-sm text-status-completed-text bg-status-completed-bg border border-status-completed-border rounded-md px-3 py-2">
             ✓ Sent. Check your Outlook Sent Items to confirm.
           </div>
         )}
         {sendError && (
-          <div className="text-sm text-rose-800 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+          <div className="text-sm text-status-open-text bg-status-open-bg border border-status-open-border rounded-md px-3 py-2">
             {sendError}
           </div>
         )}
 
         {/* ---- Footer actions ---- */}
-        <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-100">
+        <div className="flex items-center justify-between gap-3 pt-2 border-t border-surface-hairline">
           <div className="text-[11px] text-brand-gray">
             {composedTo.split(",").filter((s) => s.trim()).length} To ·{" "}
             {composedCc.split(",").filter((s) => s.trim()).length} Cc · PDF

@@ -156,14 +156,14 @@ export default function CommandPalette() {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-start justify-center pt-24 px-4 bg-slate-900/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-start justify-center pt-24 px-4 bg-brand-black/40 backdrop-blur-sm"
       onMouseDown={(e) => {
         // Click on backdrop closes; clicks bubbling from the card don't.
         if (e.target === e.currentTarget) setOpen(false);
       }}
     >
-      <div className="w-full max-w-xl bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
-        <div className="border-b border-slate-100 flex items-center px-4">
+      <div className="w-full max-w-xl bg-white rounded-[10px] shadow-2xl border border-surface-border overflow-hidden">
+        <div className="border-b border-surface-hairline flex items-center px-4">
           <SearchIcon />
           <input
             ref={inputRef}
@@ -171,9 +171,9 @@ export default function CommandPalette() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onInputKey}
             placeholder="Search clients, portfolios, meetings, agendas, actions…"
-            className="flex-1 py-3 px-3 text-sm bg-transparent outline-none placeholder:text-slate-400"
+            className="flex-1 py-3 px-3 text-sm text-brand-black bg-transparent outline-none placeholder:text-brand-lightgray"
           />
-          <kbd className="text-[10px] font-mono text-slate-400 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
+          <kbd className="text-[10px] font-mono text-brand-gray bg-surface-mute border border-surface-border rounded px-1.5 py-0.5">
             esc
           </kbd>
         </div>
@@ -208,17 +208,17 @@ function ResultsList({
 }) {
   if (!query) {
     return (
-      <div className="px-5 py-6 text-xs text-slate-500">
+      <div className="px-5 py-6 text-xs text-brand-gray">
         Type to search across clients, portfolios, meetings, agendas, actions.
       </div>
     );
   }
   if (loading && results.length === 0) {
-    return <div className="px-5 py-6 text-xs text-slate-400">Searching…</div>;
+    return <div className="px-5 py-6 text-xs text-brand-lightgray">Searching…</div>;
   }
   if (results.length === 0) {
     return (
-      <div className="px-5 py-6 text-xs text-slate-500">
+      <div className="px-5 py-6 text-xs text-brand-gray">
         No matches for <span className="font-semibold">{query}</span>.
       </div>
     );
@@ -233,16 +233,16 @@ function ResultsList({
             onClick={() => onActivate(r)}
             className={clsx(
               "w-full flex items-start gap-3 px-4 py-2.5 text-left transition",
-              i === active ? "bg-slate-100" : "hover:bg-slate-50",
+              i === active ? "bg-surface-mute" : "hover:bg-surface-rowhover",
             )}
           >
             <KindBadge kind={r.kind} />
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-semibold text-slate-900 truncate">
+              <div className="text-sm font-semibold text-brand-black truncate">
                 {r.label}
               </div>
               {r.subtitle && (
-                <div className="text-xs text-slate-500 truncate">
+                <div className="text-xs text-brand-gray truncate">
                   {r.subtitle}
                 </div>
               )}
@@ -259,7 +259,10 @@ const KIND_STYLE: Record<SearchResult["kind"], { bg: string; label: string }> =
     client: { bg: "#1aa6c9", label: "Client" },
     portfolio: { bg: "#1aa6c9", label: "Portfolio" },
     meeting: { bg: "#278747", label: "Meeting" },
-    agenda: { bg: "#c7bb2e", label: "Agenda" },
+    // brand-deepgold, not brand-gold: the badge carries white text, and the
+    // base gold is too light to hold it (the rest of the app only uses gold
+    // as a tint behind deepgold text).
+    agenda: { bg: "#8a8021", label: "Agenda" },
     action: { bg: "#ad1f2b", label: "Action" },
   };
 
@@ -278,7 +281,7 @@ function KindBadge({ kind }: { kind: SearchResult["kind"] }) {
 function SearchIcon() {
   return (
     <svg
-      className="h-4 w-4 text-slate-400 shrink-0"
+      className="h-4 w-4 text-brand-lightgray shrink-0"
       viewBox="0 0 20 20"
       fill="currentColor"
       aria-hidden

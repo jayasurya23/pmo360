@@ -78,7 +78,7 @@ export default function NewClientDialog({ open, onClose }: Props) {
       aria-labelledby="new-client-title"
     >
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => !submitting && onClose()}
       />
       <form
@@ -87,7 +87,7 @@ export default function NewClientDialog({ open, onClose }: Props) {
       >
         <h3
           id="new-client-title"
-          className="text-base font-semibold text-slate-900"
+          className="text-base font-semibold text-brand-black"
         >
           New client
         </h3>
@@ -114,13 +114,13 @@ export default function NewClientDialog({ open, onClose }: Props) {
             value={emailDomain}
             onChange={(e) => setEmailDomain(e.target.value)}
           />
-          <p className="text-[11px] text-slate-500 mt-1">
+          <p className="text-[11px] text-brand-gray mt-1">
             Used to auto-match attendees by email domain.
           </p>
         </div>
 
         {error && (
-          <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
+          <div className="text-sm text-status-open-text bg-status-open-bg border border-status-open-border rounded-md px-3 py-2">
             {error}
           </div>
         )}

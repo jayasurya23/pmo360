@@ -24,10 +24,10 @@ export default function SaveStatus({
 }: Props) {
   const label = autoSaveLabel(status, lastSavedAt, errorMessage);
   const dotClass = clsx("h-2 w-2 rounded-full", {
-    "bg-slate-300": status === "idle",
-    "bg-amber-400 animate-pulse": status === "saving",
-    "bg-emerald-500": status === "saved",
-    "bg-rose-500": status === "error" || status === "conflict",
+    "bg-surface-ghost": status === "idle",
+    "bg-brand-gold animate-pulse": status === "saving",
+    "bg-brand-green": status === "saved",
+    "bg-brand-brightred": status === "error" || status === "conflict",
   });
 
   return (
@@ -35,8 +35,8 @@ export default function SaveStatus({
       className={clsx(
         "inline-flex items-center gap-2 text-xs",
         status === "error" || status === "conflict"
-          ? "text-rose-600"
-          : "text-slate-500",
+          ? "text-brand-brightred"
+          : "text-brand-gray",
       )}
       role="status"
       aria-live="polite"
@@ -47,7 +47,7 @@ export default function SaveStatus({
         <button
           type="button"
           onClick={onReload}
-          className="underline underline-offset-2 hover:text-rose-700"
+          className="underline underline-offset-2 hover:text-brand-red"
         >
           Reload
         </button>

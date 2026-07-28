@@ -161,21 +161,21 @@ export default function ProjectDialog({
       aria-modal="true"
     >
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => !submitting && onClose()}
       />
       <form
         onSubmit={apply}
         className="relative w-full max-w-md card p-5 space-y-4 shadow-xl"
       >
-        <h3 className="text-base font-semibold text-slate-900">{TITLES[mode!]}</h3>
+        <h3 className="text-base font-semibold text-brand-black">{TITLES[mode!]}</h3>
         <p className="text-xs text-brand-gray">
           Project under{" "}
-          <span className="font-medium text-slate-700">{currentProject.name}</span>.
+          <span className="font-medium text-brand-black">{currentProject.name}</span>.
         </p>
 
         {mode === "delete" ? (
-          <p className="text-sm text-slate-700">
+          <p className="text-sm text-brand-black">
             Remove <span className="font-semibold">{selectedSubProject}</span> from
             this portfolio's projects? Notes already tagged with it keep their text —
             they just won't match the Project filter anymore.
@@ -195,7 +195,7 @@ export default function ProjectDialog({
         )}
 
         {error && (
-          <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
+          <div className="text-sm text-status-open-text bg-status-open-bg border border-status-open-border rounded-md px-3 py-2">
             {error}
           </div>
         )}
@@ -213,7 +213,7 @@ export default function ProjectDialog({
             <button
               type="submit"
               disabled={submitting}
-              className="px-4 py-2 rounded-md bg-rose-600 text-white text-sm font-medium hover:bg-rose-700 disabled:opacity-50"
+              className="btn-danger"
             >
               {submitting ? "Deleting…" : "Delete"}
             </button>

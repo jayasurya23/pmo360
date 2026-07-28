@@ -94,19 +94,19 @@ export default function ConfirmDialog({
     >
       {/* Backdrop */}
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => !submitting && onCancel()}
       />
       {/* Card */}
       <div className="relative w-full max-w-md card p-5 space-y-3 shadow-xl">
         <h3
           id="confirm-dialog-title"
-          className="text-base font-semibold text-slate-900"
+          className="text-base font-semibold text-brand-black"
         >
           {title}
         </h3>
         {body !== undefined && (
-          <div className="text-sm text-slate-600 max-h-60 overflow-y-auto whitespace-pre-wrap">
+          <div className="text-sm text-brand-gray max-h-60 overflow-y-auto whitespace-pre-wrap">
             {body}
           </div>
         )}

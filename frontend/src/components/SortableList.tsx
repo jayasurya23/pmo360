@@ -110,7 +110,7 @@ function SortableRow({
       {...attributes}
       {...listeners}
       aria-label="Drag to reorder"
-      className="flex items-center justify-center w-6 h-6 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing focus:outline-none focus:text-slate-500 touch-none"
+      className="flex items-center justify-center w-6 h-6 text-brand-lightgray hover:text-brand-gray cursor-grab active:cursor-grabbing focus:outline-none focus:text-brand-gray touch-none"
     >
       <GripVerticalIcon />
     </button>
@@ -130,7 +130,7 @@ function SortableRow({
  */
 export function DragHandle() {
   return (
-    <span className="flex items-center justify-center w-6 h-6 text-slate-300">
+    <span className="flex items-center justify-center w-6 h-6 text-brand-lightgray">
       <GripVerticalIcon />
     </span>
   );

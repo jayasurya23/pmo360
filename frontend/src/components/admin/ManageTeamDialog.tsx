@@ -162,7 +162,7 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
       aria-labelledby="manage-team-title"
     >
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => !adding && onClose()}
       />
       <div className="relative w-full max-w-lg card p-5 space-y-4 shadow-xl max-h-[85vh] flex flex-col">
@@ -170,17 +170,17 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
           <div>
             <h3
               id="manage-team-title"
-              className="text-base font-semibold text-slate-900"
+              className="text-base font-semibold text-brand-black"
             >
               👥 Manage team
             </h3>
-            <div className="text-xs text-slate-500 mt-0.5 truncate">
+            <div className="text-xs text-brand-gray mt-0.5 truncate">
               {project.name}
             </div>
           </div>
           <button
             type="button"
-            className="text-xs text-slate-400 hover:text-slate-600"
+            className="text-xs text-brand-lightgray hover:text-brand-gray"
             onClick={onClose}
             aria-label="Close"
           >
@@ -189,15 +189,15 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
         </div>
 
         {/* ----- Members list ----- */}
-        <div className="border border-slate-200 rounded-lg overflow-y-auto">
+        <div className="border border-surface-border rounded-[10px] overflow-y-auto">
           {loading ? (
-            <div className="p-4 text-sm text-slate-500">Loading members…</div>
+            <div className="p-4 text-sm text-brand-gray">Loading members…</div>
           ) : members.length === 0 ? (
-            <div className="p-4 text-sm text-slate-500">
+            <div className="p-4 text-sm text-brand-gray">
               No one is assigned to this portfolio yet.
             </div>
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <ul className="divide-y divide-surface-hairline">
               {members.map((m) => {
                 const name = m.user?.name || "(unknown)";
                 const mail = m.user?.email || "";
@@ -210,18 +210,18 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
                       {initialsFor(name || mail || "?")}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-slate-900 truncate">
+                      <div className="text-sm font-medium text-brand-black truncate">
                         {name}
                       </div>
                       {mail && (
-                        <div className="text-xs text-slate-500 truncate">
+                        <div className="text-xs text-brand-gray truncate">
                           {mail}
                         </div>
                       )}
                     </div>
                     <button
                       type="button"
-                      className="text-xs text-rose-600 hover:text-rose-700 hover:bg-rose-50 px-2 py-1 rounded"
+                      className="text-xs text-brand-brightred hover:text-brand-red hover:bg-status-open-bg px-2 py-1 rounded"
                       onClick={() => void handleRemove(m)}
                     >
                       Remove
@@ -261,8 +261,8 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
               className={
                 "text-xs rounded-md px-3 py-2 " +
                 (addMessage.tone === "info"
-                  ? "bg-amber-50 border border-amber-200 text-amber-800"
-                  : "bg-rose-50 border border-rose-200 text-rose-700")
+                  ? "bg-status-pending-bg border border-status-pending-border text-status-pending-text"
+                  : "bg-status-open-bg border border-status-open-border text-status-open-text")
               }
             >
               {addMessage.text}
@@ -282,7 +282,7 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
           </button>
         </div>
 
-        <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+        <div className="flex justify-end gap-2 pt-2 border-t border-surface-hairline">
           <button
             type="button"
             className="btn-ghost"

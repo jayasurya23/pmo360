@@ -117,10 +117,10 @@ export default function AttachmentsSection({ meetingId }: Props) {
       {/* Drop zone / picker */}
       <div
         className={
-          "rounded-lg border-2 border-dashed p-4 transition-colors " +
+          "rounded-[10px] border-2 border-dashed p-4 transition-colors " +
           (dragOver
             ? "border-brand-red bg-brand-red/5"
-            : "border-slate-300 dark:border-slate-700")
+            : "border-surface-ghost")
         }
         onDragOver={(e) => {
           e.preventDefault();
@@ -182,7 +182,7 @@ export default function AttachmentsSection({ meetingId }: Props) {
           No attachments yet. Drop a file above to add one.
         </p>
       ) : (
-        <ul className="divide-y divide-slate-200 dark:divide-slate-700">
+        <ul className="divide-y divide-surface-hairline">
           {items.map((att) => (
             <li
               key={att.id}
