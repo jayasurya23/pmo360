@@ -378,3 +378,22 @@ def require_db_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return row
+
+
+def require_admin(
+    authorization: Optional[str] = Header(None),
+):
+    """Admin-only identity. 401 without a valid token, 403 when the caller
+    isn't in ADMIN_EMAILS. Returns the SQLAlchemy User row.
+
+    `is_admin` is recomputed from the env var on every authenticated request
+    (see `_upsert_user_row`), so adding/removing an admin takes effect on their
+    next call — no restart, no re-login.
+    """
+    row = require_db_user(authorization)
+    if not row.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required.",
+        )
+    return row

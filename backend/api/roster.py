@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from auth import require_db_user
 from core.deps import get_db
 from db.models import ProjectAttendee, GlobalAttendee
 from db.repository import get_project_roster, upsert_project_attendee
@@ -22,7 +23,7 @@ router = APIRouter(prefix="/api/roster", tags=["roster"])
 
 
 @router.get("/global", response_model=list[GlobalAttendeeOut])
-def list_global(db: Session = Depends(get_db)):
+def list_global(db: Session = Depends(get_db), _user=Depends(require_db_user)):
     return (
         db.query(GlobalAttendee)
         .order_by(GlobalAttendee.full_name)
@@ -31,7 +32,7 @@ def list_global(db: Session = Depends(get_db)):
 
 
 @router.post("/global", response_model=GlobalAttendeeOut, status_code=201)
-def add_global(payload: AttendeeIn, db: Session = Depends(get_db)):
+def add_global(payload: AttendeeIn, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     existing = db.query(GlobalAttendee).filter_by(full_name=payload.full_name).first()
     if existing:
         raise HTTPException(409, "Member already on the global roster")
@@ -47,7 +48,7 @@ def add_global(payload: AttendeeIn, db: Session = Depends(get_db)):
 
 
 @router.patch("/global/{member_id}", response_model=GlobalAttendeeOut)
-def patch_global(member_id: int, payload: AttendeePatch, db: Session = Depends(get_db)):
+def patch_global(member_id: int, payload: AttendeePatch, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     m = db.get(GlobalAttendee, member_id)
     if not m:
         raise HTTPException(404, "Global member not found")
@@ -64,7 +65,7 @@ def patch_global(member_id: int, payload: AttendeePatch, db: Session = Depends(g
 
 
 @router.delete("/global/{member_id}", status_code=204)
-def delete_global(member_id: int, db: Session = Depends(get_db)):
+def delete_global(member_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     m = db.get(GlobalAttendee, member_id)
     if not m:
         raise HTTPException(404, "Global member not found")
@@ -75,6 +76,7 @@ def delete_global(member_id: int, db: Session = Depends(get_db)):
 def list_project_roster(
     project_id: int = Query(...),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     return get_project_roster(db, project_id)
 
@@ -84,6 +86,7 @@ def add_to_project(
     payload: AttendeeIn,
     project_id: int = Query(...),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     a = upsert_project_attendee(
         db,
@@ -101,6 +104,7 @@ def patch_project_attendee(
     attendee_id: int,
     payload: AttendeePatch,
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     a = db.get(ProjectAttendee, attendee_id)
     if not a:
@@ -118,7 +122,7 @@ def patch_project_attendee(
 
 
 @router.delete("/project/{attendee_id}", status_code=204)
-def delete_from_project(attendee_id: int, db: Session = Depends(get_db)):
+def delete_from_project(attendee_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     a = db.get(ProjectAttendee, attendee_id)
     if not a:
         raise HTTPException(404, "Attendee not found")

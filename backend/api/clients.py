@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from auth import require_db_user, require_admin
 from core.deps import get_db
 from db.models import Client
 from db.repository import list_clients
@@ -11,12 +12,12 @@ router = APIRouter(prefix="/api/clients", tags=["clients"])
 
 
 @router.get("", response_model=list[ClientOut])
-def get_clients(db: Session = Depends(get_db)):
+def get_clients(db: Session = Depends(get_db), _user=Depends(require_db_user)):
     return list_clients(db)
 
 
 @router.post("", response_model=ClientOut, status_code=201)
-def create_client(payload: ClientCreate, db: Session = Depends(get_db)):
+def create_client(payload: ClientCreate, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     existing = db.query(Client).filter_by(name=payload.name).first()
     if existing:
         raise HTTPException(409, f"Client {payload.name!r} already exists")
@@ -28,7 +29,8 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db)):
 
 @router.patch("/{client_id}", response_model=ClientOut)
 def update_client(
-    client_id: int, payload: ClientUpdate, db: Session = Depends(get_db)
+    client_id: int, payload: ClientUpdate, db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     client = db.get(Client, client_id)
     if not client:
@@ -52,7 +54,12 @@ def update_client(
 
 
 @router.delete("/{client_id}", status_code=204)
-def delete_client(client_id: int, db: Session = Depends(get_db)):
+def delete_client(client_id: int, db: Session = Depends(get_db), _user=Depends(require_admin)):
+    """Admin-only. Deleting a client cascades through `Client.projects`
+    (all, delete-orphan) into every portfolio beneath it and everything they
+    own — meetings, agendas, proposals, change orders, action items. It is the
+    single most destructive call in the API, so it is gated to ADMIN_EMAILS
+    rather than any signed-in PM."""
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(404, "Client not found")

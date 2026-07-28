@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from core.deps import get_db
-from auth import get_current_db_user
+from auth import get_current_db_user, require_db_user
 from db.models import Meeting, Project, DiscussionPoint
 from db.repository import list_meetings, get_meeting, latest_meeting
 from core.services import (
@@ -92,12 +92,12 @@ def _parsed_to_pydantic(parsed_in) -> ParsedMeeting:
 
 # --- routes ----------------------------------------------------------------
 @router.get("", response_model=list[MeetingSummary])
-def get_meetings(project_id: int = Query(...), db: Session = Depends(get_db)):
+def get_meetings(project_id: int = Query(...), db: Session = Depends(get_db), _user=Depends(require_db_user)):
     return list_meetings(db, project_id)
 
 
 @router.get("/latest", response_model=MeetingDetail | None)
-def get_latest(project_id: int = Query(...), db: Session = Depends(get_db)):
+def get_latest(project_id: int = Query(...), db: Session = Depends(get_db), _user=Depends(require_db_user)):
     m = latest_meeting(db, project_id)
     if not m:
         return None
@@ -105,7 +105,7 @@ def get_latest(project_id: int = Query(...), db: Session = Depends(get_db)):
 
 
 @router.get("/{meeting_id}", response_model=MeetingDetail)
-def get_one(meeting_id: int, db: Session = Depends(get_db)):
+def get_one(meeting_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     m = get_meeting(db, meeting_id)
     if not m:
         raise HTTPException(404, "Meeting not found")
@@ -213,7 +213,7 @@ def patch_meeting_meta(
 
 
 @router.delete("/{meeting_id}", status_code=204)
-def delete_meeting(meeting_id: int, db: Session = Depends(get_db)):
+def delete_meeting(meeting_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     m = db.get(Meeting, meeting_id)
     if not m:
         raise HTTPException(404, "Meeting not found")
@@ -222,7 +222,7 @@ def delete_meeting(meeting_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{meeting_id}/regenerate-summary", response_model=MeetingDetail)
-def regenerate_summary(meeting_id: int, db: Session = Depends(get_db)):
+def regenerate_summary(meeting_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     """Re-run the AI executive summary against the current meeting state.
     Used after major edits where the cached summary no longer reflects the
     content. Returns the updated MeetingDetail."""

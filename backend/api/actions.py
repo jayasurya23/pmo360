@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from core.deps import get_db
-from auth import get_current_db_user
+from auth import get_current_db_user, require_db_user
 from db.models import ActionItem, Project, Client, Meeting
 from db.repository import (
     all_actions, open_actions, update_action_status,
@@ -44,6 +44,7 @@ def list_actions(
     project_id: int | None = Query(None),
     only_open: bool = Query(False),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     """List actions. With ``project_id`` -> that portfolio only; without it ->
     every action across all portfolios (the Actions page default view)."""
@@ -116,7 +117,7 @@ def patch_action(
 
 
 @router.delete("/{action_id}", status_code=204)
-def delete_action(action_id: int, db: Session = Depends(get_db)):
+def delete_action(action_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     a = db.get(ActionItem, action_id)
     if not a:
         raise HTTPException(404, "Action not found")
@@ -150,6 +151,7 @@ def export_actions_csv(
     status: str = Query("all"),
     owner: str = Query("", description="Case-insensitive substring filter on owner"),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ):
     """Stream a CSV of action items. With ``project_id`` it's scoped to that
     portfolio; without it, every portfolio's actions (the 'All portfolios'

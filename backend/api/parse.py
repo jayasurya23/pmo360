@@ -8,6 +8,7 @@ import re
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+from auth import require_db_user
 from core.deps import get_db
 from core.services import parse_notes_with_ai
 from db.models import Project
@@ -18,7 +19,7 @@ router = APIRouter(prefix="/api/parse", tags=["parse"])
 
 
 @router.post("", response_model=ParsedMeetingOut)
-def parse_notes(payload: ParseRequest, db: Session = Depends(get_db)):
+def parse_notes(payload: ParseRequest, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     project = db.get(Project, payload.project_id)
     if not project:
         raise HTTPException(404, "Project not found")
@@ -82,7 +83,7 @@ def _extract_vtt_text(raw: str) -> str:
 
 
 @router.post("/transcript")
-async def parse_transcript(file: UploadFile = File(...)):
+async def parse_transcript(file: UploadFile = File(...), _user=Depends(require_db_user)):
     """Accept a raw transcript file and return the extracted plain text.
 
     Supported formats: .txt, .md, .docx, .vtt. The client drops the file
