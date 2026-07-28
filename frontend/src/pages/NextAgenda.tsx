@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
+import clsx from "clsx";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import OwnerPicker from "@/components/actions/OwnerPicker";
@@ -594,10 +595,12 @@ export default function NextAgenda() {
   };
 
   return (
-    <div className="space-y-6 max-w-7xl">
+    <div className="max-w-shell">
       <PageHeader
-        title="Next Pre-Meeting Agenda"
-        subtitle="Plan the next coordination meeting. Save your draft, then export a Castillo-branded PDF or DOCX."
+        kicker={`Plan ahead · ${[currentClient?.name, currentProject.name]
+          .filter(Boolean)
+          .join(" / ")}`}
+        title="Next pre-meeting agenda"
         actions={
           <>
             {agendaId && (
@@ -608,9 +611,6 @@ export default function NextAgenda() {
                 onReload={handleReloadAgenda}
               />
             )}
-            <button className="btn-ghost" onClick={handleNew}>
-              + New
-            </button>
             <button
               className="btn-ghost"
               onClick={handleAutoDraft}
@@ -653,251 +653,189 @@ export default function NextAgenda() {
         }
       />
 
-      {msg && (
-        <div className="card p-3 border-l-4 border-l-brand-red text-sm">
-          {msg}
+      <div className="space-y-5">
+        {/* Saved-agenda switcher. The redesign parks this strip in the shell's
+            context row; until Layout owns it, it leads the page content with
+            the same chip treatment. */}
+        <div className="flex flex-wrap items-center gap-2">
+          {savedAgendas.length > 0 && (
+            <span className="micro-label mr-1">Saved agendas</span>
+          )}
+          {savedAgendas.map((a) => (
+            <ChipButton
+              key={a.id}
+              active={agendaId === a.id}
+              onClick={() => setAgendaId(a.id)}
+            >
+              {a.title || format(parseISO(a.upcoming_date), "MMM d")}
+            </ChipButton>
+          ))}
+          <ChipButton onClick={handleNew}>+ New</ChipButton>
+          {agendaId && (
+            <ChipButton danger onClick={handleDelete}>
+              Delete current
+            </ChipButton>
+          )}
         </div>
-      )}
 
-      {savedAgendas.length > 0 && (
-        <section className="card p-4">
-          <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold mb-2">
-            Saved agendas
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {savedAgendas.map((a) => (
-              <button
-                key={a.id}
-                onClick={() => setAgendaId(a.id)}
-                className={
-                  agendaId === a.id
-                    ? "px-3 py-1.5 rounded-full text-xs font-semibold bg-brand-red text-white"
-                    : "px-3 py-1.5 rounded-full text-xs font-semibold bg-brand-nearwhite text-brand-black hover:bg-brand-lightgray/40"
-                }
-              >
-                {a.title || format(parseISO(a.upcoming_date), "MMM d")}
-              </button>
-            ))}
-            {agendaId && (
-              <button
-                onClick={handleDelete}
-                className="px-3 py-1.5 rounded-full text-xs font-semibold border border-brand-red text-brand-red"
-              >
-                Delete current
-              </button>
-            )}
-          </div>
-        </section>
-      )}
-
-      <section className="card p-5 grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div>
-          <label className="label">Title</label>
-          <input
-            className="input"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="(optional)"
-          />
-        </div>
-        <div>
-          <label className="label">Upcoming date</label>
-          <input
-            type="date"
-            className="input"
-            value={upcomingDate}
-            onChange={(e) => setUpcomingDate(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="label">Duration (min)</label>
-          <select
-            className="select"
-            value={meetingDuration}
-            onChange={(e) => setMeetingDuration(Number(e.target.value))}
-          >
-            <option value={30}>30</option>
-            <option value={60}>60</option>
-          </select>
-        </div>
-        <div>
-          <label className="label">Schedule version override</label>
-          <input
-            className="input"
-            value={scheduleVersionOverride}
-            onChange={(e) => setScheduleVersionOverride(e.target.value)}
-            placeholder="(optional)"
-          />
-        </div>
-        {meetings.length > 0 && (
-          <div className="md:col-span-4">
-            <label className="label">Source meeting (for carry-forward)</label>
-            <div className="flex gap-2">
-              <select
-                className="select flex-1"
-                value={sourceMeetingId || ""}
-                onChange={(e) =>
-                  setSourceMeetingId(e.target.value ? Number(e.target.value) : null)
-                }
-              >
-                <option value="">(latest)</option>
-                {meetings.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {format(parseISO(m.meeting_date), "MMM d, yyyy")} —{" "}
-                    {m.title || "untitled"}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="btn-ghost shrink-0"
-                onClick={handleReloadAttendeesFromSource}
-                disabled={!sourceMeetingId}
-                title="Replace the attendees list with the roster from this source meeting"
-              >
-                ↺ Reload attendees
-              </button>
-            </div>
+        {msg && (
+          <div className="card border-l-[3px] border-l-brand-red p-3 text-sm text-brand-black">
+            {msg}
           </div>
         )}
-      </section>
 
-      <section className="card p-5">
-        <h3 className="section-title mb-3">Attendees</h3>
-        <AttendeeChips
-          available={combinedRoster}
-          selected={attendees}
-          onToggle={toggleAttendee}
-        />
-      </section>
-
-      <section className="card p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="section-title">Discussion Points (by discipline)</h3>
-          <DisciplineEditor
-            disciplines={disciplines}
-            setDisciplines={setDisciplines}
-          />
-        </div>
-        {disciplines.map((d) => (
-          <div key={d}>
-            <label className="label">{d}</label>
-            <textarea
-              className="textarea"
-              rows={4}
-              value={dpText[d] || ""}
-              onChange={(e) => setDpText({ ...dpText, [d]: e.target.value })}
-              onKeyDown={handleTextareaTab}
-              placeholder="One discussion point per line. Use 'Label: detail' for bold lead-in. Indent with two spaces for sub-bullets."
+        <section className="card grid grid-cols-1 items-end gap-3.5 px-5 py-4 md:grid-cols-2 xl:grid-cols-[2fr_1fr_0.8fr_1fr_2fr]">
+          <div className="min-w-0">
+            <label className="label">Title</label>
+            <input
+              className="input"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="(optional)"
             />
           </div>
-        ))}
-      </section>
+          <div className="min-w-0">
+            <label className="label">Upcoming date</label>
+            <input
+              type="date"
+              className="input"
+              value={upcomingDate}
+              onChange={(e) => setUpcomingDate(e.target.value)}
+            />
+          </div>
+          <div className="min-w-0">
+            <label className="label">Duration</label>
+            <select
+              className="select"
+              value={meetingDuration}
+              onChange={(e) => setMeetingDuration(Number(e.target.value))}
+            >
+              <option value={30}>30 min</option>
+              <option value={60}>60 min</option>
+            </select>
+          </div>
+          <div className="min-w-0">
+            <label className="label">Schedule override</label>
+            <input
+              className="input"
+              value={scheduleVersionOverride}
+              onChange={(e) => setScheduleVersionOverride(e.target.value)}
+              placeholder="(optional)"
+            />
+          </div>
+          {meetings.length > 0 && (
+            <div className="min-w-0">
+              <label className="label">Source meeting (carry-forward)</label>
+              <div className="flex gap-2">
+                <select
+                  className="select min-w-0 flex-1"
+                  value={sourceMeetingId || ""}
+                  onChange={(e) =>
+                    setSourceMeetingId(e.target.value ? Number(e.target.value) : null)
+                  }
+                >
+                  <option value="">(latest)</option>
+                  {meetings.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {format(parseISO(m.meeting_date), "MMM d, yyyy")} —{" "}
+                      {m.title || "untitled"}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="btn-ghost shrink-0 px-3"
+                  onClick={handleReloadAttendeesFromSource}
+                  disabled={!sourceMeetingId}
+                  title="Replace the attendees list with the roster from this source meeting"
+                  aria-label="Reload attendees from source meeting"
+                >
+                  ↺
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
 
-      <section className="card p-5 space-y-4">
-        <h3 className="section-title">Previous Week Recap (by discipline)</h3>
-        {disciplines.map((d) => (
-          <div key={d}>
-            <label className="label">{d}</label>
-            <textarea
-              className="textarea"
-              rows={3}
-              value={recapText[d] || ""}
-              onChange={(e) =>
-                setRecapText({ ...recapText, [d]: e.target.value })
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[1.55fr_1fr]">
+          <div className="space-y-5">
+            <Panel
+              title="Discussion points"
+              note="by discipline"
+              action={
+                <DisciplineEditor
+                  disciplines={disciplines}
+                  setDisciplines={setDisciplines}
+                />
               }
-              onKeyDown={handleTextareaTab}
-            />
+            >
+              <div className="space-y-3.5">
+                {disciplines.map((d) => (
+                  <div key={d}>
+                    <div className="mb-1.5 flex items-center gap-2">
+                      <DisciplineBadge name={d} />
+                      <span className="text-xs font-bold uppercase tracking-[0.06em] text-brand-black">
+                        {d}
+                      </span>
+                    </div>
+                    <textarea
+                      className="textarea"
+                      rows={3}
+                      value={dpText[d] || ""}
+                      onChange={(e) => setDpText({ ...dpText, [d]: e.target.value })}
+                      onKeyDown={handleTextareaTab}
+                      placeholder="One discussion point per line. Use 'Label: detail' for bold lead-in. Indent with two spaces for sub-bullets."
+                    />
+                  </div>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel
+              title="Previous week recap"
+              note="read out at the top of the meeting"
+            >
+              <div className="space-y-3">
+                {disciplines.map((d) => (
+                  <div key={d}>
+                    <div className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.08em] text-brand-gray">
+                      {d}
+                    </div>
+                    <textarea
+                      className="textarea"
+                      rows={2}
+                      value={recapText[d] || ""}
+                      onChange={(e) =>
+                        setRecapText({ ...recapText, [d]: e.target.value })
+                      }
+                      onKeyDown={handleTextareaTab}
+                    />
+                  </div>
+                ))}
+              </div>
+            </Panel>
           </div>
-        ))}
-      </section>
 
-      <InlineTable<OpenAction>
-        title="Open Action Items"
-        rows={openActions}
-        setRows={setOpenActions}
-        empty={() => ({ text: "", owner: "", due_date: null, status: "open" })}
-        columns={[
-          {
-            key: "text",
-            label: "Action",
-            type: "textarea",
-            colSpan: 5,
-          },
-          { key: "owner", label: "Owner", type: "owner", colSpan: 2 },
-          { key: "due_date", label: "Due", type: "date", colSpan: 2 },
-          {
-            key: "status",
-            label: "Status",
-            type: "status",
-            colSpan: 2,
-          },
-        ]}
-      />
+          <div className="space-y-5">
+            <Panel title="Attendees" count={attendees.length} bodyClass="px-5 py-3.5">
+              <AttendeeChips
+                available={combinedRoster}
+                selected={attendees}
+                onToggle={toggleAttendee}
+              />
+            </Panel>
 
-      <InlineTable<Risk>
-        title="Risks & Constraints"
-        rows={risks}
-        setRows={setRisks}
-        empty={() => ({
-          description: "",
-          impact: "",
-          likelihood: "",
-          mitigation: "",
-          owner: "",
-        })}
-        columns={[
-          { key: "description", label: "Description", type: "textarea", colSpan: 4 },
-          { key: "impact", label: "Impact", colSpan: 2 },
-          { key: "likelihood", label: "Likelihood", colSpan: 2 },
-          { key: "mitigation", label: "Mitigation", type: "textarea", colSpan: 2 },
-          { key: "owner", label: "Owner", colSpan: 1 },
-        ]}
-      />
+            <OpenActionsPanel rows={openActions} setRows={setOpenActions} />
+          </div>
+        </div>
 
-      <InlineTable<Decision>
-        title="Required Decisions"
-        rows={decisions}
-        setRows={setDecisions}
-        empty={() => ({
-          decision: "",
-          description: "",
-          impact_if_not: "",
-          required_by: null,
-          owner: "",
-        })}
-        columns={[
-          { key: "decision", label: "Decision", colSpan: 2 },
-          { key: "description", label: "Description", type: "textarea", colSpan: 3 },
-          { key: "impact_if_not", label: "Impact if not", type: "textarea", colSpan: 3 },
-          { key: "required_by", label: "Required by", type: "date", colSpan: 2 },
-          { key: "owner", label: "Owner", colSpan: 1 },
-        ]}
-      />
+        <RisksPanel rows={risks} setRows={setRisks} />
 
-      <InlineTable<ScheduleChange>
-        title="Schedule Change Log"
-        rows={scheduleChanges}
-        setRows={setScheduleChanges}
-        empty={() => ({
-          project: "",
-          task: "",
-          previous_date: "",
-          updated_date: "",
-          change_description: "",
-          reason_for_change: "",
-          impact: "",
-        })}
-        columns={[
-          { key: "project", label: "Project", colSpan: 2 },
-          { key: "task", label: "Task", colSpan: 2 },
-          { key: "previous_date", label: "Previous", colSpan: 1 },
-          { key: "updated_date", label: "Updated", colSpan: 1 },
-          { key: "change_description", label: "Change", type: "textarea", colSpan: 2 },
-          { key: "reason_for_change", label: "Reason", type: "textarea", colSpan: 2 },
-          { key: "impact", label: "Impact", colSpan: 1 },
-        ]}
-      />
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-2">
+          <DecisionsPanel rows={decisions} setRows={setDecisions} />
+          <ScheduleChangesPanel rows={scheduleChanges} setRows={setScheduleChanges} />
+        </div>
+      </div>
 
       {/* ----- Send-to-attendees modal ----- */}
       {projectId && (
@@ -936,6 +874,147 @@ export default function NextAgenda() {
 }
 
 // ============================================================
+// Shared bits of the redesigned agenda editor
+// ============================================================
+
+/**
+ * Card with the redesign's header strip: title, an optional count badge /
+ * muted note, and a right-aligned control slot. `bodyClass` is overridable so
+ * list cards can render their rows flush against the card edges.
+ *
+ * Deliberately not `overflow-hidden` — the carried-in actions rail hosts an
+ * OwnerPicker whose suggestion dropdown has to escape the card.
+ */
+function Panel({
+  title,
+  note,
+  count,
+  action,
+  bodyClass = "px-5 py-4",
+  children,
+}: {
+  title: string;
+  note?: string;
+  count?: number;
+  action?: ReactNode;
+  bodyClass?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="card">
+      <div className="flex items-center gap-2.5 border-b border-surface-hairline px-5 py-3.5">
+        <h2 className="section-title">{title}</h2>
+        {count !== undefined && (
+          <span className="rounded-full bg-brand-red px-2 py-px text-[11px] font-bold text-white">
+            {count}
+          </span>
+        )}
+        {note && <span className="text-xs text-brand-gray">{note}</span>}
+        {action && <div className="ml-auto flex items-center gap-2">{action}</div>}
+      </div>
+      <div className={bodyClass}>{children}</div>
+    </section>
+  );
+}
+
+/** Pill button used by the saved-agenda strip. */
+function ChipButton({
+  active,
+  danger,
+  onClick,
+  children,
+}: {
+  active?: boolean;
+  danger?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={clsx(
+        "rounded-full border px-3 py-1 text-xs font-semibold transition",
+        active
+          ? "border-brand-red bg-brand-red text-white"
+          : danger
+            ? "border-brand-red bg-white text-brand-red hover:bg-status-open-bg"
+            : "border-surface-border bg-white text-brand-gray hover:border-brand-red hover:text-brand-red"
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Borderless red "+ Add" that sits at the right end of a Panel header. */
+function AddButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-xs font-semibold text-brand-red transition hover:text-brand-darkred"
+    >
+      + Add
+    </button>
+  );
+}
+
+/** Borderless ✕ that drops a row. */
+function RemoveButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className="shrink-0 text-[15px] leading-none text-brand-lightgray transition hover:text-brand-red"
+    >
+      ✕
+    </button>
+  );
+}
+
+// Discipline accent colours from the redesign. Civil's blue is the darker
+// #185fa5 used for the discipline tag in the generated documents, not the
+// brand's lighter UI blue.
+const DISCIPLINE_BADGE: Record<string, string> = {
+  civil: "bg-[#185fa5]",
+  electrical: "bg-brand-red",
+  structural: "bg-brand-brown",
+  general: "bg-brand-gray",
+};
+
+function DisciplineBadge({ name }: { name: string }) {
+  const tone = DISCIPLINE_BADGE[name.trim().toLowerCase()] || "bg-brand-gray";
+  return (
+    <span
+      className={clsx(
+        "inline-block rounded-[3px] px-[5px] py-px text-[9px] font-bold leading-[1.4] text-white",
+        tone
+      )}
+    >
+      {name.trim().charAt(0).toUpperCase() || "?"}
+    </span>
+  );
+}
+
+/**
+ * Field that reads as plain text until you hover or focus it — how the
+ * decision / schedule-change / carried-in-action cards stay fully editable
+ * while looking like the read-only summaries in the design.
+ */
+const GHOST_FIELD =
+  "bg-transparent rounded-md border border-transparent px-1.5 py-0.5 " +
+  "placeholder:text-brand-lightgray hover:border-surface-border " +
+  "focus:border-brand-red focus:outline-none transition-colors";
+
+/** Empty-body line shared by the list panels. */
+function NoEntries() {
+  return <div className="text-[13px] text-brand-gray">No entries yet.</div>;
+}
+
+// ============================================================
 // Discipline editor (add/remove disciplines)
 // ============================================================
 function DisciplineEditor({
@@ -949,7 +1028,7 @@ function DisciplineEditor({
   return (
     <div className="flex items-center gap-2">
       <input
-        className="input w-32 text-xs"
+        className="input w-[110px] px-2.5 py-1 text-xs"
         placeholder="+ discipline"
         value={val}
         onChange={(e) => setVal(e.target.value)}
@@ -962,7 +1041,7 @@ function DisciplineEditor({
       />
       {disciplines.length > 1 && (
         <select
-          className="select w-28 text-xs"
+          className="select w-auto px-2.5 py-1 text-xs text-brand-gray"
           onChange={(e) => {
             if (e.target.value) {
               setDisciplines(disciplines.filter((d) => d !== e.target.value));
@@ -970,7 +1049,7 @@ function DisciplineEditor({
           }}
           value=""
         >
-          <option value="">- remove</option>
+          <option value="">− remove</option>
           {disciplines.map((d) => (
             <option key={d} value={d}>
               {d}
@@ -983,159 +1062,428 @@ function DisciplineEditor({
 }
 
 // ============================================================
-// Inline editable table — generic over T (a flat object of strings/nulls)
+// Open actions carried in — right-rail list
 // ============================================================
-interface Col<T> {
-  key: keyof T;
-  label: string;
-  colSpan: number;
-  type?: "text" | "textarea" | "date" | "select" | "status" | "owner";
-  options?: string[];
-}
-function InlineTable<T extends Record<string, any>>({
-  title,
+function OpenActionsPanel({
   rows,
   setRows,
-  empty,
-  columns,
 }: {
-  title: string;
-  rows: T[];
-  setRows: (r: T[]) => void;
-  empty: () => T;
-  columns: Col<T>[];
+  rows: OpenAction[];
+  setRows: (r: OpenAction[]) => void;
 }) {
-  const total = columns.reduce((s, c) => s + c.colSpan, 0) + 1; // +1 for delete
+  const patch = (idx: number, next: Partial<OpenAction>) =>
+    setRows(rows.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+
   return (
-    <section className="card p-5">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="section-title">{title}</h3>
-        <button className="btn-ghost text-xs" onClick={() => setRows([...rows, empty()])}>
-          + Add
-        </button>
-      </div>
+    <Panel
+      title="Open actions carried in"
+      note="auto from the portfolio"
+      bodyClass={rows.length === 0 ? "px-5 py-4" : ""}
+      action={
+        <AddButton
+          onClick={() =>
+            setRows([...rows, { text: "", owner: "", due_date: null, status: "open" }])
+          }
+        />
+      }
+    >
       {rows.length === 0 ? (
-        <div className="text-sm text-brand-gray">No entries yet.</div>
+        <NoEntries />
+      ) : (
+        rows.map((row, idx) => (
+          <div
+            key={idx}
+            className={clsx(
+              // The red rail marks actions still open — the ones that have to
+              // be talked through — matching the design's carried-in list.
+              "border-b border-l-[3px] border-surface-page px-5 py-2.5 last:border-b-0",
+              (row.status || "open").toLowerCase() === "open"
+                ? "border-l-brand-red"
+                : "border-l-transparent"
+            )}
+          >
+            <textarea
+              className={`${GHOST_FIELD} w-full resize-none text-[13px] leading-snug`}
+              rows={2}
+              value={row.text}
+              placeholder="What has to happen"
+              onChange={(e) => patch(idx, { text: e.target.value })}
+            />
+            <div className="mt-1 flex items-center gap-1.5">
+              <OwnerPicker
+                className="w-[132px] shrink-0"
+                compact
+                value={row.owner || ""}
+                ownerUserId={row.owner_user_id ?? null}
+                onChange={({ owner, owner_user_id }) =>
+                  patch(idx, { owner, owner_user_id })
+                }
+              />
+              <input
+                type="date"
+                className={`${GHOST_FIELD} w-[120px] text-[11px] text-brand-gray`}
+                value={row.due_date || ""}
+                onChange={(e) => patch(idx, { due_date: e.target.value || null })}
+              />
+              <div className="ml-auto w-[108px] shrink-0">
+                <StatusSelect
+                  value={String(row.status || "open")}
+                  onChange={(nv) => patch(idx, { status: nv })}
+                  className="!rounded-full !px-2.5 !py-1 !text-[11px]"
+                />
+              </div>
+              <RemoveButton
+                label="Remove action"
+                onClick={() => setRows(rows.filter((_, i) => i !== idx))}
+              />
+            </div>
+          </div>
+        ))
+      )}
+    </Panel>
+  );
+}
+
+// ============================================================
+// Risks & constraints — full-width grid
+// ============================================================
+const RISK_GRID = "md:grid-cols-[3.5fr_1.6fr_1.1fr_2.4fr_0.9fr_34px]";
+
+/**
+ * Likelihood stays a free-text field — LLM auto-draft and older agendas put
+ * all sorts of wording in it — but paints itself with the matching status
+ * tint when it reads as one of the four standard levels.
+ */
+const LIKELIHOOD_LEVELS = ["Critical", "High", "Medium", "Low"];
+function likelihoodTint(value: string): string {
+  switch ((value || "").trim().toLowerCase()) {
+    case "critical":
+      return "border-status-open-border bg-status-open-bg text-status-open-text";
+    case "high":
+      return "border-status-pending-border bg-status-pending-bg text-status-pending-text";
+    case "medium":
+      return "border-[#cfe6ee] bg-[#f4fafc] text-brand-deepblue";
+    case "low":
+      return "border-surface-border bg-surface-mute text-brand-gray";
+    default:
+      return "";
+  }
+}
+
+function RisksPanel({
+  rows,
+  setRows,
+}: {
+  rows: Risk[];
+  setRows: (r: Risk[]) => void;
+}) {
+  const patch = (idx: number, next: Partial<Risk>) =>
+    setRows(rows.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+
+  return (
+    <Panel
+      title="Risks & constraints"
+      action={
+        <AddButton
+          onClick={() =>
+            setRows([
+              ...rows,
+              {
+                description: "",
+                impact: "",
+                likelihood: "",
+                mitigation: "",
+                owner: "",
+              },
+            ])
+          }
+        />
+      }
+    >
+      {rows.length === 0 ? (
+        <NoEntries />
       ) : (
         <div className="space-y-2">
           <div
-            className={`grid gap-2 text-[11px] font-semibold uppercase tracking-wide text-brand-gray`}
-            style={{ gridTemplateColumns: `repeat(${total}, minmax(0,1fr))` }}
+            className={clsx(
+              "hidden gap-2 text-[11px] font-semibold uppercase tracking-[0.06em] text-brand-gray md:grid",
+              RISK_GRID
+            )}
           >
-            {columns.map((c) => (
-              <div key={String(c.key)} style={{ gridColumn: `span ${c.colSpan}` }}>
-                {c.label}
-              </div>
-            ))}
-            <div></div>
+            <div>Description</div>
+            <div>Impact</div>
+            <div>Likelihood</div>
+            <div>Mitigation</div>
+            <div>Owner</div>
+            <div />
           </div>
           {rows.map((row, idx) => (
             <div
               key={idx}
-              className="grid gap-2 items-start"
-              style={{ gridTemplateColumns: `repeat(${total}, minmax(0,1fr))` }}
+              className={clsx("grid grid-cols-1 items-start gap-2", RISK_GRID)}
             >
-              {columns.map((c) => {
-                const v = (row[c.key] ?? "") as any;
-                const setCell = (newVal: any) =>
-                  setRows(
-                    rows.map((r, i) =>
-                      i === idx ? ({ ...r, [c.key]: newVal } as T) : r
-                    )
-                  );
-                const colStyle = { gridColumn: `span ${c.colSpan}` };
-                if (c.type === "textarea") {
-                  return (
-                    <textarea
-                      key={String(c.key)}
-                      className="textarea text-sm"
-                      rows={2}
-                      value={v ?? ""}
-                      onChange={(e) => setCell(e.target.value)}
-                      style={colStyle}
-                    />
-                  );
-                }
-                if (c.type === "date") {
-                  return (
-                    <input
-                      key={String(c.key)}
-                      type="date"
-                      className="input"
-                      value={v || ""}
-                      onChange={(e) => setCell(e.target.value || null)}
-                      style={colStyle}
-                    />
-                  );
-                }
-                if (c.type === "select") {
-                  return (
-                    <select
-                      key={String(c.key)}
-                      className="select"
-                      value={v}
-                      onChange={(e) => setCell(e.target.value)}
-                      style={colStyle}
-                    >
-                      {(c.options || []).map((o) => (
-                        <option key={o}>{o}</option>
-                      ))}
-                    </select>
-                  );
-                }
-                if (c.type === "status") {
-                  return (
-                    <div key={String(c.key)} style={colStyle}>
-                      <StatusSelect
-                        value={String(v || "open")}
-                        onChange={(nv) => setCell(nv)}
-                      />
-                    </div>
-                  );
-                }
-                if (c.type === "owner") {
-                  // Owner picker sets two fields at once (name + user link), so
-                  // it bypasses the single-key setCell helper.
-                  return (
-                    <div key={String(c.key)} style={colStyle}>
-                      <OwnerPicker
-                        value={String(v || "")}
-                        ownerUserId={(row as any).owner_user_id ?? null}
-                        compact
-                        onChange={({ owner, owner_user_id }) =>
-                          setRows(
-                            rows.map((r, i) =>
-                              i === idx
-                                ? ({ ...r, [c.key]: owner, owner_user_id } as T)
-                                : r,
-                            ),
-                          )
-                        }
-                      />
-                    </div>
-                  );
-                }
-                return (
-                  <input
-                    key={String(c.key)}
-                    className="input"
-                    value={v}
-                    onChange={(e) => setCell(e.target.value)}
-                    style={colStyle}
-                  />
-                );
-              })}
-              <button
-                className="btn-danger"
-                onClick={() => setRows(rows.filter((_, i) => i !== idx))}
-              >
-                ×
-              </button>
+              <textarea
+                className="textarea min-w-0 text-[13px]"
+                rows={2}
+                value={row.description}
+                placeholder="Description"
+                onChange={(e) => patch(idx, { description: e.target.value })}
+              />
+              <input
+                className="input min-w-0 text-[13px]"
+                value={row.impact}
+                placeholder="Impact"
+                onChange={(e) => patch(idx, { impact: e.target.value })}
+              />
+              <input
+                className={clsx(
+                  "input min-w-0 text-[12.5px] font-semibold",
+                  likelihoodTint(row.likelihood)
+                )}
+                list="agenda-likelihood-levels"
+                value={row.likelihood}
+                placeholder="Likelihood"
+                onChange={(e) => patch(idx, { likelihood: e.target.value })}
+              />
+              <textarea
+                className="textarea min-w-0 text-[13px]"
+                rows={2}
+                value={row.mitigation}
+                placeholder="Mitigation"
+                onChange={(e) => patch(idx, { mitigation: e.target.value })}
+              />
+              <input
+                className="input min-w-0 text-[13px]"
+                value={row.owner}
+                placeholder="Owner"
+                onChange={(e) => patch(idx, { owner: e.target.value })}
+              />
+              <div className="flex justify-end pt-2 md:justify-center">
+                <RemoveButton
+                  label="Remove risk"
+                  onClick={() => setRows(rows.filter((_, i) => i !== idx))}
+                />
+              </div>
+            </div>
+          ))}
+          <datalist id="agenda-likelihood-levels">
+            {LIKELIHOOD_LEVELS.map((l) => (
+              <option key={l} value={l} />
+            ))}
+          </datalist>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ============================================================
+// Required decisions — summary cards
+// ============================================================
+function DecisionsPanel({
+  rows,
+  setRows,
+}: {
+  rows: Decision[];
+  setRows: (r: Decision[]) => void;
+}) {
+  const patch = (idx: number, next: Partial<Decision>) =>
+    setRows(rows.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+
+  return (
+    <Panel
+      title="Required decisions"
+      action={
+        <AddButton
+          onClick={() =>
+            setRows([
+              ...rows,
+              {
+                decision: "",
+                description: "",
+                impact_if_not: "",
+                required_by: null,
+                owner: "",
+              },
+            ])
+          }
+        />
+      }
+    >
+      {rows.length === 0 ? (
+        <NoEntries />
+      ) : (
+        <div className="space-y-2">
+          {rows.map((row, idx) => (
+            <div
+              key={idx}
+              className="rounded-lg border border-surface-hairline px-3.5 py-3"
+            >
+              <div className="flex items-center gap-2">
+                <input
+                  className={`${GHOST_FIELD} min-w-0 flex-1 text-[13.5px] font-bold`}
+                  value={row.decision}
+                  placeholder="Decision"
+                  onChange={(e) => patch(idx, { decision: e.target.value })}
+                />
+                <span className="shrink-0 text-[11px] text-brand-gray">by</span>
+                <input
+                  type="date"
+                  className={`${GHOST_FIELD} w-[124px] shrink-0 text-[11px] font-semibold text-brand-red`}
+                  value={row.required_by || ""}
+                  onChange={(e) =>
+                    patch(idx, { required_by: e.target.value || null })
+                  }
+                />
+                <input
+                  className={`${GHOST_FIELD} w-[68px] shrink-0 text-[11px] font-semibold text-brand-red`}
+                  value={row.owner}
+                  placeholder="Owner"
+                  onChange={(e) => patch(idx, { owner: e.target.value })}
+                />
+                <RemoveButton
+                  label="Remove decision"
+                  onClick={() => setRows(rows.filter((_, i) => i !== idx))}
+                />
+              </div>
+              <textarea
+                className={`${GHOST_FIELD} mt-1 w-full resize-none text-[13px] leading-normal text-brand-gray`}
+                rows={2}
+                value={row.description}
+                placeholder="What has to be decided, and by whom"
+                onChange={(e) => patch(idx, { description: e.target.value })}
+              />
+              <div className="mt-1 flex items-start gap-1.5">
+                <span className="pt-1 text-[11px] text-brand-lightgray">
+                  If not:
+                </span>
+                <textarea
+                  className={`${GHOST_FIELD} min-w-0 flex-1 resize-none text-[11px] text-brand-gray`}
+                  rows={1}
+                  value={row.impact_if_not}
+                  placeholder="impact of leaving this undecided"
+                  onChange={(e) => patch(idx, { impact_if_not: e.target.value })}
+                />
+              </div>
             </div>
           ))}
         </div>
       )}
-    </section>
+    </Panel>
+  );
+}
+
+// ============================================================
+// Schedule change log — summary cards
+// ============================================================
+function ScheduleChangesPanel({
+  rows,
+  setRows,
+}: {
+  rows: ScheduleChange[];
+  setRows: (r: ScheduleChange[]) => void;
+}) {
+  const patch = (idx: number, next: Partial<ScheduleChange>) =>
+    setRows(rows.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+
+  return (
+    <Panel
+      title="Schedule change log"
+      action={
+        <AddButton
+          onClick={() =>
+            setRows([
+              ...rows,
+              {
+                project: "",
+                task: "",
+                previous_date: "",
+                updated_date: "",
+                change_description: "",
+                reason_for_change: "",
+                impact: "",
+              },
+            ])
+          }
+        />
+      }
+    >
+      {rows.length === 0 ? (
+        <NoEntries />
+      ) : (
+        <div className="space-y-2">
+          {rows.map((row, idx) => (
+            <div
+              key={idx}
+              className="rounded-lg border border-surface-hairline px-3.5 py-3"
+            >
+              <div className="flex items-center gap-1.5">
+                <input
+                  className={`${GHOST_FIELD} w-[120px] shrink-0 text-[13.5px] font-bold`}
+                  value={row.project}
+                  placeholder="Project"
+                  onChange={(e) => patch(idx, { project: e.target.value })}
+                />
+                <span className="text-brand-lightgray">·</span>
+                <input
+                  className={`${GHOST_FIELD} min-w-0 flex-1 text-[13.5px] font-bold`}
+                  value={row.task}
+                  placeholder="Task"
+                  onChange={(e) => patch(idx, { task: e.target.value })}
+                />
+                {/* Impact reads as the design's grey pill but stays a free-text
+                    field — its own class list rather than GHOST_FIELD so the
+                    fill and radius aren't fighting overrides. */}
+                <input
+                  className="w-[104px] shrink-0 rounded-full border border-transparent bg-surface-border px-2.5 py-0.5 text-center text-[11px] font-semibold text-brand-gray placeholder:text-brand-lightgray transition-colors hover:border-surface-ghost focus:border-brand-red focus:outline-none"
+                  value={row.impact}
+                  placeholder="Impact"
+                  onChange={(e) => patch(idx, { impact: e.target.value })}
+                />
+                <RemoveButton
+                  label="Remove schedule change"
+                  onClick={() => setRows(rows.filter((_, i) => i !== idx))}
+                />
+              </div>
+              <div className="mt-1 flex items-center gap-1 text-xs text-brand-gray">
+                <input
+                  className={`${GHOST_FIELD} w-[92px] text-xs`}
+                  value={row.previous_date}
+                  placeholder="Previous"
+                  onChange={(e) => patch(idx, { previous_date: e.target.value })}
+                />
+                <span aria-hidden="true">→</span>
+                <input
+                  className={`${GHOST_FIELD} w-[92px] text-xs font-bold text-brand-red`}
+                  value={row.updated_date}
+                  placeholder="Updated"
+                  onChange={(e) => patch(idx, { updated_date: e.target.value })}
+                />
+              </div>
+              <textarea
+                className={`${GHOST_FIELD} mt-1 w-full resize-none text-[13px] leading-normal text-brand-gray`}
+                rows={2}
+                value={row.change_description}
+                placeholder="What changed"
+                onChange={(e) => patch(idx, { change_description: e.target.value })}
+              />
+              <div className="mt-1 flex items-start gap-1.5">
+                <span className="pt-1 text-[11px] text-brand-lightgray">
+                  Reason:
+                </span>
+                <textarea
+                  className={`${GHOST_FIELD} min-w-0 flex-1 resize-none text-[11px] text-brand-gray`}
+                  rows={1}
+                  value={row.reason_for_change}
+                  placeholder="why the date moved"
+                  onChange={(e) => patch(idx, { reason_for_change: e.target.value })}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
   );
 }
 

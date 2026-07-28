@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import DiscussionPointsEditor from "@/components/DiscussionPointsEditor";
-import AgendaEditor, { PreviewDisclosure } from "@/components/AgendaEditor";
+import AgendaEditor from "@/components/AgendaEditor";
 import { StatusPill, StatusSelect } from "@/components/StatusPill";
 import SaveStatus from "@/components/SaveStatus";
 import { SortableList } from "@/components/SortableList";
@@ -310,13 +310,24 @@ export default function Review() {
     .join("\n\n=== SECTION BREAK ===\n\n");
   const originalNotes = (liveOriginalNotes || originalNotesText || "").trim();
 
+  // Restates the meeting-flow stepper that lives in the app header, so the
+  // page still says where you are once the header scrolls away.
+  const kicker = [
+    "Step 2 of 4",
+    [meetingTitle?.trim(), formatMonthDay(meetingDate)]
+      .filter(Boolean)
+      .join(" — "),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <div className="space-y-6 max-w-6xl">
+    <div className="mx-auto w-full max-w-doc space-y-5">
       <PageHeader
-        title="Review parsed meeting"
-        subtitle="Edit each section before saving. Click + to add new rows; × to remove. Every section has a 👁️ Preview disclosure showing how it'll render in the PDF."
+        kicker={kicker}
+        title="Review the parsed draft"
         actions={
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5 flex-wrap justify-end">
             {draftMeetingId && (
               <SaveStatus
                 status={autoSave.status}
@@ -364,7 +375,7 @@ export default function Review() {
               onClick={() => setSaveTemplateOpen(true)}
               title="Save attendees, agenda topics, deliverables, and duration as a reusable template"
             >
-              💾 Save as template…
+              💾 Save as template
             </button>
             <button
               className="btn-ghost"
@@ -387,24 +398,24 @@ export default function Review() {
       />
 
       {error && (
-        <div className="card p-4 border-l-4 border-l-brand-red text-sm text-brand-red">
+        <div className="card p-4 border-l-[3px] border-l-brand-red text-sm text-brand-red">
           {error}
         </div>
       )}
 
       {/* ---------- AI Executive Summary (internal-only, NOT on the PDF) ---------- */}
       {draftMeetingId && (
-        <section className="card p-5 space-y-2 border-l-4 border-l-brand-gold bg-amber-50/40">
-          <div className="flex items-center justify-between">
-            <h3 className="section-title">
-              ✨ AI executive summary
-              <span className="text-xs font-normal text-brand-gray ml-2">
-                · internal only — not on the client PDF
-              </span>
-            </h3>
+        <section className="card border-l-[3px] border-l-brand-gold px-5 py-4">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-deepgold">
+              ✦ AI executive summary
+            </span>
+            <span className="text-[11px] text-brand-lightgray">
+              internal only — never on the client PDF
+            </span>
             <button
               type="button"
-              className="btn-ghost text-xs"
+              className="ml-auto text-[13px] text-brand-gray transition hover:text-brand-red disabled:opacity-50"
               onClick={handleRegenerateSummary}
               disabled={regeneratingSummary}
               title="Regenerate with the latest meeting content"
@@ -413,11 +424,11 @@ export default function Review() {
             </button>
           </div>
           {executiveSummary ? (
-            <p className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">
+            <p className="mt-2.5 text-[13.5px] leading-relaxed text-brand-black whitespace-pre-wrap">
               {executiveSummary}
             </p>
           ) : (
-            <p className="text-sm text-brand-gray italic">
+            <p className="mt-2.5 text-[13.5px] italic text-brand-gray">
               {regeneratingSummary
                 ? "Generating…"
                 : "No summary yet. Click Regenerate, or just save the meeting — the first save auto-generates one."}
@@ -426,40 +437,34 @@ export default function Review() {
         </section>
       )}
 
-      {/* ---------- Original notes / transcript (read-only source) ---------- */}
-      {originalNotes && (
-        <section className="card p-5 space-y-2">
-          <h3 className="section-title">
-            Original notes / transcript
-            <span className="text-xs font-normal text-brand-gray ml-2">
-              · the source you captured — read-only, always preserved
-            </span>
-          </h3>
-          <PreviewDisclosure
-            open={showOriginalNotes}
-            onToggle={() => setShowOriginalNotes(!showOriginalNotes)}
-            label={`View original (${originalNotes.length.toLocaleString()} chars)`}
-          >
-            <pre className="text-[13px] text-slate-800 whitespace-pre-wrap font-sans leading-relaxed max-h-96 overflow-auto bg-slate-50 rounded p-3 border border-slate-200">
-              {originalNotes}
-            </pre>
-          </PreviewDisclosure>
-        </section>
-      )}
-
       {/* ---------- Attendees ---------- */}
-      <section className="card p-5 space-y-3">
-        <h3 className="section-title">Attendees ({attendees.length})</h3>
-        <div className="space-y-2">
+      <section className="card">
+        <CardHead
+          title="Attendees"
+          meta={`${attendees.length} ${
+            attendees.length === 1 ? "person" : "people"
+          } · ${Object.keys(attendeesByOrg).length} orgs`}
+          action={
+            attendees.length > 0 && (
+              <HeadLink
+                onClick={() => setShowAttendeesPreview(!showAttendeesPreview)}
+                expanded={showAttendeesPreview}
+              >
+                👁 PDF preview
+              </HeadLink>
+            )
+          }
+        />
+        <div className="px-5 py-3.5 space-y-2">
           <SortableList
             items={attendees}
             getId={(a, i) => `attendee-${i}-${a.full_name}-${a.initials}`}
             onReorder={setAttendees}
             renderItem={(a, idx, handle) => (
-              <div className="grid grid-cols-12 gap-2 items-center">
-                <div className="col-span-1 flex justify-center">{handle}</div>
+              <div className="grid grid-cols-[24px_4fr_1.2fr_3fr_34px] gap-2 items-center">
+                <div className="flex justify-center">{handle}</div>
                 <input
-                  className="input col-span-4"
+                  className="input min-w-0"
                   value={a.full_name}
                   placeholder="Full name"
                   onChange={(e) =>
@@ -471,7 +476,7 @@ export default function Review() {
                   }
                 />
                 <input
-                  className="input col-span-2"
+                  className="input min-w-0"
                   value={a.initials}
                   placeholder="AR"
                   onChange={(e) =>
@@ -483,7 +488,7 @@ export default function Review() {
                   }
                 />
                 <input
-                  className="input col-span-4"
+                  className="input min-w-0"
                   value={a.organization}
                   placeholder="Organization"
                   onChange={(e) =>
@@ -494,19 +499,16 @@ export default function Review() {
                     )
                   }
                 />
-                <button
-                  className="btn-danger col-span-1"
+                <RowDelete
+                  label="Remove attendee"
                   onClick={() =>
                     setAttendees(attendees.filter((_, i) => i !== idx))
                   }
-                >
-                  ×
-                </button>
+                />
               </div>
             )}
           />
-          <button
-            className="btn-ghost"
+          <AddRow
             onClick={() =>
               setAttendees([
                 ...attendees,
@@ -515,66 +517,73 @@ export default function Review() {
             }
           >
             + Add attendee
-          </button>
-        </div>
+          </AddRow>
 
-        {attendees.length > 0 && (
-          <PreviewDisclosure
-            open={showAttendeesPreview}
-            onToggle={() => setShowAttendeesPreview(!showAttendeesPreview)}
-            label={`👁️ Preview (${attendees.length} attendees · ${
-              Object.keys(attendeesByOrg).length
-            } orgs)`}
-          >
-            <div className="space-y-1">
-              {Object.entries(attendeesByOrg).map(([org, people]) => (
-                <div
-                  key={org}
-                  className="text-[13px] text-slate-800"
-                  style={{ lineHeight: 1.5 }}
-                >
-                  <b>{org}:</b>{" "}
-                  {people
-                    .map((p) => `${p.full_name} (${p.initials})`)
-                    .join(", ")}
-                </div>
-              ))}
-            </div>
-          </PreviewDisclosure>
-        )}
+          {attendees.length > 0 && showAttendeesPreview && (
+            <PdfPreviewPanel>
+              <div className="space-y-1">
+                {Object.entries(attendeesByOrg).map(([org, people]) => (
+                  <div
+                    key={org}
+                    className="text-[13px] text-brand-black"
+                    style={{ lineHeight: 1.5 }}
+                  >
+                    <b>{org}:</b>{" "}
+                    {people
+                      .map((p) => `${p.full_name} (${p.initials})`)
+                      .join(", ")}
+                  </div>
+                ))}
+              </div>
+            </PdfPreviewPanel>
+          )}
+        </div>
       </section>
 
       {/* ---------- Deliverable Timelines ---------- */}
-      <section className="card p-5 space-y-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h3 className="section-title">
-            Deliverable Timelines ({selectedDeliverables.length})
-          </h3>
-          <button
-            type="button"
-            className="btn-ghost text-sm"
-            onClick={() => setSchedulePickerOpen(true)}
-            disabled={!currentProject}
-            title={
-              scheduleItemCount === 0
-                ? "No schedule uploaded yet"
-                : "Bulk-add tasks from the latest project schedule"
-            }
-          >
-            📅 Pick from schedule
-            {scheduleItemCount !== null && ` (${scheduleItemCount} items)`}
-          </button>
-        </div>
-        <div className="space-y-2">
+      <section className="card">
+        <CardHead
+          title="Deliverable timelines"
+          meta={`${selectedDeliverables.length} ${
+            selectedDeliverables.length === 1 ? "row" : "rows"
+          }`}
+          action={
+            <>
+              <HeadLink
+                onClick={() => setSchedulePickerOpen(true)}
+                disabled={!currentProject}
+                title={
+                  scheduleItemCount === 0
+                    ? "No schedule uploaded yet"
+                    : "Bulk-add tasks from the latest project schedule"
+                }
+              >
+                📅 Pick from schedule
+                {scheduleItemCount !== null && ` (${scheduleItemCount} items)`}
+              </HeadLink>
+              {selectedDeliverables.length > 0 && (
+                <HeadLink
+                  onClick={() =>
+                    setShowDeliverablesPreview(!showDeliverablesPreview)
+                  }
+                  expanded={showDeliverablesPreview}
+                >
+                  👁 PDF preview
+                </HeadLink>
+              )}
+            </>
+          }
+        />
+        <div className="px-5 py-3.5 space-y-2">
           <SortableList
             items={selectedDeliverables}
             getId={(d, i) => `deliverable-${i}-${d.task}-${d.project_segment}`}
             onReorder={setSelectedDeliverables}
             renderItem={(d, idx, handle) => (
-              <div className="grid grid-cols-12 gap-2 items-center">
-                <div className="col-span-1 flex justify-center">{handle}</div>
+              <div className="grid grid-cols-[24px_1.4fr_3fr_1.2fr_1.4fr_34px] gap-2 items-center">
+                <div className="flex justify-center">{handle}</div>
                 <input
-                  className="input col-span-2"
+                  className="input min-w-0"
                   value={d.project_segment}
                   placeholder="Project"
                   onChange={(e) =>
@@ -586,7 +595,7 @@ export default function Review() {
                   }
                 />
                 <input
-                  className="input col-span-4"
+                  className="input min-w-0"
                   value={d.task}
                   placeholder="Task"
                   onChange={(e) =>
@@ -598,7 +607,7 @@ export default function Review() {
                   }
                 />
                 <input
-                  className="input col-span-2"
+                  className="input min-w-0"
                   value={d.start_status}
                   placeholder="Status"
                   onChange={(e) =>
@@ -611,7 +620,7 @@ export default function Review() {
                 />
                 <input
                   type="date"
-                  className="input col-span-2"
+                  className="input min-w-0"
                   value={d.delivery_date || ""}
                   onChange={(e) =>
                     setSelectedDeliverables(
@@ -623,21 +632,18 @@ export default function Review() {
                     )
                   }
                 />
-                <button
-                  className="btn-danger col-span-1"
+                <RowDelete
+                  label="Remove deliverable"
                   onClick={() =>
                     setSelectedDeliverables(
                       selectedDeliverables.filter((_, i) => i !== idx)
                     )
                   }
-                >
-                  ×
-                </button>
+                />
               </div>
             )}
           />
-          <button
-            className="btn-ghost"
+          <AddRow
             onClick={() =>
               setSelectedDeliverables([
                 ...selectedDeliverables,
@@ -651,35 +657,69 @@ export default function Review() {
             }
           >
             + Add deliverable
-          </button>
+          </AddRow>
+
+          {selectedDeliverables.length > 0 && showDeliverablesPreview && (
+            <PdfPreviewPanel>
+              <PdfTable
+                headers={["#", "Project", "Task", "Start", "Delivery"]}
+                rows={selectedDeliverables.map((d, i) => [
+                  String(i + 1),
+                  d.project_segment || currentProject.name,
+                  d.task,
+                  d.start_status || "In Progress",
+                  formatDate(d.delivery_date),
+                ])}
+              />
+            </PdfPreviewPanel>
+          )}
         </div>
+      </section>
 
-        {selectedDeliverables.length > 0 && (
-          <PreviewDisclosure
-            open={showDeliverablesPreview}
-            onToggle={() =>
-              setShowDeliverablesPreview(!showDeliverablesPreview)
+      {/* ---------- Agenda + Closing remarks ----------
+          Paired side by side: both are single free-text blocks, and putting
+          them on one row keeps the row-editor cards (attendees, deliverables,
+          actions) reading as the spine of the page. */}
+      <div className="grid gap-5 lg:grid-cols-2 items-start">
+        <section className="card p-5">
+          <AgendaEditor items={agendaItems} setItems={setAgendaItems} />
+        </section>
+
+        <section className="card">
+          <CardHead
+            title="Closing remarks"
+            action={
+              <HeadLink
+                onClick={() => setShowClosingPreview(!showClosingPreview)}
+                expanded={showClosingPreview}
+              >
+                👁 PDF preview
+              </HeadLink>
             }
-            label={`👁️ Preview (${selectedDeliverables.length} deliverables)`}
-          >
-            <PdfTable
-              headers={["#", "Project", "Task", "Start", "Delivery"]}
-              rows={selectedDeliverables.map((d, i) => [
-                String(i + 1),
-                d.project_segment || currentProject.name,
-                d.task,
-                d.start_status || "In Progress",
-                formatDate(d.delivery_date),
-              ])}
+          />
+          <div className="px-5 py-3.5 space-y-3">
+            <textarea
+              className="textarea min-h-[150px]"
+              value={closingRemarks}
+              onChange={(e) => setClosingRemarks(e.target.value)}
+              onKeyDown={handleTextareaTab}
+              placeholder="Thank you to everyone for attending this meeting…"
             />
-          </PreviewDisclosure>
-        )}
-      </section>
 
-      {/* ---------- Agenda (single textarea + preview) ---------- */}
-      <section className="card p-5">
-        <AgendaEditor items={agendaItems} setItems={setAgendaItems} />
-      </section>
+            {showClosingPreview && (
+              <PdfPreviewPanel>
+                <div
+                  className="text-[13px] text-brand-black"
+                  style={{ lineHeight: 1.5 }}
+                >
+                  {closingRemarks?.trim() ||
+                    "Thank you to everyone for attending this meeting. Your time is very much appreciated."}
+                </div>
+              </PdfPreviewPanel>
+            )}
+          </div>
+        </section>
+      </div>
 
       {/* ---------- Discussion Points ---------- */}
       <section className="card p-5">
@@ -689,21 +729,36 @@ export default function Review() {
         />
       </section>
 
-      {/* ---------- Action Items ---------- */}
-      <section className="card p-5 space-y-3">
-        <h3 className="section-title">Action Items ({actionItems.length})</h3>
-        <div className="space-y-2">
+      {/* ---------- Action Items ----------
+          No `overflow-hidden` on this card: the OwnerPicker's suggestion
+          dropdown is absolutely positioned and would be clipped by it. */}
+      <section className="card">
+        <CardHead
+          title="Action items"
+          meta={`${actionItems.length} ${
+            actionItems.length === 1 ? "item" : "items"
+          }`}
+          action={
+            actionItems.length > 0 && (
+              <HeadLink
+                onClick={() => setShowActionsPreview(!showActionsPreview)}
+                expanded={showActionsPreview}
+              >
+                👁 PDF preview
+              </HeadLink>
+            )
+          }
+        />
+        <div className="px-5 py-3.5 space-y-2">
           <SortableList
             items={actionItems}
             getId={(a, i) => `action-${i}-${a.text.slice(0, 40)}-${a.owner}`}
             onReorder={setActionItems}
             renderItem={(a, idx, handle) => (
-              <div className="grid grid-cols-12 gap-2 items-start">
-                <div className="col-span-1 flex justify-center pt-2">
-                  {handle}
-                </div>
+              <div className="grid grid-cols-[24px_4fr_1.4fr_1.5fr_1.4fr_34px] gap-2 items-start">
+                <div className="flex justify-center pt-2">{handle}</div>
                 <textarea
-                  className="textarea col-span-4"
+                  className="textarea min-w-0"
                   rows={2}
                   value={a.text}
                   onChange={(e) =>
@@ -715,7 +770,7 @@ export default function Review() {
                   }
                   onKeyDown={handleTextareaTab}
                 />
-                <div className="col-span-2">
+                <div className="min-w-0">
                   <OwnerPicker
                     value={a.owner}
                     ownerUserId={a.owner_user_id ?? null}
@@ -730,7 +785,7 @@ export default function Review() {
                 </div>
                 <input
                   type="date"
-                  className="input col-span-2"
+                  className="input min-w-0"
                   value={a.due_date || ""}
                   onChange={(e) =>
                     setActionItems(
@@ -742,7 +797,7 @@ export default function Review() {
                     )
                   }
                 />
-                <div className="col-span-2">
+                <div className="min-w-0">
                   <StatusSelect
                     value={a.status}
                     onChange={(v) =>
@@ -754,19 +809,16 @@ export default function Review() {
                     }
                   />
                 </div>
-                <button
-                  className="btn-danger col-span-1"
+                <RowDelete
+                  label="Remove action item"
                   onClick={() =>
                     setActionItems(actionItems.filter((_, i) => i !== idx))
                   }
-                >
-                  ×
-                </button>
+                />
               </div>
             )}
           />
-          <button
-            className="btn-ghost"
+          <AddRow
             onClick={() =>
               setActionItems([
                 ...actionItems,
@@ -775,44 +827,14 @@ export default function Review() {
             }
           >
             + Add action item
-          </button>
+          </AddRow>
+
+          {actionItems.length > 0 && showActionsPreview && (
+            <PdfPreviewPanel>
+              <PdfActionTable items={actionItems} />
+            </PdfPreviewPanel>
+          )}
         </div>
-
-        {actionItems.length > 0 && (
-          <PreviewDisclosure
-            open={showActionsPreview}
-            onToggle={() => setShowActionsPreview(!showActionsPreview)}
-            label={`👁️ Preview (${actionItems.length} action items)`}
-          >
-            <PdfActionTable items={actionItems} />
-          </PreviewDisclosure>
-        )}
-      </section>
-
-      {/* ---------- Closing remarks ---------- */}
-      <section className="card p-5 space-y-3">
-        <h3 className="section-title">Closing remarks</h3>
-        <textarea
-          className="textarea min-h-[100px]"
-          value={closingRemarks}
-          onChange={(e) => setClosingRemarks(e.target.value)}
-          onKeyDown={handleTextareaTab}
-          placeholder="Thank you to everyone for attending this meeting…"
-        />
-
-        <PreviewDisclosure
-          open={showClosingPreview}
-          onToggle={() => setShowClosingPreview(!showClosingPreview)}
-          label="👁️ Preview"
-        >
-          <div
-            className="text-[13px] text-slate-800"
-            style={{ lineHeight: 1.5 }}
-          >
-            {closingRemarks?.trim() ||
-              "Thank you to everyone for attending this meeting. Your time is very much appreciated."}
-          </div>
-        </PreviewDisclosure>
       </section>
 
       {/* ---------- Attachments ----------
@@ -820,6 +842,36 @@ export default function Review() {
           have a meeting_id to hang uploads off of. */}
       {draftMeetingId && (
         <AttachmentsSection meetingId={draftMeetingId} />
+      )}
+
+      {/* ---------- Original notes / transcript (read-only source) ----------
+          Collapsed to a single bar at the foot of the page: it's provenance,
+          not something the PM edits. */}
+      {originalNotes && (
+        <section className="card px-5 py-3">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <span className="text-[13px] font-semibold text-brand-black">
+              Original notes / transcript
+            </span>
+            <span className="text-xs text-brand-gray">
+              read-only source · {originalNotes.length.toLocaleString()} chars ·
+              always preserved
+            </span>
+            <div className="ml-auto">
+              <HeadLink
+                onClick={() => setShowOriginalNotes(!showOriginalNotes)}
+                expanded={showOriginalNotes}
+              >
+                {showOriginalNotes ? "Hide ▴" : "View ▾"}
+              </HeadLink>
+            </div>
+          </div>
+          {showOriginalNotes && (
+            <pre className="mt-3 max-h-96 overflow-auto rounded-lg border border-surface-border bg-surface-page px-4 py-3 font-sans text-[13px] leading-relaxed text-brand-black whitespace-pre-wrap">
+              {originalNotes}
+            </pre>
+          )}
+        </section>
       )}
 
       <ScheduleItemPicker
@@ -860,10 +912,116 @@ export default function Review() {
       />
 
       {templateToast && (
-        <div className="fixed top-20 right-6 z-50 bg-emerald-50 border border-emerald-200 text-emerald-800 px-4 py-2 rounded-lg shadow-sm text-sm">
+        <div className="fixed top-20 right-6 z-50 rounded-lg border border-status-completed-border bg-status-completed-bg px-4 py-2 text-sm font-semibold text-status-completed-text shadow-page">
           {templateToast}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ============================================================
+ * Card chrome — head bar, row affordances, preview panel
+ * ============================================================ */
+
+/** Card head: title, a muted meta line, and optional right-aligned links. */
+function CardHead({
+  title,
+  meta,
+  action,
+}: {
+  title: string;
+  meta?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex items-baseline gap-2.5 flex-wrap border-b border-surface-hairline px-5 py-3.5">
+      <h2 className="text-[15px] font-bold text-brand-black">{title}</h2>
+      {meta && <span className="text-xs text-brand-gray">{meta}</span>}
+      {action && (
+        <div className="ml-auto flex items-baseline gap-4">{action}</div>
+      )}
+    </div>
+  );
+}
+
+/** The small text button that lives on the right of a card head. */
+function HeadLink({
+  onClick,
+  disabled,
+  title,
+  expanded,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  expanded?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-expanded={expanded}
+      className="whitespace-nowrap text-xs font-semibold text-brand-gray transition
+        hover:text-brand-red disabled:opacity-50 disabled:hover:text-brand-gray"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Borderless "+ Add …" link that sits under each row editor. */
+function AddRow({
+  onClick,
+  children,
+}: {
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onClick}
+        className="text-[12.5px] font-semibold text-brand-red transition hover:text-brand-darkred"
+      >
+        {children}
+      </button>
+    </div>
+  );
+}
+
+/** Row remove control — a quiet ✕ that only reddens on hover. */
+function RowDelete({
+  onClick,
+  label,
+}: {
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className="flex h-[38px] w-full items-center justify-center text-[15px] leading-none
+        text-brand-lightgray transition hover:text-brand-red"
+    >
+      ✕
+    </button>
+  );
+}
+
+/** Disclosure body for the "how this renders on the PDF" previews. */
+function PdfPreviewPanel({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border border-surface-border bg-surface-page px-4 py-3">
+      {children}
     </div>
   );
 }
@@ -876,6 +1034,16 @@ function formatDate(iso?: string | null): string {
   if (!iso) return "";
   try {
     return format(parseISO(iso), "M/d/yyyy");
+  } catch {
+    return iso;
+  }
+}
+
+/** Short "Jul 28" form used in the page kicker. */
+function formatMonthDay(iso?: string | null): string {
+  if (!iso) return "";
+  try {
+    return format(parseISO(iso), "MMM d");
   } catch {
     return iso;
   }
@@ -899,8 +1067,7 @@ function PdfTable({
             {headers.map((h) => (
               <th
                 key={h}
-                className="text-left px-3 py-2 text-white"
-                style={{ background: "#8b1f2b" }}
+                className="text-left px-3 py-2 bg-brand-red text-white"
               >
                 {h}
               </th>
@@ -909,11 +1076,11 @@ function PdfTable({
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} className="even:bg-slate-50">
+            <tr key={i} className="bg-white even:bg-surface-page">
               {row.map((cell, j) => (
                 <td
                   key={j}
-                  className="px-3 py-1.5 align-top border-b border-slate-200 text-slate-800"
+                  className="px-3 py-1.5 align-top border-b border-surface-border text-brand-black"
                 >
                   {cell}
                 </td>
@@ -938,8 +1105,7 @@ function PdfActionTable({ items }: { items: ParsedActionItem[] }) {
             {["#", "Action", "Owner(s)", "Due", "Status"].map((h) => (
               <th
                 key={h}
-                className="text-left px-3 py-2 text-white"
-                style={{ background: "#8b1f2b" }}
+                className="text-left px-3 py-2 bg-brand-red text-white"
               >
                 {h}
               </th>
@@ -948,20 +1114,20 @@ function PdfActionTable({ items }: { items: ParsedActionItem[] }) {
         </thead>
         <tbody>
           {items.map((a, i) => (
-            <tr key={i} className="even:bg-slate-50">
-              <td className="px-3 py-1.5 align-top text-center border-b border-slate-200 text-slate-700 w-10">
+            <tr key={i} className="bg-white even:bg-surface-page">
+              <td className="px-3 py-1.5 align-top text-center border-b border-surface-border text-brand-gray w-10">
                 {i + 1}
               </td>
-              <td className="px-3 py-1.5 align-top border-b border-slate-200 text-slate-800">
+              <td className="px-3 py-1.5 align-top border-b border-surface-border text-brand-black">
                 {a.text}
               </td>
-              <td className="px-3 py-1.5 align-top border-b border-slate-200 text-slate-800 whitespace-nowrap">
+              <td className="px-3 py-1.5 align-top border-b border-surface-border text-brand-black whitespace-nowrap">
                 {a.owner}
               </td>
-              <td className="px-3 py-1.5 align-top border-b border-slate-200 text-slate-800 whitespace-nowrap">
+              <td className="px-3 py-1.5 align-top border-b border-surface-border text-brand-black whitespace-nowrap">
                 {formatDate(a.due_date)}
               </td>
-              <td className="px-3 py-1.5 align-top border-b border-slate-200">
+              <td className="px-3 py-1.5 align-top border-b border-surface-border">
                 <StatusPill status={a.status} />
               </td>
             </tr>

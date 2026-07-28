@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import PageHeader from "@/components/PageHeader";
@@ -58,10 +58,32 @@ export default function PortfolioDashboard() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-[22px]">
       <PageHeader
-        title={`Portfolio dashboard · ${currentProject.name}`}
-        subtitle={currentClient?.name || undefined}
+        kicker={
+          currentClient?.name
+            ? `${currentClient.name} · Portfolio health`
+            : "Portfolio health"
+        }
+        title={currentProject.name}
+        actions={
+          <>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => nav("/history")}
+            >
+              Meeting history
+            </button>
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() => nav("/capture")}
+            >
+              Capture minutes
+            </button>
+          </>
+        }
       />
 
       {loading && !metrics && (
@@ -70,7 +92,7 @@ export default function PortfolioDashboard() {
         </div>
       )}
       {error && (
-        <div className="card p-4 text-sm text-brand-red border-l-4 border-l-brand-red">
+        <div className="card p-4 text-sm text-brand-red border-l-[3px] border-l-brand-red">
           {error}
         </div>
       )}
@@ -78,19 +100,63 @@ export default function PortfolioDashboard() {
       {metrics && (
         <>
           <TopStatRow metrics={metrics} />
-          <BurndownSection points={metrics.burndown} />
-          <RisksSection risks={metrics.risks_by_likelihood} />
-          <RecentMeetingsSection
-            meetings={meetings.slice(0, 5)}
-            onOpen={() => nav("/history")}
-          />
-          <ChangeOrdersSection
-            changeOrders={changeOrders}
-            onOpen={() => nav("/change-orders")}
-          />
+          <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-[22px] items-start">
+            <BurndownCard points={metrics.burndown} />
+            <RiskBoardCard risks={metrics.risks_by_likelihood} />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-[22px] items-start">
+            <RecentMeetingsCard
+              meetings={meetings.slice(0, 5)}
+              onOpen={() => nav("/history")}
+            />
+            <ChangeOrdersCard
+              changeOrders={changeOrders}
+              onOpen={() => nav("/change-orders")}
+            />
+          </div>
         </>
       )}
     </div>
+  );
+}
+
+/* ============================================================
+   Shared card furniture
+   ============================================================ */
+/** Card title row: bold title, muted hint, optional right-aligned action. */
+function CardHead({
+  title,
+  hint,
+  action,
+}: {
+  title: string;
+  hint?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="flex items-baseline gap-2.5">
+      <h2 className="section-title">{title}</h2>
+      {hint && <span className="text-xs text-brand-gray">{hint}</span>}
+      {action && <div className="ml-auto">{action}</div>}
+    </div>
+  );
+}
+
+function CardLink({
+  children,
+  onClick,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="text-xs font-semibold text-brand-red hover:text-brand-darkred hover:underline"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -101,172 +167,71 @@ function TopStatRow({ metrics }: { metrics: PortfolioMetrics }) {
   const closePct = Math.round(metrics.action_close_rate * 100);
   const onTimePct = Math.round(metrics.on_time_rate * 100);
   const lastMeetingSub = metrics.last_meeting_date
-    ? `${metrics.days_since_last_meeting} day${
+    ? `Last: ${metrics.days_since_last_meeting} day${
         metrics.days_since_last_meeting === 1 ? "" : "s"
       } ago · ${format(parseISO(metrics.last_meeting_date), "MMM d")}`
     : "No meetings yet";
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-      <StatCard
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5">
+      <StatTile
         label="Total meetings"
         value={metrics.total_meetings}
-        subtitle={lastMeetingSub}
-        accent="red"
+        sub={lastMeetingSub}
       />
-      <StatCard
+      <StatTile
         label="Open actions"
         value={metrics.open_actions}
-        subtitle={
-          metrics.overdue_actions > 0
-            ? `${metrics.overdue_actions} overdue`
-            : "None overdue"
+        sub={
+          metrics.overdue_actions > 0 ? (
+            <b className="text-brand-red font-semibold">
+              {metrics.overdue_actions} overdue
+            </b>
+          ) : (
+            "None overdue"
+          )
         }
-        subtitleAccent={metrics.overdue_actions > 0 ? "red" : "muted"}
-        accent="gold"
       />
-      <StatCard
+      <StatTile
         label="Action close rate"
         value={`${closePct}%`}
-        subtitle={`${metrics.completed_actions} done · ${metrics.total_actions} total`}
-        accent="green"
+        valueTone="green"
+        sub={`${metrics.completed_actions} done · ${metrics.total_actions} total`}
       />
-      <StatCard
+      <StatTile
         label="Deliverables on-time"
         value={`${onTimePct}%`}
-        subtitle={`${metrics.deliverables_on_time} / ${metrics.deliverables_total}`}
-        accent="green"
+        valueTone="green"
+        sub={`${metrics.deliverables_on_time} / ${metrics.deliverables_total}`}
       />
     </div>
   );
 }
 
-function StatCard({
+function StatTile({
   label,
   value,
-  subtitle,
-  accent,
-  subtitleAccent = "muted",
+  sub,
+  valueTone = "default",
 }: {
   label: string;
   value: number | string;
-  subtitle?: string;
-  accent: "red" | "gold" | "green";
-  subtitleAccent?: "muted" | "red";
+  sub?: ReactNode;
+  valueTone?: "default" | "green";
 }) {
-  const accentClass = {
-    red: "border-l-brand-red",
-    gold: "border-l-brand-gold",
-    green: "border-l-brand-green",
-  }[accent];
-  const subColor =
-    subtitleAccent === "red" ? "text-brand-red" : "text-brand-gray";
   return (
-    <div className={`card p-5 border-l-4 ${accentClass}`}>
-      <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
+    <div className="card px-[18px] py-4">
+      <div className="text-[11px] uppercase tracking-[0.1em] text-brand-gray font-semibold">
         {label}
       </div>
-      <div className="text-4xl font-bold text-brand-black mt-2 tabular-nums">
+      <div
+        className={`text-[34px] font-bold mt-1.5 leading-tight tabular-nums ${
+          valueTone === "green" ? "text-brand-green" : "text-brand-black"
+        }`}
+      >
         {value}
       </div>
-      {subtitle && (
-        <div className={`text-xs mt-1 ${subColor}`}>{subtitle}</div>
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
-   Change orders rollup — pending / approved value + counts
-   ============================================================ */
-const dashMoney = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
-
-function ChangeOrdersSection({
-  changeOrders,
-  onOpen,
-}: {
-  changeOrders: ChangeOrder[];
-  onOpen: () => void;
-}) {
-  const countOf = (s: ChangeOrder["status"]) =>
-    changeOrders.filter((c) => c.status === s).length;
-  const sumOf = (s: ChangeOrder["status"]) =>
-    changeOrders
-      .filter((c) => c.status === s)
-      .reduce((acc, c) => acc + (Number(c.total_amount) || 0), 0);
-
-  return (
-    <section>
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="section-title">Change orders</h2>
-        <button
-          type="button"
-          onClick={onOpen}
-          className="text-xs font-semibold text-brand-red hover:underline"
-        >
-          Open change orders →
-        </button>
-      </div>
-      {changeOrders.length === 0 ? (
-        <div className="card p-8 text-center text-sm text-brand-gray">
-          No change orders yet — raise one from the Change Orders tab, or start
-          one from a meeting on the Review page.
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <CoStat
-            label="Approved value"
-            count={countOf("approved")}
-            amount={sumOf("approved")}
-            accent="green"
-          />
-          <CoStat
-            label="Pending approval"
-            count={countOf("pending")}
-            amount={sumOf("pending")}
-            accent="gold"
-          />
-          <CoStat
-            label="Drafts"
-            count={countOf("draft")}
-            amount={null}
-            accent="red"
-          />
-        </div>
-      )}
-    </section>
-  );
-}
-
-function CoStat({
-  label,
-  count,
-  amount,
-  accent,
-}: {
-  label: string;
-  count: number;
-  amount: number | null;
-  accent: "red" | "gold" | "green";
-}) {
-  const accentClass = {
-    red: "border-l-brand-red",
-    gold: "border-l-brand-gold",
-    green: "border-l-brand-green",
-  }[accent];
-  return (
-    <div className={`card p-5 border-l-4 ${accentClass}`}>
-      <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
-        {label}
-      </div>
-      <div className="text-4xl font-bold text-brand-black mt-2 tabular-nums">
-        {amount != null ? dashMoney(amount) : count}
-      </div>
-      <div className="text-xs mt-1 text-brand-gray">
-        {amount != null
-          ? `${count} change order${count === 1 ? "" : "s"}`
-          : `${count} not yet submitted`}
-      </div>
+      {sub && <div className="text-xs text-brand-gray mt-0.5">{sub}</div>}
     </div>
   );
 }
@@ -274,24 +239,26 @@ function CoStat({
 /* ============================================================
    Burndown chart — hand-rolled SVG (8 weekly bars, stacked)
    ============================================================ */
-function BurndownSection({ points }: { points: BurndownPoint[] }) {
+function BurndownCard({ points }: { points: BurndownPoint[] }) {
   const hasAnyData = points.some(
     (p) => p.open_at_end_of_week > 0 || p.completed_this_week > 0,
   );
 
   return (
-    <section>
-      <h2 className="section-title mb-3">Action burndown · last 8 weeks</h2>
+    <section className="card px-5 py-4">
+      <CardHead title="Action burndown" hint="last 8 weeks" />
       {!hasAnyData ? (
-        <div className="card p-8 text-center text-sm text-brand-gray">
+        <p className="text-sm text-brand-gray mt-3">
           No action history yet — once meetings start raising actions, weekly
           open vs. completed counts show up here.
-        </div>
+        </p>
       ) : (
-        <div className="card p-5">
-          <BurndownChart points={points} />
+        <>
+          <div className="mt-2">
+            <BurndownChart points={points} />
+          </div>
           <Legend />
-        </div>
+        </>
       )}
     </section>
   );
@@ -302,7 +269,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
   // for week-of strings, top padding so the tallest bar's number doesn't
   // clip.
   const W = 720;
-  const H = 260;
+  const H = 240;
   const padLeft = 36;
   const padRight = 12;
   const padTop = 16;
@@ -310,7 +277,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
   const innerW = W - padLeft - padRight;
   const innerH = H - padTop - padBottom;
   const bandW = innerW / points.length;
-  const barW = Math.min(48, bandW * 0.6);
+  const barW = Math.min(44, bandW * 0.55);
 
   const maxStack = Math.max(
     1,
@@ -330,7 +297,8 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
       role="img"
       aria-label="Action burndown for the last 8 weeks"
     >
-      {/* Y-axis gridlines + labels */}
+      {/* Y-axis gridlines + labels. The zero line is a gridline like any
+          other — the redesign drops the heavier baseline rule. */}
       {yTicks.map((t) => (
         <g key={t}>
           <line
@@ -338,7 +306,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
             x2={padLeft + innerW}
             y1={padTop + yScale(t)}
             y2={padTop + yScale(t)}
-            stroke="#e5e7eb"
+            stroke="#f0efee"
             strokeWidth={1}
           />
           <text
@@ -346,7 +314,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
             y={padTop + yScale(t) + 4}
             textAnchor="end"
             fontSize={10}
-            fill="#6b7280"
+            fill="#bcbec0"
           >
             {t}
           </text>
@@ -373,7 +341,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
                 width={barW}
                 height={openH}
                 fill="#ad1f2b"
-                rx={2}
+                rx={3}
               >
                 <title>
                   Week of {wkLabel} — {p.open_at_end_of_week} open
@@ -388,7 +356,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
                 width={barW}
                 height={doneH}
                 fill="#278747"
-                rx={2}
+                rx={3}
               >
                 <title>
                   Week of {wkLabel} — {p.completed_this_week} closed
@@ -399,10 +367,10 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
             {total > 0 && (
               <text
                 x={cx}
-                y={yDone - 4}
+                y={yDone - 6}
                 textAnchor="middle"
                 fontSize={10}
-                fill="#1a1a1a"
+                fill="#333132"
                 fontWeight={600}
               >
                 {total}
@@ -414,42 +382,26 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
               y={padTop + innerH + 16}
               textAnchor="middle"
               fontSize={10}
-              fill="#6b7280"
+              fill="#4d4d4f"
             >
               {wkLabel}
             </text>
           </g>
         );
       })}
-
-      {/* Axis lines */}
-      <line
-        x1={padLeft}
-        x2={padLeft + innerW}
-        y1={padTop + innerH}
-        y2={padTop + innerH}
-        stroke="#bcbec0"
-        strokeWidth={1}
-      />
     </svg>
   );
 }
 
 function Legend() {
   return (
-    <div className="flex items-center justify-center gap-6 mt-3 text-xs text-brand-gray">
+    <div className="flex items-center gap-5 mt-2 text-xs text-brand-gray">
       <span className="inline-flex items-center gap-1.5">
-        <span
-          className="inline-block h-3 w-3 rounded-sm"
-          style={{ background: "#ad1f2b" }}
-        />
+        <span className="inline-block h-2.5 w-2.5 rounded-[3px] bg-brand-red" />
         Open at end of week
       </span>
       <span className="inline-flex items-center gap-1.5">
-        <span
-          className="inline-block h-3 w-3 rounded-sm"
-          style={{ background: "#278747" }}
-        />
+        <span className="inline-block h-2.5 w-2.5 rounded-[3px] bg-brand-green" />
         Closed this week
       </span>
     </div>
@@ -457,20 +409,22 @@ function Legend() {
 }
 
 /* ============================================================
-   Risks heatmap — stacked horizontal bar with numeric labels
+   Risk board — stacked severity bar + counts
    ============================================================ */
 const RISK_ORDER: Array<{
   key: string;
   label: string;
-  color: string;
+  bar: string;
+  countClass: string;
 }> = [
-  { key: "Critical", label: "Critical", color: "#ad1f2b" }, // brand red
-  { key: "High", label: "High", color: "#e07a1f" },          // orange
-  { key: "Medium", label: "Medium", color: "#c7bb2e" },      // brand gold
-  { key: "Low", label: "Low", color: "#9ca3af" },            // gray
+  { key: "Critical", label: "critical", bar: "#ad1f2b", countClass: "text-brand-red" },
+  { key: "High", label: "high", bar: "#e12a3f", countClass: "text-brand-brightred" },
+  { key: "Medium", label: "medium", bar: "#c7bb2e", countClass: "text-brand-deepgold" },
+  // Low keeps the inherited muted text — it should not compete for attention.
+  { key: "Low", label: "low", bar: "#bcbec0", countClass: "" },
 ];
 
-function RisksSection({ risks }: { risks: Record<string, number> }) {
+function RiskBoardCard({ risks }: { risks: Record<string, number> }) {
   const segments = RISK_ORDER.map((b) => ({
     ...b,
     count: risks[b.key] ?? 0,
@@ -478,44 +432,36 @@ function RisksSection({ risks }: { risks: Record<string, number> }) {
   const total = segments.reduce((s, b) => s + b.count, 0);
 
   return (
-    <section>
-      <h2 className="section-title mb-3">
-        Risks · most recent agenda
-      </h2>
+    <section className="card px-5 py-4">
+      <CardHead title="Risk board" hint="most recent agenda" />
       {total === 0 ? (
-        <div className="card p-8 text-center text-sm text-brand-gray">
+        <p className="text-sm text-brand-gray mt-3">
           No risks captured on the latest pre-meeting agenda yet.
-        </div>
+        </p>
       ) : (
-        <div className="card p-5">
-          <div className="flex w-full h-9 rounded-md overflow-hidden border border-brand-lightgray/60">
-            {segments.map((seg) => {
-              if (seg.count === 0) return null;
-              const pct = (seg.count / total) * 100;
-              return (
-                <div
-                  key={seg.key}
-                  className="flex items-center justify-center text-xs font-semibold text-white"
-                  style={{ background: seg.color, width: `${pct}%` }}
-                  title={`${seg.label}: ${seg.count}`}
-                >
-                  {seg.count}
-                </div>
-              );
-            })}
-          </div>
-          <div className="flex items-center justify-center gap-5 mt-3 text-xs text-brand-gray flex-wrap">
-            {segments.map((seg) => (
-              <span key={seg.key} className="inline-flex items-center gap-1.5">
+        <>
+          <div className="flex h-2.5 rounded-[5px] overflow-hidden mt-3">
+            {segments.map((seg) =>
+              seg.count === 0 ? null : (
                 <span
-                  className="inline-block h-3 w-3 rounded-sm"
-                  style={{ background: seg.color }}
+                  key={seg.key}
+                  style={{
+                    background: seg.bar,
+                    width: `${(seg.count / total) * 100}%`,
+                  }}
+                  title={`${seg.label}: ${seg.count}`}
                 />
-                {seg.label} · {seg.count}
+              ),
+            )}
+          </div>
+          <div className="flex flex-wrap gap-x-3.5 gap-y-1 mt-2 text-[11px] text-brand-gray">
+            {segments.map((seg) => (
+              <span key={seg.key}>
+                <b className={seg.countClass}>{seg.count}</b> {seg.label}
               </span>
             ))}
           </div>
-        </div>
+        </>
       )}
     </section>
   );
@@ -524,7 +470,30 @@ function RisksSection({ risks }: { risks: Record<string, number> }) {
 /* ============================================================
    Recent meetings list
    ============================================================ */
-function RecentMeetingsSection({
+const STAGE_BADGE: Record<string, { label: string; className: string }> = {
+  sent: {
+    label: "Sent",
+    className: "bg-status-completed-bg text-status-completed-text",
+  },
+  final: { label: "Final", className: "bg-[#d9f0f7] text-brand-deepblue" },
+  draft: { label: "Draft", className: "bg-surface-border text-brand-gray" },
+};
+
+function StageBadge({ stage }: { stage: string }) {
+  const cfg = STAGE_BADGE[stage] || {
+    label: stage || "Draft",
+    className: "bg-surface-border text-brand-gray",
+  };
+  return (
+    <span
+      className={`text-[11px] font-semibold px-2.5 py-[3px] rounded-full ${cfg.className}`}
+    >
+      {cfg.label}
+    </span>
+  );
+}
+
+function RecentMeetingsCard({
   meetings,
   onOpen,
 }: {
@@ -532,48 +501,131 @@ function RecentMeetingsSection({
   onOpen: () => void;
 }) {
   return (
-    <section>
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="section-title">Recent meetings</h2>
-        {meetings.length > 0 && (
-          <button
-            type="button"
-            onClick={onOpen}
-            className="text-xs font-semibold text-brand-red hover:underline"
-          >
-            View all in History →
-          </button>
-        )}
+    <section className="card overflow-hidden">
+      <div className="px-5 py-3.5 border-b border-surface-hairline">
+        <CardHead
+          title="Recent meetings"
+          action={
+            meetings.length > 0 ? (
+              <CardLink onClick={onOpen}>All in History →</CardLink>
+            ) : undefined
+          }
+        />
       </div>
       {meetings.length === 0 ? (
-        <div className="card p-8 text-center text-sm text-brand-gray">
+        <p className="px-5 py-6 text-center text-sm text-brand-gray">
           No meetings yet — capture one to start populating this portfolio.
-        </div>
+        </p>
       ) : (
-        <div className="card divide-y divide-brand-lightgray/60">
-          {meetings.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              onClick={onOpen}
-              className="w-full text-left px-5 py-3 hover:bg-brand-nearwhite/40 grid grid-cols-[1fr_auto] gap-4 items-center"
-            >
-              <div>
-                <div className="text-sm font-medium text-brand-black">
-                  {m.title || "(no title)"}
-                </div>
-                <div className="text-xs text-brand-gray mt-1">
-                  Stage: <span className="font-semibold">{m.stage}</span>
-                </div>
-              </div>
-              <div className="text-sm text-brand-red font-semibold">
+        meetings.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            onClick={onOpen}
+            className="w-full text-left px-5 py-3 grid grid-cols-[1fr_auto_auto] gap-3.5 items-center
+              border-b border-surface-page last:border-b-0 hover:bg-surface-rowhover transition"
+          >
+            <span>
+              <span className="block text-sm font-medium text-brand-black">
+                {m.title || "(no title)"}
+              </span>
+              <span className="block text-xs text-brand-gray mt-px">
                 {format(parseISO(m.meeting_date), "EEE, MMM d, yyyy")}
-              </div>
-            </button>
-          ))}
+              </span>
+            </span>
+            <StageBadge stage={m.stage} />
+            <span className="text-brand-lightgray">›</span>
+          </button>
+        ))
+      )}
+    </section>
+  );
+}
+
+/* ============================================================
+   Change orders rollup — pending / approved value + counts
+   ============================================================ */
+const dashMoney = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+
+function ChangeOrdersCard({
+  changeOrders,
+  onOpen,
+}: {
+  changeOrders: ChangeOrder[];
+  onOpen: () => void;
+}) {
+  const countOf = (s: ChangeOrder["status"]) =>
+    changeOrders.filter((c) => c.status === s).length;
+  const sumOf = (s: ChangeOrder["status"]) =>
+    changeOrders
+      .filter((c) => c.status === s)
+      .reduce((acc, c) => acc + (Number(c.total_amount) || 0), 0);
+
+  const coCount = (n: number) => `${n} CO${n === 1 ? "" : "s"}`;
+
+  return (
+    <section className="card px-5 py-4">
+      <CardHead
+        title="Change orders"
+        action={<CardLink onClick={onOpen}>Open →</CardLink>}
+      />
+      {changeOrders.length === 0 ? (
+        <p className="text-sm text-brand-gray mt-3">
+          No change orders yet — raise one from the Change Orders tab, or start
+          one from a meeting on the Review page.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-2.5 mt-3">
+          <CoStatBox
+            label="Approved value"
+            value={dashMoney(sumOf("approved"))}
+            valueClass="text-brand-green"
+            note={coCount(countOf("approved"))}
+          />
+          <CoStatBox
+            label="Pending approval"
+            value={dashMoney(sumOf("pending"))}
+            valueClass="text-brand-deepgold"
+            note={coCount(countOf("pending"))}
+          />
+          <CoStatBox
+            label="Drafts"
+            value={countOf("draft")}
+            note="not yet submitted"
+          />
         </div>
       )}
     </section>
+  );
+}
+
+function CoStatBox({
+  label,
+  value,
+  note,
+  valueClass = "text-brand-black",
+}: {
+  label: string;
+  value: number | string;
+  note: string;
+  valueClass?: string;
+}) {
+  return (
+    <div className="border border-surface-border rounded-lg px-3.5 py-3 flex items-baseline justify-between gap-3">
+      <div>
+        <div className="text-[10px] uppercase tracking-[0.08em] text-brand-gray font-semibold">
+          {label}
+        </div>
+        <div
+          className={`text-[22px] font-bold leading-tight tabular-nums ${valueClass}`}
+        >
+          {value}
+        </div>
+      </div>
+      <span className="text-[11px] text-brand-gray whitespace-nowrap">
+        {note}
+      </span>
+    </div>
   );
 }
 

@@ -1,12 +1,20 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import clsx from "clsx";
 import PageHeader from "@/components/PageHeader";
-import EmptyState from "@/components/EmptyState";
 import { StatusPill } from "@/components/StatusPill";
 import CalendarCard from "@/components/home/CalendarCard";
 import PlannerCard from "@/components/home/PlannerCard";
 import RisksCard from "@/components/home/RisksCard";
 import ChangeOrdersCard from "@/components/home/ChangeOrdersCard";
+import AtRiskSpotlight from "@/components/home/AtRiskSpotlight";
+import ActivityCard from "@/components/home/ActivityCard";
+import {
+  compactMoney,
+  dueLabel,
+  useChangeOrders,
+  useOpenRisks,
+} from "@/components/home/useHomeData";
 import DraftResumeBanner from "@/components/DraftResumeBanner";
 import {
   fetchBriefing,
@@ -28,6 +36,9 @@ import {
   parseISO,
   format,
 } from "date-fns";
+
+/** Actions falling due inside this window count as "soon due" on the KPI tile. */
+const SOON_DUE_DAYS = 7;
 
 export default function Home() {
   const [data, setData] = useState<DashboardResponse | null>(null);
@@ -53,6 +64,12 @@ export default function Home() {
   } = useApp();
   const { isAuthenticated, user } = useAuth();
 
+  // Risks and change orders are fetched once here and shared with the cards
+  // that render them — the spotlight + risk board, and the KPI tile + activity
+  // feed + change-orders panel respectively.
+  const { risks, loading: risksLoading } = useOpenRisks();
+  const { cos, loading: cosLoading } = useChangeOrders();
+
   // ---- Dashboard scope ----
   // Narrow the all-portfolio rollups to the header's Client/Portfolio pick.
   // A specific portfolio filters by project_id; a client (with "All
@@ -75,7 +92,7 @@ export default function Home() {
     ? scopeProjectName
     : scopeClientName
       ? `${scopeClientName} — all portfolios`
-      : "Across all portfolios";
+      : "across all portfolios";
   const scopedActions = (data?.open_actions || []).filter(inScope);
   const scopedAgendas = (data?.upcoming_agendas || []).filter(inScope);
   const scopedNotes = (data?.follow_up_notes || []).filter(inScope);
@@ -130,15 +147,37 @@ export default function Home() {
     (user?.name || "").trim().split(/\s+/)[0] || "";
 
   const today = new Date();
-  const overdue = (data?.open_actions || []).filter(
+  const openActions = data?.open_actions || [];
+  const overdue = openActions.filter(
     (a) => a.due_date && parseISO(a.due_date) < today
   );
+  const dueSoon = openActions.filter((a) => {
+    if (!a.due_date) return false;
+    const days = differenceInCalendarDays(parseISO(a.due_date), today);
+    return days >= 0 && days <= SOON_DUE_DAYS;
+  });
+  // Earliest upcoming agenda, for the KPI foot line.
+  const nextAgenda = [...(data?.upcoming_agendas || [])].sort((a, b) =>
+    a.upcoming_date.localeCompare(b.upcoming_date)
+  )[0];
+  const pendingCos = cos.filter((c) => c.status === "pending");
+  const approvedCos = cos.filter((c) => c.status === "approved");
+  const coTotal = (rows: typeof cos) =>
+    rows.reduce((s, c) => s + (Number(c.total_amount) || 0), 0);
+
+  const visibleOverdue = showAllOverdue
+    ? scopedActions
+    : scopedActions.slice(0, 5);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-[22px]">
       <PageHeader
-        title={`Welcome to ${settings?.app.title || "PMO 360"}`}
-        subtitle={settings?.app.tagline}
+        kicker={format(today, "EEEE · MMMM d, yyyy")}
+        title={
+          firstName
+            ? `Good morning, ${firstName}`
+            : `Welcome to ${settings?.app.title || "PMO 360"}`
+        }
         actions={
           <>
             <button
@@ -148,7 +187,7 @@ export default function Home() {
                 nav("/capture");
               }}
             >
-              + Capture meeting notes
+              Capture minutes
             </button>
             <button className="btn-primary" onClick={() => nav("/next-agenda")}>
               + New pre-meeting agenda
@@ -160,179 +199,267 @@ export default function Home() {
       {/* ----- Resume in-progress meeting draft ----- */}
       <DraftResumeBanner />
 
-      {/* ----- AI briefing card (signed-in only) ----- */}
-      {isAuthenticated && (
-        <BriefingCard
-          briefing={briefing}
-          loading={briefingLoading}
-          firstName={firstName}
-          onRefresh={loadBriefing}
+      {/* ----- What's going wrong this week, before any counts ----- */}
+      <AtRiskSpotlight
+        risks={risks}
+        actions={openActions}
+        onReviewAll={() => nav("/actions?status=open_pending")}
+      />
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+        <StatTile
+          label="Open + pending actions"
+          value={openActions.length}
+          foot={
+            <>
+              {overdue.length > 0 ? (
+                <b className="text-brand-red">{overdue.length} overdue</b>
+              ) : (
+                "nothing overdue"
+              )}{" "}
+              · {dueSoon.length} due this week
+            </>
+          }
         />
-      )}
-
-      {/* ----- Open risks rollup (signed-in only; auto-hides when empty) ----- */}
-      <RisksCard />
-
-      {/* ----- Change orders rollup across portfolios (auto-hides when none) ----- */}
-      <ChangeOrdersCard />
-
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <StatCard
-          label="Open + Pending Actions"
-          value={data?.open_actions.length || 0}
-          accent="red"
-        />
-        <StatCard
-          label="Overdue Actions"
+        <StatTile
+          label="Overdue actions"
           value={overdue.length}
-          accent="gold"
+          foot={
+            overdue.length > 0 ? "needs attention today" : "all clear right now"
+          }
         />
-        <StatCard
-          label="Upcoming Agendas"
+        <StatTile
+          label="Upcoming agendas"
           value={data?.upcoming_agendas.length || 0}
-          accent="green"
+          foot={
+            nextAgenda
+              ? `Next: ${format(
+                  parseISO(nextAgenda.upcoming_date),
+                  "EEE MMM d"
+                )} · ${nextAgenda.project_name || "Portfolio"}`
+              : "none scheduled"
+          }
+        />
+        <StatTile
+          label="Change orders in flight"
+          value={compactMoney(coTotal(pendingCos))}
+          foot={
+            <>
+              {pendingCos.length} pending ·{" "}
+              <span className="text-brand-green font-semibold">
+                {compactMoney(coTotal(approvedCos))} approved
+              </span>
+            </>
+          }
         />
       </div>
 
-      {/* ----- Personalised "Your stuff" view ----- */}
-      {isAuthenticated && (
-        <section className="space-y-4">
-          <div className="flex items-center gap-3">
-            <h2 className="section-title">Your stuff</h2>
-            <span
-              className="text-[10px] uppercase tracking-wider font-semibold px-2 py-0.5 rounded-full"
-              style={{
-                background: "rgba(199,187,46,0.15)",
-                color: "#8a8021",
-                border: "1px solid rgba(199,187,46,0.6)",
-              }}
-            >
-              ✦ Personal
-            </span>
-          </div>
-
-          <div
-            className="card p-5 space-y-5"
-            style={{
-              background:
-                "linear-gradient(180deg, rgba(199,187,46,0.04), transparent)",
-              borderColor: "rgba(199,187,46,0.4)",
-            }}
-          >
-            <SubSection title="Your open actions">
-              <ActionsList
-                items={(mine?.open_actions || []).slice(0, 5)}
-                emptyHint="Nothing assigned to you"
-              />
-              {(mine?.open_actions || []).length > 0 && (
-                <button
-                  className="mt-2 text-xs font-semibold text-brand-red hover:underline"
-                  onClick={() => nav("/actions?owner=mine&status=open_pending")}
-                >
-                  {(mine?.open_actions || []).length > 5
-                    ? `View all ${mine!.open_actions.length} open actions →`
-                    : "View all in Actions →"}
-                </button>
-              )}
-            </SubSection>
-
-            <SubSection title="Your follow-ups">
-              <NotesList
-                items={mine?.follow_up_notes || []}
-                emptyHint="Nothing assigned to you"
-              />
-            </SubSection>
-
-            <SubSection title="Your upcoming agendas">
-              <AgendasList
-                items={mine?.upcoming_agendas || []}
-                onOpen={(id) => nav(`/next-agenda?agenda=${id}`)}
-                emptyHint="Nothing assigned to you"
-              />
-            </SubSection>
-          </div>
-
+      <div className="grid grid-cols-1 xl:grid-cols-[1.6fr_1fr] gap-[22px] items-start">
+        {/* ---------- Left: the working column ---------- */}
+        <div className="min-w-0 space-y-[22px]">
           {/* Upcoming Outlook meetings + my Microsoft Planner tasks — both are
-              personal-to-you, so they live under "Your stuff". */}
-          <CalendarCard />
-          <PlannerCard />
-        </section>
-      )}
+              personal to the signed-in user. */}
+          {isAuthenticated && <CalendarCard />}
+          {isAuthenticated && <PlannerCard />}
 
-      {/* ----- All-portfolio rollups ----- */}
-      <div className="pt-2">
-        <div className="text-xs uppercase tracking-wider font-semibold text-brand-gray mb-3">
-          {rollupHeader}
-        </div>
-
-        <section>
-          <h2 className="section-title mb-3">Overdue & Soon Due Actions</h2>
-          {loading ? (
-            <Loader />
-          ) : scopedActions.length === 0 ? (
-            <EmptyState
-              title="Nothing overdue"
-              hint="All clear — no rolling actions need attention right now."
-            />
-          ) : (
-            <>
-              <ActionsList
-                items={showAllOverdue ? scopedActions : scopedActions.slice(0, 5)}
-              />
-              {scopedActions.length > 5 && (
+          <CardShell
+            title="Overdue & soon-due actions"
+            meta={rollupHeader}
+            action={
+              scopedActions.length > 5 && (
                 <button
-                  className="mt-2 text-xs font-semibold text-brand-red hover:underline"
+                  className="text-xs font-semibold text-brand-red hover:underline"
                   onClick={() => setShowAllOverdue((v) => !v)}
                 >
                   {showAllOverdue
                     ? "Show fewer"
-                    : `Show all ${scopedActions.length} →`}
+                    : `All ${scopedActions.length} →`}
                 </button>
-              )}
-            </>
-          )}
-        </section>
+              )
+            }
+          >
+            {loading ? (
+              <Loader />
+            ) : scopedActions.length === 0 ? (
+              <CardEmpty
+                title="Nothing overdue"
+                hint="All clear — no rolling actions need attention right now."
+              />
+            ) : (
+              <ActionsList items={visibleOverdue} />
+            )}
+          </CardShell>
 
-        <section className="mt-8">
-          <h2 className="section-title mb-3">Upcoming Pre-Meeting Agendas</h2>
-          {loading ? (
-            <Loader />
-          ) : scopedAgendas.length === 0 ? (
-            <EmptyState
-              title="No upcoming agendas"
-              hint="Use the Next Agenda page to plan an upcoming meeting."
-              action={
-                <button
-                  className="btn-primary mt-2"
-                  onClick={() => nav("/next-agenda")}
-                >
-                  Build an agenda
-                </button>
-              }
-            />
-          ) : (
-            <AgendasList
-              items={scopedAgendas}
-              onOpen={(id) => nav(`/next-agenda?agenda=${id}`)}
-            />
-          )}
-        </section>
+          {/* ----- Personalised "Your stuff" view ----- */}
+          {isAuthenticated && (
+            <section className="card px-5 py-4">
+              <div className="flex items-baseline gap-2">
+                <h2 className="section-title">Your stuff</h2>
+                <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-brand-deepgold">
+                  ✦ Personal
+                </span>
+              </div>
 
-        <section className="mt-8">
-          <h2 className="section-title mb-3">Follow-up Notes</h2>
-          {loading ? (
-            <Loader />
-          ) : scopedNotes.length === 0 ? (
-            <EmptyState
-              title="No follow-ups"
-              hint="Notes with a follow-up date appear here when their date arrives."
-            />
-          ) : (
-            <NotesList items={scopedNotes} />
+              <div className="mt-3 space-y-4">
+                <SubSection title="Your open actions">
+                  <ActionsList
+                    dense
+                    items={(mine?.open_actions || []).slice(0, 5)}
+                    emptyHint="Nothing assigned to you"
+                  />
+                  {(mine?.open_actions || []).length > 0 && (
+                    <button
+                      className="mt-2 text-xs font-semibold text-brand-red hover:underline"
+                      onClick={() =>
+                        nav("/actions?owner=mine&status=open_pending")
+                      }
+                    >
+                      {(mine?.open_actions || []).length > 5
+                        ? `View all ${mine!.open_actions.length} open actions →`
+                        : "View all in Actions →"}
+                    </button>
+                  )}
+                </SubSection>
+
+                <SubSection title="Your follow-ups">
+                  <NotesList
+                    dense
+                    items={mine?.follow_up_notes || []}
+                    emptyHint="Nothing assigned to you"
+                  />
+                </SubSection>
+
+                <SubSection title="Your upcoming agendas">
+                  <AgendasList
+                    dense
+                    items={mine?.upcoming_agendas || []}
+                    onOpen={(id) => nav(`/next-agenda?agenda=${id}`)}
+                    emptyHint="Nothing assigned to you"
+                  />
+                </SubSection>
+              </div>
+            </section>
           )}
-        </section>
+
+          <CardShell title="Upcoming pre-meeting agendas" meta={rollupHeader}>
+            {loading ? (
+              <Loader />
+            ) : scopedAgendas.length === 0 ? (
+              <CardEmpty
+                title="No upcoming agendas"
+                hint="Use the Pre Meeting page to plan an upcoming meeting."
+                action={
+                  <button
+                    className="btn-primary mt-3"
+                    onClick={() => nav("/next-agenda")}
+                  >
+                    Build an agenda
+                  </button>
+                }
+              />
+            ) : (
+              <AgendasList
+                items={scopedAgendas}
+                onOpen={(id) => nav(`/next-agenda?agenda=${id}`)}
+              />
+            )}
+          </CardShell>
+
+          <CardShell title="Follow-up notes" meta={rollupHeader}>
+            {loading ? (
+              <Loader />
+            ) : scopedNotes.length === 0 ? (
+              <CardEmpty
+                title="No follow-ups"
+                hint="Notes with a follow-up date appear here when their date arrives."
+              />
+            ) : (
+              <NotesList items={scopedNotes} />
+            )}
+          </CardShell>
+        </div>
+
+        {/* ---------- Right: the standing brief ---------- */}
+        <div className="min-w-0 space-y-[22px]">
+          {isAuthenticated && (
+            <BriefingCard
+              briefing={briefing}
+              loading={briefingLoading}
+              onRefresh={loadBriefing}
+            />
+          )}
+          <RisksCard risks={risks} loading={risksLoading} />
+          {isAuthenticated && <ActivityCard cos={cos} loading={cosLoading} />}
+          <ChangeOrdersCard cos={cos} loading={cosLoading} />
+        </div>
       </div>
+    </div>
+  );
+}
+
+/* ---------- Card chrome shared by the rollup panels ---------- */
+function CardShell({
+  title,
+  meta,
+  action,
+  children,
+}: {
+  title: string;
+  meta?: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex items-baseline gap-2.5 px-5 py-3.5 border-b border-surface-hairline">
+        <h2 className="section-title">{title}</h2>
+        {meta && (
+          <span className="text-xs text-brand-gray truncate">{meta}</span>
+        )}
+        {action && <div className="ml-auto shrink-0">{action}</div>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function CardEmpty({
+  title,
+  hint,
+  action,
+}: {
+  title: string;
+  hint?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="px-5 py-8 text-center">
+      <div className="text-sm font-semibold text-brand-black">{title}</div>
+      {hint && <div className="text-xs text-brand-gray mt-1">{hint}</div>}
+      {action}
+    </div>
+  );
+}
+
+/* ---------- KPI tile ---------- */
+function StatTile({
+  label,
+  value,
+  foot,
+}: {
+  label: string;
+  value: number | string;
+  foot?: ReactNode;
+}) {
+  return (
+    <div className="card px-[18px] py-4">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-brand-gray">
+        {label}
+      </div>
+      <div className="mt-1.5 text-[34px] font-bold leading-[1.05] tabular-nums text-brand-black">
+        {value}
+      </div>
+      {foot && <div className="mt-0.5 text-xs text-brand-gray">{foot}</div>}
     </div>
   );
 }
@@ -341,31 +468,28 @@ export default function Home() {
 function BriefingCard({
   briefing,
   loading,
-  firstName,
   onRefresh,
 }: {
   briefing: Briefing | null;
   loading: boolean;
-  firstName: string;
   onRefresh: () => void;
 }) {
   // Skeleton: render the card shell while the first fetch is in flight so
   // the page doesn't jump when the data arrives.
   if (loading && briefing === null) {
     return (
-      <div className="card p-5 border-l-4 border-l-brand-gold bg-gradient-to-r from-amber-50/40 to-white">
-        <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
-          Your morning briefing
+      <section className="card border-l-[3px] border-l-brand-gold px-5 py-4">
+        <div className="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-deepgold">
+          ✦ Morning briefing
         </div>
-        <div className="mt-2 text-base text-brand-gray italic">
+        <div className="mt-2.5 text-sm text-brand-gray italic">
           Loading your briefing…
         </div>
-      </div>
+      </section>
     );
   }
   if (!briefing) return null;
 
-  const greeting = firstName ? `Good morning, ${firstName}.` : "Welcome back.";
   const whenText = briefing.last_seen_at
     ? formatDistanceToNow(parseISO(briefing.last_seen_at), {
         addSuffix: false,
@@ -383,70 +507,73 @@ function BriefingCard({
       key: "overdue",
       count: briefing.overdue_actions_assigned_to_me,
       label: "overdue",
-      className: "bg-rose-100 text-rose-700",
+      className: "bg-status-open-bg text-status-open-text",
     },
     {
       key: "new-actions",
       count: briefing.new_actions_assigned_to_me,
       label: "new actions",
-      className: "bg-amber-100 text-amber-800",
+      className: "bg-status-pending-bg text-status-pending-text",
     },
     {
       key: "meetings",
       count: briefing.new_meetings_touched,
       label: "meetings touched",
-      className: "bg-sky-100 text-sky-700",
+      className: "bg-[#d9f0f7] text-brand-deepblue",
     },
     {
       key: "agendas",
       count: briefing.new_agendas_touched,
       label: "agendas touched",
-      className: "bg-emerald-100 text-emerald-700",
+      className: "bg-status-completed-bg text-status-completed-text",
     },
     {
       key: "follow-ups",
       count: briefing.new_follow_up_notes,
       label: "follow-up notes",
-      className: "bg-slate-100 text-slate-700",
+      className: "bg-surface-border text-brand-gray",
     },
   ].filter((c) => c.count > 0);
 
   return (
-    <div className="card p-5 border-l-4 border-l-brand-gold bg-gradient-to-r from-amber-50/40 to-white relative">
-      <button
-        type="button"
-        onClick={onRefresh}
-        disabled={loading}
-        title="Refresh briefing"
-        aria-label="Refresh briefing"
-        className="absolute top-3 right-3 text-brand-gray hover:text-brand-black text-base leading-none px-2 py-1 rounded hover:bg-brand-nearwhite/60 disabled:opacity-40"
-      >
-        {loading ? "…" : "↻"}
-      </button>
-
-      <div className="text-lg font-semibold text-brand-black">{greeting}</div>
-      <div className="text-xs text-brand-gray mt-1">
-        Since you were last here {whenText}, here's where things stand.
+    <section className="card border-l-[3px] border-l-brand-gold px-5 py-4">
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-deepgold">
+          ✦ Morning briefing
+        </span>
+        <span className="text-[11px] text-brand-gray truncate">
+          last visit {whenText}
+        </span>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+          title="Refresh briefing"
+          aria-label="Refresh briefing"
+          className="ml-auto text-brand-gray hover:text-brand-red text-sm leading-none disabled:opacity-40"
+        >
+          {loading ? "…" : "↻"}
+        </button>
       </div>
 
+      <p className="mt-2.5 text-[13.5px] leading-[1.6] text-brand-black">
+        {briefing.briefing}
+      </p>
+
       {chips.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
+        <div className="mt-3 flex flex-wrap gap-1.5">
           {chips.map((c) => (
             <span
               key={c.key}
-              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${c.className}`}
+              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${c.className}`}
             >
-              <span className="tabular-nums font-semibold">{c.count}</span>
+              <span className="tabular-nums">{c.count}</span>
               <span>{c.label}</span>
             </span>
           ))}
         </div>
       )}
-
-      <p className="mt-3 text-sm text-brand-black leading-relaxed">
-        {briefing.briefing}
-      </p>
-    </div>
+    </section>
   );
 }
 
@@ -460,41 +587,50 @@ function SubSection({
 }) {
   return (
     <div>
-      <h3 className="text-sm font-semibold text-brand-black mb-2">{title}</h3>
+      <h3 className="text-[13px] font-semibold text-brand-black mb-1">
+        {title}
+      </h3>
       {children}
     </div>
   );
 }
 
-/* ---------- List renderers reused in both contexts ---------- */
+/* ---------- List renderers reused in both contexts ----------
+ * `dense` drops the card's own horizontal padding so the same rows can sit
+ * inside an already-padded card (the personal section) as well as flush in a
+ * CardShell body. */
 function ActionsList({
   items,
   emptyHint,
+  dense,
 }: {
   items: DashboardAction[];
   emptyHint?: string;
+  dense?: boolean;
 }) {
   if (items.length === 0 && emptyHint) {
-    return (
-      <div className="text-xs text-brand-gray italic px-1">{emptyHint}</div>
-    );
+    return <div className="text-xs text-brand-gray italic">{emptyHint}</div>;
   }
   return (
-    <div className="card divide-y divide-brand-lightgray/60">
+    <div>
       {items.map((a) => {
-        const dueText = a.due_date
-          ? `${format(parseISO(a.due_date), "MMM d, yyyy")} (${dueLabel(
-              a.due_date
-            )})`
-          : "—";
+        const days = a.due_date
+          ? differenceInCalendarDays(parseISO(a.due_date), new Date())
+          : null;
+        const isOverdue = days !== null && days < 0;
         return (
           <div
             key={a.id}
-            className="px-5 py-3 grid grid-cols-[1fr_auto] gap-4 items-center"
+            className={clsx(
+              "grid grid-cols-[1fr_auto_auto] items-center gap-3.5 py-[11px]",
+              "border-b border-b-surface-page last:border-b-0 border-l-[3px]",
+              dense ? "-mx-2 px-2" : "px-5",
+              isOverdue ? "border-l-brand-red" : "border-l-transparent"
+            )}
           >
-            <div>
+            <div className="min-w-0">
               <div className="text-sm text-brand-black">{a.text}</div>
-              <div className="text-xs text-brand-gray mt-1">
+              <div className="text-xs text-brand-gray mt-px truncate">
                 {a.client_name && (
                   <>
                     <span>{a.client_name}</span>
@@ -504,9 +640,22 @@ function ActionsList({
                 <span className="font-medium">
                   {a.project_name || "Portfolio"}
                 </span>{" "}
-                · {a.owner || "Unassigned"} · Due {dueText}
+                · {a.owner || "Unassigned"}
               </div>
             </div>
+            <span
+              className={clsx(
+                "text-xs tabular-nums whitespace-nowrap",
+                isOverdue ? "font-semibold text-brand-red" : "text-brand-gray"
+              )}
+              title={
+                a.due_date
+                  ? `Due ${format(parseISO(a.due_date), "MMM d, yyyy")}`
+                  : undefined
+              }
+            >
+              {a.due_date ? dueLabel(a.due_date) : "no due date"}
+            </span>
             <StatusPill status={a.status} />
           </div>
         );
@@ -519,29 +668,33 @@ function AgendasList({
   items,
   onOpen,
   emptyHint,
+  dense,
 }: {
   items: DashboardAgenda[];
   onOpen: (id: number) => void;
   emptyHint?: string;
+  dense?: boolean;
 }) {
   if (items.length === 0 && emptyHint) {
-    return (
-      <div className="text-xs text-brand-gray italic px-1">{emptyHint}</div>
-    );
+    return <div className="text-xs text-brand-gray italic">{emptyHint}</div>;
   }
   return (
-    <div className="card divide-y divide-brand-lightgray/60">
+    <div>
       {items.map((a) => (
         <button
           key={a.id}
           onClick={() => onOpen(a.id)}
-          className="w-full text-left px-5 py-3 hover:bg-brand-nearwhite/40 grid grid-cols-[1fr_auto] gap-4 items-center"
+          className={clsx(
+            "grid w-full grid-cols-[1fr_auto] items-center gap-3.5 py-[11px] text-left",
+            "border-b border-b-surface-page last:border-b-0 hover:bg-surface-rowhover transition",
+            dense ? "-mx-2 px-2" : "px-5"
+          )}
         >
-          <div>
-            <div className="text-sm font-medium text-brand-black">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-brand-black truncate">
               {a.title || "Pre-meeting agenda"}
             </div>
-            <div className="text-xs text-brand-gray mt-1">
+            <div className="text-xs text-brand-gray mt-px truncate">
               {a.client_name && (
                 <>
                   <span>{a.client_name}</span>
@@ -551,7 +704,7 @@ function AgendasList({
               <span>{a.project_name}</span>
             </div>
           </div>
-          <div className="text-sm text-brand-red font-semibold">
+          <div className="text-sm text-brand-red font-semibold whitespace-nowrap">
             {format(parseISO(a.upcoming_date), "EEE, MMM d")}
           </div>
         </button>
@@ -563,23 +716,29 @@ function AgendasList({
 function NotesList({
   items,
   emptyHint,
+  dense,
 }: {
   items: DashboardNote[];
   emptyHint?: string;
+  dense?: boolean;
 }) {
   if (items.length === 0 && emptyHint) {
-    return (
-      <div className="text-xs text-brand-gray italic px-1">{emptyHint}</div>
-    );
+    return <div className="text-xs text-brand-gray italic">{emptyHint}</div>;
   }
   return (
-    <div className="card divide-y divide-brand-lightgray/60">
+    <div>
       {items.map((n) => (
-        <div key={n.id} className="px-5 py-3">
-          <div className="text-sm font-medium text-brand-black">
+        <div
+          key={n.id}
+          className={clsx(
+            "py-2 border-b border-b-surface-page last:border-b-0",
+            dense ? "" : "px-5"
+          )}
+        >
+          <div className="text-[13px] text-brand-black">
             {n.topic || "(no topic)"}
           </div>
-          <div className="text-xs text-brand-gray mt-1">
+          <div className="text-[11px] text-brand-gray mt-px truncate">
             {n.client_name && (
               <>
                 {n.client_name} <span className="px-1">/</span>
@@ -587,8 +746,8 @@ function NotesList({
             )}
             {n.project_name} ·{" "}
             {n.follow_up_date
-              ? `Follow up ${format(parseISO(n.follow_up_date), "MMM d")}`
-              : "No follow-up date"}
+              ? `follow up ${format(parseISO(n.follow_up_date), "MMM d")}`
+              : "no follow-up date"}
           </div>
         </div>
       ))}
@@ -596,43 +755,10 @@ function NotesList({
   );
 }
 
-function StatCard({
-  label,
-  value,
-  accent,
-}: {
-  label: string;
-  value: number | string;
-  accent: "red" | "gold" | "green";
-}) {
-  const accentClass = {
-    red: "border-l-brand-red",
-    gold: "border-l-brand-gold",
-    green: "border-l-brand-green",
-  }[accent];
-  return (
-    <div className={`card p-5 border-l-4 ${accentClass}`}>
-      <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
-        {label}
-      </div>
-      <div className="text-4xl font-bold text-brand-black mt-2 tabular-nums">
-        {value}
-      </div>
-    </div>
-  );
-}
-
 function Loader() {
   return (
-    <div className="card p-6 text-center text-sm text-brand-gray">
+    <div className="px-5 py-8 text-center text-sm text-brand-gray italic">
       Loading…
     </div>
   );
-}
-
-function dueLabel(iso: string): string {
-  const days = differenceInCalendarDays(parseISO(iso), new Date());
-  if (days === 0) return "today";
-  if (days < 0) return `${Math.abs(days)}d overdue`;
-  return `in ${days}d`;
 }

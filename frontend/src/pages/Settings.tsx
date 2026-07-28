@@ -37,7 +37,7 @@ interface PortfolioOption {
 
 export default function Settings() {
   const { clients } = useApp();
-  const { isAuthenticated, signIn } = useAuth();
+  const { isAuthenticated, signIn, user } = useAuth();
 
   const [prefs, setPrefs] = useState<UserPreferences>(DEFAULT_PREFS);
   const [loaded, setLoaded] = useState(false);
@@ -137,10 +137,10 @@ export default function Settings() {
   );
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-[18px] max-w-narrow">
       <PageHeader
+        kicker={`${user?.name ? `${user.name} · ` : ""}your personal defaults, not the team's`}
         title="Settings"
-        subtitle="Your personal defaults — only apply to you, not the team."
         actions={
           isAuthenticated ? (
             <SaveStatus
@@ -153,7 +153,7 @@ export default function Settings() {
       />
 
       {!isAuthenticated && (
-        <div className="card p-4 border-l-4 border-amber-400 bg-amber-50 text-sm text-amber-900">
+        <div className="card p-4 border-l-[3px] border-l-brand-gold bg-[#fdfaf2] text-sm text-status-pending-text">
           You're not signed in, so any changes here can't be saved. Use{" "}
           <button
             type="button"
@@ -168,136 +168,134 @@ export default function Settings() {
       )}
 
       {loadError && (
-        <div className="card p-4 border-l-4 border-rose-400 bg-rose-50 text-sm text-rose-700">
+        <div className="card p-4 border-l-[3px] border-l-brand-red bg-status-open-bg text-sm text-status-open-text">
           {loadError}
         </div>
       )}
 
       {/* ---------- Card 1: Defaults ---------- */}
-      <section className="card p-6 space-y-5">
-        <h3 className="section-title">Defaults</h3>
-
-        <div>
-          <label className="label">Default portfolio</label>
-          <select
-            className="select"
-            value={prefs.default_project_id ?? ""}
-            onChange={(e) =>
-              update(
-                "default_project_id",
-                e.target.value ? Number(e.target.value) : null,
-              )
-            }
-            disabled={portfoliosLoading || portfolioCount === 0}
-          >
-            <option value="">— No default —</option>
-            {portfolios.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.clientName} · {p.name}
-              </option>
-            ))}
-          </select>
-          <p className="text-[11px] text-slate-500 mt-1.5">
-            {portfoliosLoading
-              ? "Loading portfolios…"
-              : portfolioCount === 0
-                ? "No portfolios available yet."
-                : selectedPortfolio
-                  ? `Selected: ${selectedPortfolio.clientName} · ${selectedPortfolio.name}.`
-                  : "Pick the portfolio you spend the most time in."}
-          </p>
-        </div>
-
-        <div>
-          <label className="label">Default meeting duration</label>
-          <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden">
-            {[30, 60].map((mins) => {
-              const active = prefs.default_meeting_duration === mins;
-              return (
-                <button
-                  key={mins}
-                  type="button"
-                  onClick={() => update("default_meeting_duration", mins)}
-                  className={clsx(
-                    "px-4 py-1.5 text-sm font-semibold transition",
-                    active
-                      ? "bg-brand-red text-white"
-                      : "bg-white text-slate-600 hover:bg-slate-50",
-                  )}
-                  aria-pressed={active}
-                >
-                  {mins} min
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] text-slate-500 mt-1.5">
-            Seeds the duration field when you start a new agenda.
-          </p>
-        </div>
-
-        <div>
-          <label className="label">Default action due-date offset</label>
-          <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min={0}
-              max={365}
-              className="input w-24"
-              value={prefs.default_action_due_offset_days}
-              onChange={(e) => {
-                const n = Number(e.target.value);
+      <SettingsCard title="Defaults">
+        <div className="space-y-[18px]">
+          <div>
+            <label className="label">Default portfolio</label>
+            <select
+              className="select"
+              value={prefs.default_project_id ?? ""}
+              onChange={(e) =>
                 update(
-                  "default_action_due_offset_days",
-                  Number.isFinite(n) && n >= 0 ? n : 0,
-                );
-              }}
-            />
-            <span className="text-sm text-slate-600">
-              days after meeting date
-            </span>
+                  "default_project_id",
+                  e.target.value ? Number(e.target.value) : null,
+                )
+              }
+              disabled={portfoliosLoading || portfolioCount === 0}
+            >
+              <option value="">— No default —</option>
+              {portfolios.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.clientName} · {p.name}
+                </option>
+              ))}
+            </select>
+            <FieldHint>
+              {portfoliosLoading
+                ? "Loading portfolios…"
+                : portfolioCount === 0
+                  ? "No portfolios available yet."
+                  : selectedPortfolio
+                    ? `Selected: ${selectedPortfolio.clientName} · ${selectedPortfolio.name}.`
+                    : "Pick the portfolio you spend the most time in."}
+            </FieldHint>
           </div>
-          <p className="text-[11px] text-slate-500 mt-1.5">
-            When the AI parser doesn't extract a due date, this is how far out
-            we default it.
-          </p>
+
+          <div>
+            <label className="label">Default meeting duration</label>
+            <div className="inline-flex rounded-lg border border-surface-border overflow-hidden">
+              {[30, 60].map((mins) => {
+                const active = prefs.default_meeting_duration === mins;
+                return (
+                  <button
+                    key={mins}
+                    type="button"
+                    onClick={() => update("default_meeting_duration", mins)}
+                    className={clsx(
+                      "px-[18px] py-1.5 text-sm font-semibold transition",
+                      active
+                        ? "bg-brand-red text-white"
+                        : "bg-white text-brand-gray hover:bg-surface-page",
+                    )}
+                    aria-pressed={active}
+                  >
+                    {mins} min
+                  </button>
+                );
+              })}
+            </div>
+            <FieldHint>
+              Seeds the duration field when you start a new agenda.
+            </FieldHint>
+          </div>
+
+          <div>
+            <label className="label">Default action due-date offset</label>
+            <div className="flex items-center gap-2.5">
+              <input
+                type="number"
+                min={0}
+                max={365}
+                className="input w-[88px]"
+                value={prefs.default_action_due_offset_days}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  update(
+                    "default_action_due_offset_days",
+                    Number.isFinite(n) && n >= 0 ? n : 0,
+                  );
+                }}
+              />
+              <span className="text-[13.5px] text-brand-gray">
+                days after the meeting date
+              </span>
+            </div>
+            <FieldHint>
+              When the AI parser doesn't extract a due date, this is how far out
+              we default it.
+            </FieldHint>
+          </div>
         </div>
-      </section>
+      </SettingsCard>
 
       {/* ---------- Card 2: Email signature ---------- */}
-      <section className="card p-6 space-y-3">
-        <h3 className="section-title">Email signature</h3>
+      <SettingsCard
+        title="Email signature"
+        hint="appended to every email sent via Graph"
+      >
         <textarea
           className="textarea font-sans"
-          rows={5}
+          rows={4}
           value={prefs.email_signature ?? ""}
           onChange={(e) => update("email_signature", e.target.value)}
           placeholder={
             "Arun Castillo\nElectrical Engineering\nCastillo Engineering"
           }
         />
-        <p className="text-xs text-slate-500">
-          Appended to the body of every email you send via Graph.
-        </p>
-      </section>
+      </SettingsCard>
 
       {/* ---------- Card 3: Automation ---------- */}
-      <section className="card p-6 space-y-3">
-        <h3 className="section-title">Automation</h3>
+      <SettingsCard title="Automation">
         <label className="flex items-start gap-3 cursor-pointer">
           <input
             type="checkbox"
-            className="mt-1"
+            className="mt-1 h-[15px] w-[15px] accent-brand-red"
             checked={!!prefs.auto_send_minutes_on_finalize}
             onChange={(e) =>
               update("auto_send_minutes_on_finalize", e.target.checked)
             }
           />
           <span>
-            <span className="text-sm font-medium text-brand-black">
+            <span className="text-sm font-semibold text-brand-black">
               Auto-send minutes when I finalize a meeting
             </span>
-            <span className="block text-[11px] text-slate-500 mt-0.5">
+            <span className="block max-w-[560px] text-xs leading-relaxed text-brand-gray mt-0.5">
               Right after you finalize, PMO 360 emails the minutes PDF to the
               meeting's attendees (those with an email on file) using your
               Outlook account. The email still goes through your delegated
@@ -307,11 +305,11 @@ export default function Settings() {
             </span>
           </span>
         </label>
-      </section>
+      </SettingsCard>
 
       {/* ---------- Save button ---------- */}
-      <div className="flex items-center justify-between pt-3 border-t border-slate-200">
-        <p className="text-xs text-slate-500">
+      <div className="flex items-center justify-between gap-3 pt-3.5 border-t border-surface-border">
+        <p className="text-xs text-brand-lightgray">
           Changes save automatically. Use the button to save right now.
         </p>
         <button
@@ -325,4 +323,33 @@ export default function Settings() {
       </div>
     </div>
   );
+}
+
+/**
+ * A settings section: title strip over a hairline, controls below. `hint`
+ * rides on the title baseline for the one-line "what this does" note.
+ */
+function SettingsCard({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="card overflow-hidden">
+      <div className="flex items-baseline gap-2 border-b border-surface-hairline px-5 py-3.5">
+        <h2 className="section-title">{title}</h2>
+        {hint && <span className="text-xs text-brand-gray">{hint}</span>}
+      </div>
+      <div className="px-5 py-[18px]">{children}</div>
+    </section>
+  );
+}
+
+/** Explanatory line under a control — the lightest text on the page. */
+function FieldHint({ children }: { children: React.ReactNode }) {
+  return <p className="mt-1.5 text-xs text-brand-lightgray">{children}</p>;
 }

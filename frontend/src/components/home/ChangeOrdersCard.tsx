@@ -1,48 +1,30 @@
 /**
- * ChangeOrdersCard — "📝 Change orders across portfolios" rollup on Home.
+ * ChangeOrdersCard — the change-orders mini panel on Home.
  *
- * Pulls every portfolio's change orders in one call (listChangeOrders with no
- * project_id → aggregate) and summarizes the two states that matter at a
- * glance: Pending approval (awaiting sign-off) and Approved (signed, billable),
- * each as a count + dollar total, followed by the most recent few with their
- * client / portfolio. The motivation mirrors RisksCard: leadership wants a
- * single cross-portfolio view of money in flight without opening each portfolio.
+ * Summarises the two states that matter at a glance — Pending approval
+ * (awaiting sign-off) and Approved (signed, billable) — each as a dollar total
+ * + count, followed by the most recent few. Leadership wants a single
+ * cross-portfolio view of money in flight without opening each portfolio.
  *
- * Hidden entirely when:
- *   - the user isn't signed in
- *   - there are no submitted change orders (pending + approved == 0). Drafts
- *     alone don't warrant space — they're per-portfolio WIP.
+ * The change orders are fetched once by Home (see useHomeData) and shared with
+ * the KPI tile and the activity feed.
+ *
+ * Hidden entirely when there are no submitted change orders (pending +
+ * approved == 0). Drafts alone don't warrant space — they're per-portfolio WIP.
  */
-import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { useAuth } from "@/auth/useAuth";
-import { listChangeOrders } from "@/lib/api";
 import type { ChangeOrder } from "@/lib/types";
+import { money } from "./useHomeData";
 
-const money = (n: number | null | undefined) =>
-  `$${Math.round(Number(n) || 0).toLocaleString("en-US")}`;
-
-export default function ChangeOrdersCard() {
-  const { isAuthenticated } = useAuth();
+export default function ChangeOrdersCard({
+  cos,
+  loading,
+}: {
+  cos: ChangeOrder[];
+  loading: boolean;
+}) {
   const nav = useNavigate();
-
-  const [cos, setCos] = useState<ChangeOrder[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!isAuthenticated) {
-      setCos([]);
-      return;
-    }
-    setLoading(true);
-    listChangeOrders()
-      .then(setCos)
-      .catch(() => setCos([]))
-      .finally(() => setLoading(false));
-  }, [isAuthenticated]);
-
-  if (!isAuthenticated) return null;
 
   const pending = cos.filter((c) => c.status === "pending");
   const approved = cos.filter((c) => c.status === "approved");
@@ -56,78 +38,53 @@ export default function ChangeOrdersCard() {
   const recent = [...pending, ...approved].slice(0, 5);
 
   return (
-    <section className="card p-5 border-l-4 border-l-brand-gold">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div>
-          <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
-            📝 Change orders
-          </div>
-          <div className="text-base font-semibold text-brand-black mt-1">
-            Across all portfolios
-          </div>
-        </div>
+    <section className="card px-5 py-4">
+      <div className="flex items-baseline gap-2">
+        <h2 className="section-title">Change orders</h2>
         <button
           type="button"
           onClick={() => nav("/change-orders")}
-          className="text-xs font-semibold text-brand-red hover:underline shrink-0"
+          className="ml-auto text-xs font-semibold text-brand-red hover:underline shrink-0"
         >
           Open all →
         </button>
       </div>
 
       {loading && cos.length === 0 ? (
-        <div className="text-sm text-brand-gray italic">Loading…</div>
+        <div className="mt-3 text-sm text-brand-gray italic">Loading…</div>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4 mb-3">
+          <div className="grid grid-cols-2 gap-2.5 mt-3">
             <Stat
-              label="Pending approval"
+              label="Pending"
               count={pending.length}
               amount={sum(pending)}
-              tone="#7a7320"
+              tone="text-brand-deepgold"
             />
             <Stat
               label="Approved"
               count={approved.length}
               amount={sum(approved)}
-              tone="#278747"
+              tone="text-brand-green"
             />
           </div>
 
-          <div className="space-y-2">
+          <div className="mt-2.5 border-t border-surface-hairline pt-1">
             {recent.map((co) => (
               <button
                 key={co.id}
                 type="button"
                 onClick={() => nav("/change-orders")}
-                className="w-full text-left card px-4 py-2 hover:border-brand-red transition flex items-center justify-between gap-3"
+                className="flex w-full items-center justify-between gap-2.5 py-1.5 text-[13px] text-left -mx-2 px-2 rounded hover:bg-surface-rowhover transition"
               >
-                <div className="min-w-0">
-                  <div className="text-sm text-brand-black truncate">
-                    CO-{co.co_number}
-                    {co.title ? ` · ${co.title}` : ""}
-                  </div>
-                  <div className="text-xs text-brand-gray truncate">
-                    {co.client_name && (
-                      <>
-                        {co.client_name}
-                        <span className="px-1">/</span>
-                      </>
-                    )}
-                    <span className="font-medium">{co.project_name || "—"}</span>
-                  </div>
-                </div>
-                <div className="text-right shrink-0">
-                  <div className="text-sm font-semibold text-brand-black tabular-nums">
-                    {money(co.total_amount)}
-                  </div>
-                  <div
-                    className="text-[10px] uppercase tracking-wide font-semibold"
-                    style={{ color: co.status === "approved" ? "#278747" : "#7a7320" }}
-                  >
-                    {co.status === "approved" ? "Approved" : "Pending"}
-                  </div>
-                </div>
+                <span className="truncate text-brand-black">
+                  CO-{co.co_number}
+                  {co.project_name ? ` · ${co.project_name}` : ""}
+                  {co.title ? ` · ${co.title}` : ""}
+                </span>
+                <b className="shrink-0 tabular-nums text-brand-black">
+                  {money(co.total_amount)}
+                </b>
               </button>
             ))}
           </div>
@@ -149,15 +106,15 @@ function Stat({
   tone: string;
 }) {
   return (
-    <div className="rounded-lg border border-brand-lightgray/60 px-4 py-3">
-      <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
+    <div className="rounded-lg border border-surface-border px-3 py-2.5">
+      <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-brand-gray">
         {label}
       </div>
-      <div className="text-2xl font-bold text-brand-black mt-1 tabular-nums">
+      <div className="text-xl font-bold text-brand-black tabular-nums">
         {money(amount)}
       </div>
-      <div className="text-xs mt-0.5" style={{ color: tone }}>
-        {count} change order{count === 1 ? "" : "s"}
+      <div className={`text-[11px] ${tone}`}>
+        {count} CO{count === 1 ? "" : "s"}
       </div>
     </div>
   );

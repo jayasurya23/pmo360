@@ -75,6 +75,9 @@ const money = (n: number | null | undefined) =>
     maximumFractionDigits: 2,
   })}`;
 
+// The page-header rollups read as headline figures — whole dollars, no cents.
+const moneyRound = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+
 const num = (s: string): number | null => {
   const v = parseFloat(s);
   return Number.isFinite(v) ? v : null;
@@ -195,6 +198,22 @@ export default function ChangeOrders() {
       return sum + (num(l.cost) || 0);
     }, 0);
   }, [lines, rateType]);
+
+  // Header rollups and the right-rail "In flight" list are derived from the
+  // per-tab lists `load()` already fetched — no extra request.
+  const pendingTotal = useMemo(
+    () => pending.reduce((s, c) => s + (Number(c.total_amount) || 0), 0),
+    [pending],
+  );
+  const approvedTotal = useMemo(
+    () => approved.reduce((s, c) => s + (Number(c.total_amount) || 0), 0),
+    [approved],
+  );
+  // Needs-attention first (awaiting a decision, then yours to finish), settled last.
+  const inFlight = useMemo(
+    () => [...pending, ...sentBack, ...drafts, ...approved],
+    [pending, sentBack, drafts, approved],
+  );
 
   function resetForm() {
     setEditingId(null);
@@ -423,33 +442,65 @@ export default function ChangeOrders() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <PageHeader
-        title="Change Orders"
+        kicker={
+          inAll
+            ? `${clientName ? clientName + " / " : "All clients / "}all portfolios`
+            : `${clientName ? clientName + " / " : ""}${currentProject!.name}`
+        }
+        title="Change orders"
         subtitle={
           inAll
-            ? `${clientName ? clientName + " · " : "All clients · "}every portfolio — viewing all change orders`
-            : `${clientName ? clientName + " · " : ""}${currentProject!.name}`
+            ? "Viewing every change order across portfolios."
+            : undefined
+        }
+        actions={
+          <div className="flex items-end gap-5">
+            <HeaderTotal
+              label="Pending"
+              value={moneyRound(pendingTotal)}
+              tone="text-brand-deepgold"
+            />
+            <div className="h-[34px] w-px bg-surface-border" />
+            <HeaderTotal
+              label="Approved"
+              value={moneyRound(approvedTotal)}
+              tone="text-brand-green"
+            />
+          </div>
         }
       />
 
-      <div className="flex border-b border-brand-lightgray gap-6">
+      <div className="flex flex-wrap items-center gap-5 border-b border-surface-border">
         <TabBtn active={tab === "create"} onClick={() => setTab("create")}>
           Create
         </TabBtn>
-        <TabBtn active={tab === "pending"} onClick={() => setTab("pending")}>
-          Pending Approval ({pending.length})
+        <TabBtn
+          active={tab === "pending"}
+          onClick={() => setTab("pending")}
+          count={pending.length}
+        >
+          Pending approval
         </TabBtn>
-        <TabBtn active={tab === "sent_back"} onClick={() => setTab("sent_back")}>
-          Sent back ({sentBack.length})
+        <TabBtn
+          active={tab === "sent_back"}
+          onClick={() => setTab("sent_back")}
+          count={sentBack.length}
+        >
+          Sent back
         </TabBtn>
-        <TabBtn active={tab === "approved"} onClick={() => setTab("approved")}>
-          Approved ({approved.length})
+        <TabBtn
+          active={tab === "approved"}
+          onClick={() => setTab("approved")}
+          count={approved.length}
+        >
+          Approved
         </TabBtn>
       </div>
 
       {err && (
-        <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+        <div className="rounded-lg border border-status-open-border bg-status-open-bg px-3 py-2 text-sm text-status-open-text">
           {err}
         </div>
       )}
@@ -458,11 +509,11 @@ export default function ChangeOrders() {
       {tab === "create" && inAll && (
         <EmptyState
           title="Select a portfolio to create a change order"
-          hint="Pick a client and portfolio in the context switcher above. The Pending Approval and Approved tabs show every change order across all portfolios."
+          hint="Pick a client and portfolio in the context switcher above. The Pending approval and Approved tabs show every change order across all portfolios."
         />
       )}
       {tab === "create" && !inAll && (
-        <div className="space-y-5">
+        <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[1.5fr_1fr]">
           {!editingId && !rateChosen ? (
             <RateChooser
               onPick={(rt) => {
@@ -471,378 +522,321 @@ export default function ChangeOrders() {
               }}
             />
           ) : (
-            <section className="card p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="section-title">
-                {editingId ? "Edit change order" : "New change order"}
-              </h3>
-              {editingId && (
-                <button className="btn-ghost text-sm" onClick={resetForm}>
-                  + Start a new one
-                </button>
-              )}
-            </div>
-
-            {/* header fields */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <label className="block">
-                <span className="label">Client</span>
-                <input className="input bg-slate-50" value={clientName} disabled />
-              </label>
-              <label className="block">
-                <span className="label">Project</span>
-                <input
-                  className="input"
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  placeholder={currentProject.name}
-                  title="Pre-filled from the portfolio; edit to set a custom project label on this change order and its PDF."
-                />
-              </label>
-              <label className="block">
-                <span className="label">Request date</span>
-                <input
-                  type="date"
-                  className="input"
-                  value={requestDate}
-                  onChange={(e) => setRequestDate(e.target.value)}
-                />
-              </label>
-              <label className="block">
-                <span className="label">Version</span>
-                <input
-                  className="input"
-                  value={coVersion}
-                  onChange={(e) => setCoVersion(e.target.value)}
-                  placeholder="V1"
-                />
-              </label>
-              <label className="block">
-                <span className="label">Location</span>
-                <input
-                  className="input"
-                  value={location}
-                  onChange={(e) => setLocation(e.target.value)}
-                  placeholder="City / site"
-                />
-              </label>
-              <label className="block">
-                <span className="label">State</span>
-                <input
-                  className="input"
-                  value={stateCode}
-                  onChange={(e) => setStateCode(e.target.value)}
-                  placeholder="e.g. TN"
-                />
-              </label>
-              <label className="block">
-                <span className="label">Size (MW)</span>
-                <input
-                  className="input"
-                  value={sizeMw}
-                  onChange={(e) => setSizeMw(e.target.value)}
-                  placeholder="e.g. 8"
-                />
-              </label>
-              <label className="block">
-                <span className="label">Requested by</span>
-                <OwnerPicker
-                  value={requestedBy}
-                  ownerUserId={requestedByUserId}
-                  placeholder="Pick or type a name…"
-                  onChange={({ owner, owner_user_id }) => {
-                    setRequestedBy(owner);
-                    setRequestedByUserId(owner_user_id);
-                  }}
-                />
-              </label>
-              <label className="block">
-                <span className="label">
-                  Prepared by — Name (Castillo team)
-                </span>
-                <OwnerPicker
-                  value={signatoryName}
-                  ownerUserId={signatoryUserId}
-                  placeholder="Pick a Castillo team member…"
-                  onChange={({ owner, owner_user_id, email }) => {
-                    setSignatoryName(owner);
-                    setSignatoryUserId(owner_user_id);
-                    if (email) setSignatoryEmail(email); // auto-fill from the pick
-                  }}
-                />
-              </label>
-              <label className="block">
-                <span className="label">Prepared by — Title (optional)</span>
-                <input
-                  className="input"
-                  value={signatoryTitle}
-                  onChange={(e) => setSignatoryTitle(e.target.value)}
-                  placeholder="e.g. Project Manager"
-                />
-              </label>
-              <label className="block">
-                <span className="label">Prepared by — Phone (optional)</span>
-                <input
-                  className="input"
-                  value={signatoryPhone}
-                  onChange={(e) => setSignatoryPhone(e.target.value)}
-                  placeholder='Shown under "Prepared by" on the PDF'
-                />
-              </label>
-              <label className="block">
-                <span className="label">Prepared by — Email (optional)</span>
-                <input
-                  className="input"
-                  value={signatoryEmail}
-                  onChange={(e) => setSignatoryEmail(e.target.value)}
-                  placeholder="Auto-fills when you pick a team member"
-                />
-              </label>
-              <label className="block">
-                <span className="label">Client — Print Name (optional)</span>
-                <input
-                  className="input"
-                  value={clientSignatoryName}
-                  onChange={(e) => setClientSignatoryName(e.target.value)}
-                  placeholder="Client signer's name"
-                />
-              </label>
-              <label className="block">
-                <span className="label">Client — title (optional)</span>
-                <input
-                  className="input"
-                  value={clientSignatoryTitle}
-                  onChange={(e) => setClientSignatoryTitle(e.target.value)}
-                  placeholder="Client signer's title"
-                />
-              </label>
-              <label className="block">
-                <span className="label">Title (optional)</span>
-                <input
-                  className="input"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Short description"
-                />
-              </label>
-            </div>
-
-            {/* rate type toggle */}
-            <div className="flex items-center gap-3">
-              <span className="label !mb-0">Rate type</span>
-              <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-sm">
-                {(["fixed", "hourly"] as RateType[]).map((rt) => (
+            <section className="card overflow-hidden">
+              <div className="flex items-center gap-3 border-b border-surface-hairline px-5 py-3.5">
+                <h3 className="section-title">
+                  {editingId ? "Edit change order" : "New change order"}
+                </h3>
+                {editingId && (
                   <button
-                    key={rt}
-                    type="button"
-                    onClick={() => {
-                      setRateType(rt);
-                      // drop the now-irrelevant per-line values so a flipped line
-                      // doesn't carry stale cost / rate+hours into the payload.
-                      setLines((ls) =>
-                        ls.map((l) =>
-                          rt === "fixed"
-                            ? { ...l, allocations: [blankAlloc()] }
-                            : { ...l, cost: "" },
-                        ),
-                      );
-                    }}
-                    className={
-                      rateType === rt
-                        ? "px-3 py-1.5 bg-brand-red text-white font-semibold"
-                        : "px-3 py-1.5 text-brand-gray hover:bg-brand-nearwhite/60"
-                    }
+                    className="text-xs font-semibold text-brand-red transition hover:text-brand-darkred"
+                    onClick={resetForm}
                   >
-                    {rt === "fixed" ? "Fixed $$" : "Hourly"}
+                    + Start a new one
                   </button>
-                ))}
+                )}
+                <div className="ml-auto inline-flex overflow-hidden rounded-lg border border-surface-border text-[13px]">
+                  {(["fixed", "hourly"] as RateType[]).map((rt) => (
+                    <button
+                      key={rt}
+                      type="button"
+                      onClick={() => {
+                        setRateType(rt);
+                        // drop the now-irrelevant per-line values so a flipped line
+                        // doesn't carry stale cost / rate+hours into the payload.
+                        setLines((ls) =>
+                          ls.map((l) =>
+                            rt === "fixed"
+                              ? { ...l, allocations: [blankAlloc()] }
+                              : { ...l, cost: "" },
+                          ),
+                        );
+                      }}
+                      className={
+                        rateType === rt
+                          ? "bg-brand-red px-3.5 py-1.5 font-semibold text-white"
+                          : "px-3.5 py-1.5 text-brand-gray transition hover:bg-surface-page"
+                      }
+                    >
+                      {rt === "fixed" ? "Fixed $" : "Hourly"}
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
 
-            {/* line items */}
-            <div className="space-y-2">
-              <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
-                Change order details
-              </div>
-              {lines.map((l, idx) => {
-                const set = (patch: Partial<LineRow>) =>
-                  setLines(lines.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
-                const setAlloc = (ai: number, patch: Partial<AllocRow>) =>
-                  set({
-                    allocations: l.allocations.map((a, j) =>
-                      j === ai ? { ...a, ...patch } : a,
-                    ),
-                  });
-                const lineTotal =
-                  rateType === "hourly"
-                    ? allocLineTotal(l.allocations)
-                    : num(l.cost) || 0;
-                return (
-                  <div
-                    key={l.id}
-                    className="rounded-lg border border-slate-200 p-3 space-y-2"
-                  >
-                    <div className="flex items-start gap-2">
-                      <span className="text-xs text-brand-gray pt-2 w-5 shrink-0">
-                        {idx + 1}
-                      </span>
-                      <textarea
-                        className="textarea flex-1 text-sm"
-                        rows={1}
-                        placeholder="Describe the change…"
-                        value={l.details}
-                        onChange={(e) => set({ details: e.target.value })}
-                      />
-                      {rateType === "fixed" ? (
-                        <div className="relative w-32">
-                          <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-sm text-brand-gray">
-                            $
-                          </span>
-                          <input
-                            className="input w-full pl-5 text-right"
-                            inputMode="decimal"
-                            placeholder="Cost"
-                            value={l.cost}
-                            onChange={(e) => set({ cost: e.target.value })}
-                          />
-                        </div>
-                      ) : (
-                        <span className="w-24 text-right text-sm font-semibold text-brand-black pt-2 tabular-nums">
-                          {money(lineTotal)}
-                        </span>
-                      )}
-                      <button
-                        className="btn-danger"
-                        title="Remove line"
-                        onClick={() =>
-                          setLines(
-                            lines.length > 1
-                              ? lines.filter((_, i) => i !== idx)
-                              : [blankLine()],
-                          )
-                        }
-                      >
-                        ×
-                      </button>
-                    </div>
+              <div className="flex flex-col gap-3.5 px-5 py-4">
+                {/* header fields — two dense rows, then the free-text title */}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_0.7fr_0.7fr]">
+                  <Field label="Client">
+                    <input
+                      className="input bg-surface-page text-brand-gray"
+                      value={clientName}
+                      disabled
+                    />
+                  </Field>
+                  <Field label="Project">
+                    <input
+                      className="input"
+                      value={projectName}
+                      onChange={(e) => setProjectName(e.target.value)}
+                      placeholder={currentProject.name}
+                      title="Pre-filled from the portfolio; edit to set a custom project label on this change order and its PDF."
+                    />
+                  </Field>
+                  <Field label="Request date">
+                    <input
+                      type="date"
+                      className="input"
+                      value={requestDate}
+                      onChange={(e) => setRequestDate(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Version">
+                    <input
+                      className="input"
+                      value={coVersion}
+                      onChange={(e) => setCoVersion(e.target.value)}
+                      placeholder="V1"
+                    />
+                  </Field>
+                </div>
 
-                    {/* hourly: one task may span several people at different rates */}
-                    {rateType === "hourly" && (
-                      <div className="pl-7 space-y-1.5">
-                        <div className="text-[11px] uppercase tracking-wider text-brand-gray font-semibold">
-                          People &amp; hours
-                        </div>
-                        {l.allocations.map((a, ai) => {
-                          const sub = (num(a.rate) || 0) * (num(a.hours) || 0);
-                          return (
-                            <div key={ai} className="flex items-center gap-2">
-                              <select
-                                className="input w-40 text-sm"
-                                value={a.role}
-                                title="Pick a rate-card role to pre-fill the rate"
-                                onChange={(e) => {
-                                  const role = e.target.value;
-                                  const card = RATE_CARD.find(
-                                    (r) => r.role === role,
-                                  );
-                                  setAlloc(
-                                    ai,
-                                    card
-                                      ? { role, rate: String(card.rate) }
-                                      : { role },
-                                  );
-                                }}
-                              >
-                                <option value="">Role…</option>
-                                {RATE_CARD.map((r) => (
-                                  <option key={r.role} value={r.role}>
-                                    {r.role} (${r.rate})
-                                  </option>
-                                ))}
-                              </select>
-                              <div className="relative w-20">
-                                <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-xs text-brand-gray">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_0.5fr_0.5fr_1fr]">
+                  <Field label="Location">
+                    <input
+                      className="input"
+                      value={location}
+                      onChange={(e) => setLocation(e.target.value)}
+                      placeholder="City / site"
+                    />
+                  </Field>
+                  <Field label="State">
+                    <input
+                      className="input"
+                      value={stateCode}
+                      onChange={(e) => setStateCode(e.target.value)}
+                      placeholder="e.g. TN"
+                    />
+                  </Field>
+                  <Field label="Size (MW)">
+                    <input
+                      className="input"
+                      value={sizeMw}
+                      onChange={(e) => setSizeMw(e.target.value)}
+                      placeholder="e.g. 8"
+                    />
+                  </Field>
+                  <Field label="Requested by">
+                    <OwnerPicker
+                      value={requestedBy}
+                      ownerUserId={requestedByUserId}
+                      placeholder="Pick or type a name…"
+                      onChange={({ owner, owner_user_id }) => {
+                        setRequestedBy(owner);
+                        setRequestedByUserId(owner_user_id);
+                      }}
+                    />
+                  </Field>
+                </div>
+
+                <Field label="Title (optional)">
+                  <input
+                    className="input"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="Short description"
+                  />
+                </Field>
+
+                {/* line items */}
+                <div className="border-t border-surface-hairline pt-3">
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-[0.08em] text-brand-gray">
+                      Change order details
+                    </span>
+                    <button
+                      className="ml-auto text-xs font-semibold text-brand-red transition hover:text-brand-darkred"
+                      onClick={() => setLines([...lines, blankLine()])}
+                    >
+                      + Add line
+                    </button>
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {lines.map((l, idx) => {
+                      const set = (patch: Partial<LineRow>) =>
+                        setLines(lines.map((x, i) => (i === idx ? { ...x, ...patch } : x)));
+                      const setAlloc = (ai: number, patch: Partial<AllocRow>) =>
+                        set({
+                          allocations: l.allocations.map((a, j) =>
+                            j === ai ? { ...a, ...patch } : a,
+                          ),
+                        });
+                      const lineTotal =
+                        rateType === "hourly"
+                          ? allocLineTotal(l.allocations)
+                          : num(l.cost) || 0;
+                      return (
+                        <div
+                          key={l.id}
+                          className="space-y-2 rounded-lg border border-surface-hairline px-3 py-2.5"
+                        >
+                          <div className="flex items-start gap-2.5">
+                            <span className="w-4 shrink-0 pt-[9px] text-xs text-brand-lightgray">
+                              {idx + 1}
+                            </span>
+                            <textarea
+                              className="textarea flex-1 text-[13.5px]"
+                              rows={1}
+                              placeholder="Describe the change…"
+                              value={l.details}
+                              onChange={(e) => set({ details: e.target.value })}
+                            />
+                            {rateType === "fixed" ? (
+                              <div className="relative w-[110px] shrink-0">
+                                <span className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-brand-lightgray">
                                   $
                                 </span>
                                 <input
-                                  className="input w-full pl-4 text-right"
+                                  className="input w-full pl-5 text-right tabular-nums"
                                   inputMode="decimal"
-                                  placeholder="Rate"
-                                  value={a.rate}
-                                  onChange={(e) =>
-                                    setAlloc(ai, { rate: e.target.value })
-                                  }
+                                  placeholder="Cost"
+                                  value={l.cost}
+                                  onChange={(e) => set({ cost: e.target.value })}
                                 />
                               </div>
-                              <span className="text-xs text-brand-gray">×</span>
-                              <input
-                                className="input w-16 text-right"
-                                inputMode="decimal"
-                                placeholder="Hrs"
-                                value={a.hours}
-                                onChange={(e) =>
-                                  setAlloc(ai, { hours: e.target.value })
-                                }
-                              />
-                              <span className="w-24 text-right text-xs tabular-nums text-brand-black">
-                                {money(sub)}
+                            ) : (
+                              <span className="w-[110px] shrink-0 pt-2 text-right text-sm font-semibold tabular-nums text-brand-black">
+                                {money(lineTotal)}
                               </span>
+                            )}
+                            <button
+                              className="shrink-0 pt-1.5 text-[15px] leading-none text-brand-lightgray transition hover:text-brand-red"
+                              title="Remove line"
+                              onClick={() =>
+                                setLines(
+                                  lines.length > 1
+                                    ? lines.filter((_, i) => i !== idx)
+                                    : [blankLine()],
+                                )
+                              }
+                            >
+                              ✕
+                            </button>
+                          </div>
+
+                          {/* hourly: one task may span several people at different rates */}
+                          {rateType === "hourly" && (
+                            <div className="space-y-1.5 pl-[26px]">
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.1em] text-brand-lightgray">
+                                People &amp; hours
+                              </div>
+                              {l.allocations.map((a, ai) => {
+                                const sub = (num(a.rate) || 0) * (num(a.hours) || 0);
+                                return (
+                                  <div key={ai} className="flex items-center gap-2">
+                                    <select
+                                      className="select w-40 text-[13px]"
+                                      value={a.role}
+                                      title="Pick a rate-card role to pre-fill the rate"
+                                      onChange={(e) => {
+                                        const role = e.target.value;
+                                        const card = RATE_CARD.find(
+                                          (r) => r.role === role,
+                                        );
+                                        setAlloc(
+                                          ai,
+                                          card
+                                            ? { role, rate: String(card.rate) }
+                                            : { role },
+                                        );
+                                      }}
+                                    >
+                                      <option value="">Role…</option>
+                                      {RATE_CARD.map((r) => (
+                                        <option key={r.role} value={r.role}>
+                                          {r.role} (${r.rate})
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <div className="relative w-20">
+                                      <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-xs text-brand-lightgray">
+                                        $
+                                      </span>
+                                      <input
+                                        className="input w-full pl-4 text-right tabular-nums"
+                                        inputMode="decimal"
+                                        placeholder="Rate"
+                                        value={a.rate}
+                                        onChange={(e) =>
+                                          setAlloc(ai, { rate: e.target.value })
+                                        }
+                                      />
+                                    </div>
+                                    <span className="text-xs text-brand-lightgray">×</span>
+                                    <input
+                                      className="input w-16 text-right tabular-nums"
+                                      inputMode="decimal"
+                                      placeholder="Hrs"
+                                      value={a.hours}
+                                      onChange={(e) =>
+                                        setAlloc(ai, { hours: e.target.value })
+                                      }
+                                    />
+                                    <span className="w-24 text-right text-xs font-semibold tabular-nums text-brand-black">
+                                      {money(sub)}
+                                    </span>
+                                    <button
+                                      className="shrink-0 text-sm leading-none text-brand-lightgray transition hover:text-brand-red"
+                                      title="Remove person"
+                                      onClick={() =>
+                                        set({
+                                          allocations:
+                                            l.allocations.length > 1
+                                              ? l.allocations.filter(
+                                                  (_, j) => j !== ai,
+                                                )
+                                              : [blankAlloc()],
+                                        })
+                                      }
+                                    >
+                                      ✕
+                                    </button>
+                                  </div>
+                                );
+                              })}
                               <button
-                                className="btn-danger"
-                                title="Remove person"
+                                className="text-xs font-semibold text-brand-red transition hover:text-brand-darkred"
                                 onClick={() =>
                                   set({
-                                    allocations:
-                                      l.allocations.length > 1
-                                        ? l.allocations.filter(
-                                            (_, j) => j !== ai,
-                                          )
-                                        : [blankAlloc()],
+                                    allocations: [...l.allocations, blankAlloc()],
                                   })
                                 }
                               >
-                                ×
+                                + Add person
                               </button>
                             </div>
-                          );
-                        })}
-                        <button
-                          className="btn-ghost text-xs"
-                          onClick={() =>
-                            set({
-                              allocations: [...l.allocations, blankAlloc()],
-                            })
-                          }
-                        >
-                          + Add person
-                        </button>
-                      </div>
-                    )}
+                          )}
 
-                    <input
-                      className="input text-xs"
-                      placeholder="Internal note (not shown on the client PDF)"
-                      value={l.internal_notes}
-                      onChange={(e) => set({ internal_notes: e.target.value })}
-                    />
+                          <input
+                            className="input border-dashed py-1.5 text-xs text-brand-gray"
+                            placeholder="Internal note (never on the client PDF)"
+                            value={l.internal_notes}
+                            onChange={(e) => set({ internal_notes: e.target.value })}
+                          />
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
-              <button
-                className="btn-ghost text-sm"
-                onClick={() => setLines([...lines, blankLine()])}
-              >
-                + Add line
-              </button>
-            </div>
-
-            {/* total + actions */}
-            <div className="flex items-center justify-between border-t border-brand-lightgray/60 pt-3">
-              <div className="text-sm text-brand-gray">
-                Total Proposal{" "}
-                <b className="text-brand-black text-base">{money(total)}</b>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
+
+              {/* total + actions */}
+              <div className="flex flex-wrap items-center gap-2.5 border-t border-surface-hairline bg-surface-rowhover px-5 py-3">
+                <span className="text-[13px] text-brand-gray">Total proposal</span>
+                <span className="text-[19px] font-bold tabular-nums text-brand-black">
+                  {money(total)}
+                </span>
+                <div className="flex-1" />
                 <button
                   className="btn-ghost"
                   disabled={saving}
@@ -858,42 +852,137 @@ export default function ChangeOrders() {
                   Submit for approval →
                 </button>
               </div>
-            </div>
-          </section>
-          )}
-
-          {/* saved drafts */}
-          {drafts.length > 0 && (
-            <section className="space-y-2">
-              <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
-                Saved drafts ({drafts.length})
-              </div>
-              <div className="card divide-y divide-brand-lightgray/60">
-                {drafts.map((co) => (
-                  <CoRow
-                    key={co.id}
-                    co={co}
-                    onEdit={() => loadForEdit(co)}
-                    onDelete={() => doDelete(co)}
-                  />
-                ))}
-              </div>
             </section>
           )}
+
+          {/* ---- right rail: who signs it, and what's already moving ---- */}
+          <div className="space-y-5">
+            {(editingId || rateChosen) && (
+              <section className="card overflow-hidden">
+                <div className="flex items-baseline gap-2 border-b border-surface-hairline px-5 py-3.5">
+                  <h3 className="section-title">Signatories</h3>
+                  <span className="text-xs text-brand-gray">printed on the PDF</span>
+                </div>
+                <div className="grid grid-cols-1 gap-3 px-5 py-3.5 sm:grid-cols-2">
+                  <Field label="Prepared by">
+                    <OwnerPicker
+                      value={signatoryName}
+                      ownerUserId={signatoryUserId}
+                      placeholder="Pick a Castillo team member…"
+                      onChange={({ owner, owner_user_id, email }) => {
+                        setSignatoryName(owner);
+                        setSignatoryUserId(owner_user_id);
+                        if (email) setSignatoryEmail(email); // auto-fill from the pick
+                      }}
+                    />
+                  </Field>
+                  <Field label="Title">
+                    <input
+                      className="input"
+                      value={signatoryTitle}
+                      onChange={(e) => setSignatoryTitle(e.target.value)}
+                      placeholder="e.g. Project Manager"
+                    />
+                  </Field>
+                  <Field label="Email">
+                    <input
+                      className="input"
+                      value={signatoryEmail}
+                      onChange={(e) => setSignatoryEmail(e.target.value)}
+                      placeholder="Auto-fills when you pick a team member"
+                    />
+                  </Field>
+                  <Field label="Phone">
+                    <input
+                      className="input"
+                      value={signatoryPhone}
+                      onChange={(e) => setSignatoryPhone(e.target.value)}
+                      placeholder="(optional)"
+                    />
+                  </Field>
+                  <Field label="Client — print name">
+                    <input
+                      className="input"
+                      value={clientSignatoryName}
+                      onChange={(e) => setClientSignatoryName(e.target.value)}
+                      placeholder="Client signer's name"
+                    />
+                  </Field>
+                  <Field label="Client — title">
+                    <input
+                      className="input"
+                      value={clientSignatoryTitle}
+                      onChange={(e) => setClientSignatoryTitle(e.target.value)}
+                      placeholder="Client signer's title"
+                    />
+                  </Field>
+                </div>
+              </section>
+            )}
+
+            <section className="card overflow-hidden">
+              <div className="flex items-baseline gap-2 border-b border-surface-hairline px-5 py-3.5">
+                <h3 className="section-title">In flight</h3>
+                <span className="text-xs text-brand-gray">this portfolio</span>
+              </div>
+              {inFlight.length === 0 ? (
+                <p className="px-5 py-6 text-sm text-brand-gray">
+                  Nothing yet — the change orders you save here will show up in
+                  this list.
+                </p>
+              ) : (
+                <div className="divide-y divide-surface-hairline">
+                  {inFlight.map((co) => {
+                    // Drafts and sent-back COs load straight back into the form;
+                    // only an unsubmitted draft can be discarded outright.
+                    const editable =
+                      co.status === "draft" || co.status === "sent_back";
+                    return (
+                      <CoRow
+                        key={co.id}
+                        co={co}
+                        onEdit={editable ? () => loadForEdit(co) : undefined}
+                        onDelete={
+                          co.status === "draft" ? () => doDelete(co) : undefined
+                        }
+                        actions={
+                          co.status === "approved" ? (
+                            <button
+                              className="btn-ghost px-2.5 py-1 text-xs"
+                              onClick={() => setEmailFor(co)}
+                            >
+                              📧 Email
+                            </button>
+                          ) : co.status === "pending" ? (
+                            <button
+                              className="btn-ghost px-2.5 py-1 text-xs"
+                              onClick={() => openPdf(co)}
+                            >
+                              👁 PDF
+                            </button>
+                          ) : null
+                        }
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          </div>
         </div>
       )}
 
       {/* ============ PENDING ============ */}
       {tab === "pending" &&
         (loading ? (
-          <div className="card p-5 text-sm">Loading…</div>
+          <div className="card p-5 text-sm text-brand-gray">Loading…</div>
         ) : pending.length === 0 ? (
           <EmptyState
             title="Nothing awaiting approval"
             hint="Submit a change order from the Create tab and it lands here."
           />
         ) : (
-          <div className="card divide-y divide-brand-lightgray/60">
+          <div className="card divide-y divide-surface-hairline overflow-hidden">
             {pending.map((co) => (
               <CoRow
                 key={co.id}
@@ -903,13 +992,22 @@ export default function ChangeOrders() {
                 onDelete={inAll ? undefined : () => doDelete(co)}
                 actions={
                   <>
-                    <button className="btn-ghost" onClick={() => openPdf(co)}>
+                    <button
+                      className="btn-ghost px-3 py-1.5 text-xs"
+                      onClick={() => openPdf(co)}
+                    >
                       👁 Preview PDF
                     </button>
-                    <button className="btn-primary" onClick={() => doApprove(co)}>
+                    <button
+                      className="btn-primary px-3 py-1.5 text-xs"
+                      onClick={() => doApprove(co)}
+                    >
                       Approve
                     </button>
-                    <button className="btn-ghost" onClick={() => doReject(co)}>
+                    <button
+                      className="btn-ghost px-3 py-1.5 text-xs"
+                      onClick={() => doReject(co)}
+                    >
                       Send back
                     </button>
                   </>
@@ -922,14 +1020,14 @@ export default function ChangeOrders() {
       {/* ============ SENT BACK ============ */}
       {tab === "sent_back" &&
         (loading ? (
-          <div className="card p-5 text-sm">Loading…</div>
+          <div className="card p-5 text-sm text-brand-gray">Loading…</div>
         ) : sentBack.length === 0 ? (
           <EmptyState
             title="Nothing sent back"
             hint="When a pending change order is sent back, it lands here to revise and re-submit."
           />
         ) : (
-          <div className="card divide-y divide-brand-lightgray/60">
+          <div className="card divide-y divide-surface-hairline overflow-hidden">
             {sentBack.map((co) => (
               <CoRow
                 key={co.id}
@@ -939,11 +1037,17 @@ export default function ChangeOrders() {
                 onDelete={inAll ? undefined : () => doDelete(co)}
                 actions={
                   <>
-                    <button className="btn-ghost" onClick={() => openPdf(co)}>
+                    <button
+                      className="btn-ghost px-3 py-1.5 text-xs"
+                      onClick={() => openPdf(co)}
+                    >
                       👁 Preview PDF
                     </button>
                     {!inAll && (
-                      <button className="btn-primary" onClick={() => doResubmit(co)}>
+                      <button
+                        className="btn-primary px-3 py-1.5 text-xs"
+                        onClick={() => doResubmit(co)}
+                      >
                         Re-submit
                       </button>
                     )}
@@ -957,14 +1061,14 @@ export default function ChangeOrders() {
       {/* ============ APPROVED ============ */}
       {tab === "approved" &&
         (loading ? (
-          <div className="card p-5 text-sm">Loading…</div>
+          <div className="card p-5 text-sm text-brand-gray">Loading…</div>
         ) : approved.length === 0 ? (
           <EmptyState
             title="No approved change orders yet"
             hint="Approved change orders show here with a downloadable PDF."
           />
         ) : (
-          <div className="card divide-y divide-brand-lightgray/60">
+          <div className="card divide-y divide-surface-hairline overflow-hidden">
             {approved.map((co) => (
               <CoRow
                 key={co.id}
@@ -973,10 +1077,16 @@ export default function ChangeOrders() {
                 onDelete={inAll ? undefined : () => doDelete(co)}
                 actions={
                   <>
-                    <button className="btn-primary" onClick={() => openPdf(co)}>
+                    <button
+                      className="btn-primary px-3 py-1.5 text-xs"
+                      onClick={() => openPdf(co)}
+                    >
                       📄 Final PDF
                     </button>
-                    <button className="btn-ghost" onClick={() => setEmailFor(co)}>
+                    <button
+                      className="btn-ghost px-3 py-1.5 text-xs"
+                      onClick={() => setEmailFor(co)}
+                    >
                       📧 Email to client
                     </button>
                   </>
@@ -989,7 +1099,7 @@ export default function ChangeOrders() {
       {/* PDF preview modal */}
       {pdfFor && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/40 backdrop-blur-sm"
           onMouseDown={(e) => {
             if (e.target === e.currentTarget) closePdf();
           }}
@@ -1001,14 +1111,14 @@ export default function ChangeOrders() {
               </h3>
               <div className="flex items-center gap-2">
                 <button
-                  className="btn-primary text-sm"
+                  className="btn-primary px-3 py-1.5 text-xs"
                   onClick={downloadPdf}
                   disabled={!pdfUrl}
                 >
                   ⬇️ Download
                 </button>
                 <button
-                  className="text-xs text-slate-400 hover:text-slate-600"
+                  className="text-sm text-brand-lightgray transition hover:text-brand-red"
                   onClick={closePdf}
                 >
                   ✕
@@ -1040,6 +1150,44 @@ export default function ChangeOrders() {
   );
 }
 
+/** Label + value pair for the dollar rollups in the page header. */
+function HeaderTotal({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: string;
+}) {
+  return (
+    <div className="text-right">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-brand-gray">
+        {label}
+      </div>
+      <div className={clsx("text-[22px] font-bold leading-tight tabular-nums", tone)}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/** Uppercase label above a control — the form grids are all built from these. */
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="label">{label}</span>
+      {children}
+    </label>
+  );
+}
+
 // ---- shared row ----
 function CoRow({
   co,
@@ -1057,34 +1205,38 @@ function CoRow({
   context?: boolean;
 }) {
   return (
-    <div className="px-5 py-3 grid grid-cols-[1fr_auto] gap-4 items-center">
-      <div className="min-w-0">
-        <div className="text-sm font-medium text-brand-black flex items-center gap-2">
-          <span>
+    <div className="flex items-center gap-3 px-5 py-3 transition hover:bg-surface-rowhover">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 text-[13.5px] font-semibold text-brand-black">
+          <span className="min-w-0 truncate">
             CO-{co.co_number}
-            <span className="text-brand-gray font-normal"> · {co.co_version}</span>
+            <span className="font-normal text-brand-gray">
+              {" · "}
+              {co.co_version}
+              {co.title ? ` · ${co.title}` : ""}
+            </span>
           </span>
-          <CoStatusBadge status={co.status} />
-          <span className="text-xs px-1.5 py-0.5 rounded bg-brand-nearwhite text-brand-gray">
+          <span className="shrink-0 rounded bg-surface-mute px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-gray">
             {co.rate_type === "hourly" ? "Hourly" : "Fixed"}
           </span>
         </div>
         {context && (co.project_name || co.client_name) && (
-          <div className="text-xs text-brand-gray mt-0.5 truncate">
+          <div className="mt-0.5 truncate text-[11px] text-brand-gray">
             {co.client_name && (
               <>
                 {co.client_name}
                 <span className="px-1">/</span>
               </>
             )}
-            <span className="font-medium text-brand-black">
+            <span className="font-semibold text-brand-red">
               {co.project_name || "—"}
             </span>
           </div>
         )}
-        <div className="text-xs text-brand-gray mt-0.5">
-          <b className="text-brand-black">{money(co.total_amount)}</b>
-          {co.title ? ` · ${co.title}` : ""}
+        <div className="mt-0.5 truncate text-[11px] text-brand-gray">
+          <b className="font-semibold tabular-nums text-brand-black">
+            {money(co.total_amount)}
+          </b>
           {co.requested_by ? ` · ${co.requested_by}` : ""}
           {co.request_date
             ? ` · ${format(parseISO(co.request_date), "MMM d, yyyy")}`
@@ -1093,7 +1245,7 @@ function CoRow({
             ? ` · approved by ${co.approved_by}`
             : ""}
           {co.sent_at ? (
-            <span className="text-emerald-700">
+            <span className="text-brand-green">
               {" · ✉ emailed "}
               {format(parseISO(co.sent_at), "MMM d")}
             </span>
@@ -1102,15 +1254,16 @@ function CoRow({
           )}
         </div>
       </div>
-      <div className="flex items-center gap-2 flex-wrap justify-end">
+      <CoStatusBadge status={co.status} />
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
         {actions}
         {onEdit && (
-          <button className="btn-ghost" onClick={onEdit}>
+          <button className="btn-ghost px-3 py-1.5 text-xs" onClick={onEdit}>
             Edit
           </button>
         )}
         {onDelete && (
-          <button className="btn-danger" onClick={onDelete}>
+          <button className="btn-danger px-3 py-1.5 text-xs" onClick={onDelete}>
             Delete
           </button>
         )}
@@ -1120,20 +1273,17 @@ function CoRow({
 }
 
 function CoStatusBadge({ status }: { status: string }) {
-  const cfg: Record<string, { label: string; bg: string; text: string }> = {
-    draft: { label: "Draft", bg: "#e6e7e8", text: "#4d4d4f" },
-    pending: { label: "Pending", bg: "#f3eecf", text: "#7a7320" },
-    sent_back: { label: "Sent back", bg: "#fde2e2", text: "#ad1f2b" },
-    approved: { label: "Approved", bg: "#d6f0e0", text: "#278747" },
+  // Same four tints the action-item pills use, so a status reads identically
+  // wherever it appears in the app.
+  const cfg: Record<string, { label: string; cls: string }> = {
+    draft: { label: "Draft", cls: "pill-cancelled" },
+    pending: { label: "Pending", cls: "pill-pending" },
+    sent_back: { label: "Sent back", cls: "pill-open" },
+    approved: { label: "Approved", cls: "pill-completed" },
   };
   const c = cfg[status] || cfg.draft;
   return (
-    <span
-      className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
-      style={{ background: c.bg, color: c.text }}
-    >
-      {c.label}
-    </span>
+    <span className={clsx(c.cls, "shrink-0 text-[11px]")}>{c.label}</span>
   );
 }
 
@@ -1142,7 +1292,7 @@ function RateChooser({ onPick }: { onPick: (rt: RateType) => void }) {
   const opts: { rt: RateType; label: string; blurb: string }[] = [
     {
       rt: "fixed",
-      label: "Fixed $$",
+      label: "Fixed $",
       blurb: "One cost per line. Best for lump-sum scope changes.",
     },
     {
@@ -1152,25 +1302,25 @@ function RateChooser({ onPick }: { onPick: (rt: RateType) => void }) {
     },
   ];
   return (
-    <section className="card p-6 space-y-4">
+    <section className="card space-y-4 p-6">
       <div>
         <h3 className="section-title">Start a change order</h3>
-        <p className="text-sm text-brand-gray mt-1">
+        <p className="mt-1 text-sm text-brand-gray">
           Pick how this change order is priced — you can fill in the details next.
         </p>
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {opts.map((o) => (
           <button
             key={o.rt}
             type="button"
             onClick={() => onPick(o.rt)}
-            className="text-left rounded-xl border border-brand-lightgray hover:border-brand-red hover:bg-brand-nearwhite/40 p-5 transition"
+            className="rounded-[10px] border border-surface-border p-5 text-left transition hover:border-brand-red hover:bg-surface-rowhover"
           >
             <div className="text-base font-semibold text-brand-black">
               {o.label}
             </div>
-            <div className="text-sm text-brand-gray mt-1">{o.blurb}</div>
+            <div className="mt-1 text-sm text-brand-gray">{o.blurb}</div>
           </button>
         ))}
       </div>
@@ -1181,23 +1331,29 @@ function RateChooser({ onPick }: { onPick: (rt: RateType) => void }) {
 function TabBtn({
   active,
   onClick,
+  count,
   children,
 }: {
   active: boolean;
   onClick: () => void;
+  /** Rendered as a muted trailing number, per the redesign's tab spec. */
+  count?: number;
   children: React.ReactNode;
 }) {
   return (
     <button
       onClick={onClick}
       className={clsx(
-        "px-1 py-2 -mb-px text-sm",
+        "-mb-px border-b-[2.5px] px-0.5 py-2.5 text-sm transition",
         active
-          ? "border-b-2 border-brand-red text-brand-red font-semibold"
-          : "text-brand-gray font-medium hover:text-brand-black",
+          ? "border-brand-red font-semibold text-brand-red"
+          : "border-transparent font-medium text-brand-gray hover:text-brand-black",
       )}
     >
       {children}
+      {count !== undefined && (
+        <span className="ml-1.5 text-[11px] text-brand-lightgray">{count}</span>
+      )}
     </button>
   );
 }
@@ -1302,7 +1458,7 @@ function CoEmailModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/40 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget && !sending) onClose();
       }}
@@ -1311,7 +1467,7 @@ function CoEmailModal({
         <div className="flex items-center justify-between">
           <h3 className="section-title">Email CO-{co.co_number} to client</h3>
           <button
-            className="text-xs text-slate-400 hover:text-slate-600"
+            className="text-sm text-brand-lightgray transition hover:text-brand-red"
             onClick={onClose}
           >
             ✕
@@ -1325,7 +1481,7 @@ function CoEmailModal({
               <button
                 key={c.email}
                 type="button"
-                className="inline-block mr-1 mb-1 px-2 py-0.5 rounded border border-slate-200 hover:border-brand-red hover:text-brand-red"
+                className="mb-1 mr-1 inline-block rounded-full border border-surface-border px-2.5 py-0.5 text-brand-gray transition hover:border-brand-red hover:text-brand-red"
                 onClick={() => addTo(c.email)}
                 title={`Add ${c.email}`}
               >
@@ -1370,12 +1526,12 @@ function CoEmailModal({
         </div>
 
         {error && (
-          <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+          <div className="rounded-lg border border-status-open-border bg-status-open-bg px-3 py-2 text-sm text-status-open-text">
             {error}
           </div>
         )}
         {ok && (
-          <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
+          <div className="rounded-lg border border-status-completed-border bg-status-completed-bg px-3 py-2 text-sm text-status-completed-text">
             ✓ Sent — check your Outlook Sent Items.
           </div>
         )}

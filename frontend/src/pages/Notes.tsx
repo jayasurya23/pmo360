@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import clsx from "clsx";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import { useConfirm } from "@/components/ConfirmDialog";
@@ -24,6 +25,19 @@ import {
 
 const PRIORITY_OPTS = ["Low", "Medium", "High"];
 const STATUS_OPTS = ["open", "closed"];
+
+// Priority reads as a tinted pill in the redesign, but it stays a <select> so
+// PMs can still change it inline — these are the pill tints per level.
+const PRIORITY_TINT: Record<string, string> = {
+  High: "bg-status-open-bg text-status-open-text",
+  Medium: "bg-status-pending-bg text-status-pending-text",
+  Low: "bg-surface-border text-brand-gray",
+};
+
+// The note card's meta row is denser than the app-wide .input/.select — the
+// utilities after `input`/`select` override the component-layer padding/size.
+// Width is left to each call site (the component class sets w-full).
+const META_CONTROL = "rounded-[7px] px-2.5 py-1 text-xs";
 
 // Special area-filter values. "" maps to "All", "__common__" matches notes
 // whose project_area is blank/null (no area set), and "__unspecified__" is
@@ -147,6 +161,14 @@ export default function NotesPage() {
     return area.toLowerCase() === areaFilter.toLowerCase();
   });
 
+  // Counts sit on the status pills — computed off the unfiltered list so the
+  // numbers don't move as you switch between them.
+  const counts = {
+    open: notes.filter((n) => (n.status || "open") === "open").length,
+    closed: notes.filter((n) => n.status === "closed").length,
+    all: notes.length,
+  };
+
   const handleAdd = async () => {
     const n = await createNote({
       project_id: currentProject.id,
@@ -178,20 +200,30 @@ export default function NotesPage() {
   return (
     <div className="space-y-6">
       <PageHeader
+        kicker="Lightweight notes between meetings · separate from rolling actions"
         title="Planner notes"
-        subtitle="Lightweight notes between meetings — separate from rolling action items."
         actions={
           <>
-            <select
-              className="select w-32"
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as any)}
-              title="Status filter"
-            >
-              <option value="open">Open</option>
-              <option value="closed">Closed</option>
-              <option value="all">All</option>
-            </select>
+            <div className="flex items-center gap-1.5">
+              <FilterPill
+                label="Open"
+                count={counts.open}
+                active={statusFilter === "open"}
+                onClick={() => setStatusFilter("open")}
+              />
+              <FilterPill
+                label="Closed"
+                count={counts.closed}
+                active={statusFilter === "closed"}
+                onClick={() => setStatusFilter("closed")}
+              />
+              <FilterPill
+                label="All"
+                count={counts.all}
+                active={statusFilter === "all"}
+                onClick={() => setStatusFilter("all")}
+              />
+            </div>
             <select
               className="select w-44"
               value={areaFilter}
@@ -206,6 +238,13 @@ export default function NotesPage() {
               ))}
               <option value={FILTER_UNSPECIFIED}>Unspecified</option>
             </select>
+            <button
+              className="btn-ghost"
+              onClick={() => setShowManage((v) => !v)}
+              aria-expanded={showManage}
+            >
+              Manage projects ▾
+            </button>
             <button className="btn-primary" onClick={handleAdd}>
               + Add note
             </button>
@@ -213,23 +252,24 @@ export default function NotesPage() {
         }
       />
 
-      <ManageSubProjectsPanel
-        open={showManage}
-        onToggle={() => setShowManage((v) => !v)}
-        projectId={currentProject.id}
-        curated={currentProject.sub_projects_json || []}
-        deliverables={deliverables}
-        onSaved={async () => {
-          await refreshProjects();
-        }}
-      />
+      {showManage && (
+        <ManageSubProjectsPanel
+          onClose={() => setShowManage(false)}
+          projectId={currentProject.id}
+          curated={currentProject.sub_projects_json || []}
+          deliverables={deliverables}
+          onSaved={async () => {
+            await refreshProjects();
+          }}
+        />
+      )}
 
       {loading ? (
         <div className="card p-5 text-sm">Loading…</div>
       ) : filtered.length === 0 ? (
         <EmptyState title="No notes" hint="Use + Add note to capture one." />
       ) : (
-        <div className="space-y-3">
+        <div className="grid items-start gap-[18px] lg:grid-cols-2">
           {filtered.map((n) => (
             <NoteCard
               key={n.id}
@@ -262,6 +302,37 @@ export default function NotesPage() {
   );
 }
 
+
+// ============================================================
+// Status filter pill — Open / Closed / All with a live count
+// ============================================================
+function FilterPill({
+  label,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={clsx(
+        "rounded-full border px-3 py-1 text-xs font-semibold transition",
+        active
+          ? "border-brand-black bg-brand-black text-white"
+          : "border-surface-border bg-white text-brand-gray hover:border-brand-red hover:text-brand-red",
+      )}
+    >
+      {label} <span className="tabular-nums">{count}</span>
+    </button>
+  );
+}
 
 // ============================================================
 // Suggestion modal — review + edit before creating the action
@@ -302,17 +373,17 @@ function SuggestionModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/40 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div className="w-full max-w-lg card p-5 space-y-3 shadow-xl">
         <div className="flex items-center justify-between">
-          <h3 className="section-title">✨ Suggested action</h3>
+          <h3 className="section-title">✦ Suggested action</h3>
           <button
             type="button"
-            className="text-xs text-slate-400 hover:text-slate-600"
+            className="text-xs text-brand-lightgray transition hover:text-brand-brightred"
             onClick={onClose}
             aria-label="Close"
           >
@@ -329,17 +400,17 @@ function SuggestionModal({
         )}
 
         {busy && !suggestion && (
-          <div className="text-sm text-slate-500 py-4">Asking the model…</div>
+          <div className="text-sm text-brand-gray py-4">Asking the model…</div>
         )}
 
         {error && (
-          <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+          <div className="text-sm text-status-open-text bg-status-open-bg border border-status-open-border rounded px-3 py-2">
             {error}
           </div>
         )}
 
         {suggestion && informational && (
-          <div className="text-sm text-slate-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          <div className="text-sm text-status-pending-text bg-status-pending-bg border border-status-pending-border rounded px-3 py-2">
             {suggestion.rationale || "No clear action in this note."}
           </div>
         )}
@@ -382,7 +453,7 @@ function SuggestionModal({
                 </label>
               </div>
               {!canCreate && (
-                <div className="text-xs text-amber-700">
+                <div className="text-xs text-brand-deepgold">
                   This portfolio doesn't have a meeting yet — actions are
                   attributed to a meeting. Capture or save a meeting first,
                   then come back to accept this suggestion.
@@ -422,15 +493,13 @@ function SuggestionModal({
 // Manage sub-projects panel
 // ============================================================
 function ManageSubProjectsPanel({
-  open,
-  onToggle,
+  onClose,
   projectId,
   curated,
   deliverables,
   onSaved,
 }: {
-  open: boolean;
-  onToggle: () => void;
+  onClose: () => void;
   projectId: number;
   curated: string[];
   deliverables: Deliverable[];
@@ -471,52 +540,50 @@ function ManageSubProjectsPanel({
   };
 
   return (
-    <div className="card">
-      <button
-        className="w-full text-left px-4 py-3 text-sm font-semibold flex items-center justify-between"
-        onClick={onToggle}
-      >
-        <span>Manage projects</span>
-        <span className="text-xs text-brand-gray">{open ? "▾" : "▸"}</span>
-      </button>
-      {open && (
-        <div className="border-t border-slate-200 px-4 py-4 space-y-3">
-          <p className="text-xs text-brand-gray">
-            One project name per line. These populate the project dropdown on
-            every note for this portfolio.
-          </p>
-          <textarea
-            className="textarea"
-            rows={Math.max(4, text.split("\n").length + 1)}
-            placeholder={"Snapdragon\nTwo Blues"}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-          <div className="flex gap-2">
-            <button
-              className="btn-primary"
-              onClick={handleSave}
-              disabled={saving}
-            >
-              {saving ? "Saving…" : "Save list"}
-            </button>
-            <button
-              className="btn-ghost"
-              onClick={handlePullFromDeliverables}
-              title="Add any unique project_segment values from this portfolio's deliverables"
-              disabled={deliverables.length === 0}
-            >
-              Pull from deliverables
-            </button>
-          </div>
-          {deliverables.length === 0 && (
-            <p className="text-xs text-brand-gray italic">
-              No deliverables on this portfolio yet — pull from deliverables is
-              disabled.
-            </p>
-          )}
+    <div className="card overflow-hidden">
+      <div className="flex items-center justify-between border-b border-surface-hairline px-5 py-3.5">
+        <h3 className="section-title">Manage projects</h3>
+        <button
+          type="button"
+          className="text-sm text-brand-lightgray transition hover:text-brand-brightred"
+          onClick={onClose}
+          aria-label="Close"
+        >
+          ✕
+        </button>
+      </div>
+      <div className="px-5 py-4 space-y-3">
+        <p className="text-xs text-brand-gray">
+          One project name per line. These populate the project dropdown on
+          every note for this portfolio.
+        </p>
+        <textarea
+          className="textarea"
+          rows={Math.max(4, text.split("\n").length + 1)}
+          placeholder={"Snapdragon\nTwo Blues"}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <div className="flex gap-2">
+          <button className="btn-primary" onClick={handleSave} disabled={saving}>
+            {saving ? "Saving…" : "Save list"}
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={handlePullFromDeliverables}
+            title="Add any unique project_segment values from this portfolio's deliverables"
+            disabled={deliverables.length === 0}
+          >
+            Pull from deliverables
+          </button>
         </div>
-      )}
+        {deliverables.length === 0 && (
+          <p className="text-xs text-brand-gray italic">
+            No deliverables on this portfolio yet — pull from deliverables is
+            disabled.
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -560,68 +627,32 @@ function NoteCard({
   }, [draft.project_area, subProjects]);
 
   const showTextInput = newAreaMode || !areaInList;
+  // Closed notes stay legible but visibly parked — dimmed card, struck topic.
+  const closed = (draft.status || "open") === "closed";
+  const priority = draft.priority || "Medium";
 
   return (
-    <div className="card p-4 space-y-2">
-      <div className="grid grid-cols-12 gap-2">
+    <div className={clsx("card overflow-hidden", closed && "opacity-70")}>
+      <div className="flex items-center gap-2.5 border-b border-surface-hairline px-[18px] py-3">
         <input
-          className="input col-span-4"
+          className={clsx(
+            "min-w-0 flex-1 border-0 bg-transparent p-0 text-[14.5px] font-semibold",
+            "text-brand-black placeholder:text-brand-lightgray focus:outline-none",
+            closed && "line-through",
+          )}
           placeholder="Topic"
           value={draft.topic || ""}
           onChange={(e) => setDraft({ ...draft, topic: e.target.value })}
           onBlur={() => onPatch({ topic: draft.topic })}
         />
-        <input
-          className="input col-span-3"
-          placeholder="Source"
-          value={draft.source || ""}
-          onChange={(e) => setDraft({ ...draft, source: e.target.value })}
-          onBlur={() => onPatch({ source: draft.source })}
-        />
-        {showTextInput ? (
-          <input
-            className="input col-span-2"
-            placeholder="Project"
-            autoFocus={newAreaMode}
-            value={draft.project_area || ""}
-            onChange={(e) =>
-              setDraft({ ...draft, project_area: e.target.value })
-            }
-            onBlur={() => {
-              onPatch({ project_area: draft.project_area });
-              // If the value now matches a known sub-project, drop back to the
-              // dropdown on next render. The blur path takes care of saving.
-              setNewAreaMode(false);
-            }}
-          />
-        ) : (
-          <select
-            className="select col-span-2"
-            value={draft.project_area || ""}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v === NEW_AREA_SENTINEL) {
-                setNewAreaMode(true);
-                setDraft({ ...draft, project_area: "" });
-                onPatch({ project_area: "" });
-                return;
-              }
-              setDraft({ ...draft, project_area: v });
-              onPatch({ project_area: v });
-            }}
-          >
-            <option value="">— Project —</option>
-            {subProjects.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-            <option value={NEW_AREA_SENTINEL}>{NEW_AREA_LABEL}</option>
-          </select>
-        )}
         <select
-          className="select col-span-1"
-          value={draft.priority || "Medium"}
+          className={clsx(
+            "shrink-0 cursor-pointer appearance-none rounded-full border-0 px-2.5 py-0.5",
+            "text-[11px] font-semibold focus:outline focus:outline-2 focus:outline-brand-red/25",
+            PRIORITY_TINT[priority] ?? PRIORITY_TINT.Medium,
+          )}
+          title="Priority"
+          value={priority}
           onChange={(e) => {
             setDraft({ ...draft, priority: e.target.value });
             onPatch({ priority: e.target.value });
@@ -632,7 +663,8 @@ function NoteCard({
           ))}
         </select>
         <select
-          className="select col-span-1"
+          className="select w-auto shrink-0 rounded-[7px] px-2 py-1 text-xs"
+          title="Status"
           value={draft.status || "open"}
           onChange={(e) => {
             setDraft({ ...draft, status: e.target.value });
@@ -643,59 +675,114 @@ function NoteCard({
             <option key={s}>{s}</option>
           ))}
         </select>
-        <button className="btn-danger col-span-1" onClick={onDelete}>
-          ×
-        </button>
-      </div>
-      <textarea
-        className="textarea"
-        rows={2}
-        placeholder="Action / follow-up"
-        value={draft.action_needed || ""}
-        onChange={(e) => setDraft({ ...draft, action_needed: e.target.value })}
-        onBlur={() => onPatch({ action_needed: draft.action_needed })}
-      />
-      <div className="flex justify-end">
         <button
           type="button"
-          className="text-xs text-brand-gray hover:text-brand-red underline underline-offset-2"
-          onClick={onSuggest}
-          disabled={!draft.action_needed?.trim() && !draft.topic?.trim()}
-          title={
-            canSuggest
-              ? "Use AI to turn this note into an action item"
-              : "Capture a meeting on this portfolio first — actions are linked to a meeting."
-          }
+          className="shrink-0 text-sm text-brand-lightgray transition hover:text-brand-brightred"
+          onClick={onDelete}
+          aria-label="Delete note"
+          title="Delete note"
         >
-          ✨ Suggest action item
+          ✕
         </button>
       </div>
-      <div className="grid grid-cols-2 gap-2 text-xs text-brand-gray">
-        <label className="flex items-center gap-2">
-          Note date
+
+      <div className="flex flex-col gap-2.5 px-[18px] py-3.5">
+        <textarea
+          className="textarea rounded-[7px] px-[11px] py-[9px] text-[13.5px]"
+          rows={2}
+          placeholder="Action / follow-up"
+          value={draft.action_needed || ""}
+          onChange={(e) => setDraft({ ...draft, action_needed: e.target.value })}
+          onBlur={() => onPatch({ action_needed: draft.action_needed })}
+        />
+        <div className="flex flex-wrap items-center gap-2.5 text-xs text-brand-gray">
+          {showTextInput ? (
+            <input
+              className={clsx("input", META_CONTROL, "w-[130px]")}
+              placeholder="Project"
+              autoFocus={newAreaMode}
+              value={draft.project_area || ""}
+              onChange={(e) =>
+                setDraft({ ...draft, project_area: e.target.value })
+              }
+              onBlur={() => {
+                onPatch({ project_area: draft.project_area });
+                // If the value now matches a known sub-project, drop back to the
+                // dropdown on next render. The blur path takes care of saving.
+                setNewAreaMode(false);
+              }}
+            />
+          ) : (
+            <select
+              className={clsx("select w-auto", META_CONTROL)}
+              value={draft.project_area || ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === NEW_AREA_SENTINEL) {
+                  setNewAreaMode(true);
+                  setDraft({ ...draft, project_area: "" });
+                  onPatch({ project_area: "" });
+                  return;
+                }
+                setDraft({ ...draft, project_area: v });
+                onPatch({ project_area: v });
+              }}
+            >
+              <option value="">— Project —</option>
+              {subProjects.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+              <option value={NEW_AREA_SENTINEL}>{NEW_AREA_LABEL}</option>
+            </select>
+          )}
           <input
-            type="date"
-            className="input text-xs"
-            value={draft.note_date}
-            onChange={(e) => {
-              setDraft({ ...draft, note_date: e.target.value });
-              onPatch({ note_date: e.target.value });
-            }}
+            className={clsx("input", META_CONTROL, "w-[110px]")}
+            placeholder="Source"
+            value={draft.source || ""}
+            onChange={(e) => setDraft({ ...draft, source: e.target.value })}
+            onBlur={() => onPatch({ source: draft.source })}
           />
-        </label>
-        <label className="flex items-center gap-2">
-          Follow-up
-          <input
-            type="date"
-            className="input text-xs"
-            value={draft.follow_up_date || ""}
-            onChange={(e) => {
-              const v = e.target.value || null;
-              setDraft({ ...draft, follow_up_date: v });
-              onPatch({ follow_up_date: v });
-            }}
-          />
-        </label>
+          <label className="flex items-center gap-1.5">
+            Note
+            <input
+              type="date"
+              className={clsx("input w-auto", META_CONTROL)}
+              value={draft.note_date}
+              onChange={(e) => {
+                setDraft({ ...draft, note_date: e.target.value });
+                onPatch({ note_date: e.target.value });
+              }}
+            />
+          </label>
+          <label className="flex items-center gap-1.5">
+            Follow-up
+            <input
+              type="date"
+              className={clsx("input w-auto", META_CONTROL)}
+              value={draft.follow_up_date || ""}
+              onChange={(e) => {
+                const v = e.target.value || null;
+                setDraft({ ...draft, follow_up_date: v });
+                onPatch({ follow_up_date: v });
+              }}
+            />
+          </label>
+          <button
+            type="button"
+            className="ml-auto text-xs font-semibold text-brand-deepgold transition hover:text-brand-red disabled:opacity-50"
+            onClick={onSuggest}
+            disabled={!draft.action_needed?.trim() && !draft.topic?.trim()}
+            title={
+              canSuggest
+                ? "Use AI to turn this note into an action item"
+                : "Capture a meeting on this portfolio first — actions are linked to a meeting."
+            }
+          >
+            ✦ Suggest action
+          </button>
+        </div>
       </div>
     </div>
   );

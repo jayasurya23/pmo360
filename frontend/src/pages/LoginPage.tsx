@@ -60,20 +60,20 @@ export default function LoginPage({ busy = false }: { busy?: boolean }) {
       <img
         src={castilloWhite}
         alt="Castillo Engineering"
-        className="absolute left-7 top-7 h-12 w-auto select-none sm:left-10 sm:top-9 sm:h-14"
+        className="absolute left-7 top-7 h-12 w-auto select-none sm:left-10 sm:top-9 sm:h-[54px]"
         draggable={false}
       />
 
       {/* Sign-in card */}
       <div className="relative z-10 flex min-h-screen items-center justify-center px-4 py-16">
-        <div className="w-full max-w-md rounded-2xl border border-white/60 bg-white/95 p-9 text-center shadow-2xl backdrop-blur-sm sm:p-11">
+        <div className="w-full max-w-[430px] rounded-2xl border border-white/60 bg-white/[0.96] p-9 text-center shadow-[0_24px_60px_rgba(51,49,50,0.35)] backdrop-blur-sm sm:p-11">
           <img
             src={pmoLogo}
             alt="PMO 360"
-            className="mx-auto h-14 w-auto select-none sm:h-16"
+            className="mx-auto h-14 w-auto select-none sm:h-[60px]"
             draggable={false}
           />
-          <p className="mt-4 text-sm text-slate-500">
+          <p className="mt-4 text-sm text-brand-gray">
             Castillo Engineering project-management workspace
           </p>
 
@@ -81,15 +81,15 @@ export default function LoginPage({ busy = false }: { busy?: boolean }) {
             type="button"
             onClick={go}
             disabled={working}
-            className="mt-8 inline-flex w-full items-center justify-center gap-3 rounded-lg bg-[#ad1f2b] py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#991f2b] focus:outline-none focus:ring-2 focus:ring-[#ad1f2b]/40 disabled:cursor-not-allowed disabled:opacity-70"
+            className="mt-8 inline-flex w-full items-center justify-center gap-3 rounded-[9px] bg-brand-red py-[13px] text-sm font-semibold text-white transition hover:bg-brand-darkred focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-brand-red/40 disabled:cursor-not-allowed disabled:opacity-70"
           >
             <MicrosoftMark />
             {working ? "Signing you in…" : "Sign in with Microsoft"}
           </button>
 
-          {err && <p className="mt-4 text-xs text-rose-600">{err}</p>}
+          {err && <p className="mt-4 text-xs text-brand-brightred">{err}</p>}
 
-          <p className="mt-7 text-[11px] leading-relaxed text-slate-400">
+          <p className="mt-7 text-[11px] leading-relaxed text-brand-lightgray">
             Sign in with your Castillo Microsoft 365 account. Access is restricted
             to authorized Castillo Engineering staff.
           </p>
@@ -98,7 +98,7 @@ export default function LoginPage({ busy = false }: { busy?: boolean }) {
 
       {/* footer */}
       <div className="pointer-events-none absolute inset-x-0 bottom-5 z-10 text-center">
-        <span className="text-[11px] text-slate-400">
+        <span className="text-[11px] text-brand-lightgray">
           © Castillo Engineering · PMO 360
         </span>
       </div>

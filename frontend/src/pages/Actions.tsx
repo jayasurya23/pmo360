@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ButtonHTMLAttributes } from "react";
 import { useSearchParams } from "react-router-dom";
+import clsx from "clsx";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import { StatusSelect } from "@/components/StatusPill";
 import { useConfirm } from "@/components/ConfirmDialog";
-import UpdatedByLine from "@/components/UpdatedByLine";
 import OwnerPicker from "@/components/actions/OwnerPicker";
 import { useApp } from "@/lib/state";
 import {
@@ -28,6 +29,11 @@ const STATUS_FILTERS = [
   { value: "cancelled", label: "Cancelled only" },
 ] as const;
 
+// One grid definition shared by the header row and every action row so the
+// columns can never drift apart: checkbox / action / owner / due / status /
+// delete.
+const ROW_GRID = "md:grid-cols-[36px_1fr_170px_150px_150px_44px]";
+
 /**
  * Split a comma-separated owner string into trimmed, non-empty parts.
  * "Roashaael Mary John, Dylan Wraga" -> ["Roashaael Mary John", "Dylan Wraga"]
@@ -38,6 +44,42 @@ function splitOwners(raw: string | null | undefined): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
+}
+
+/**
+ * Bulk-bar button — a shorter, denser ghost than `.btn-ghost`. `tone` picks the
+ * hover colour so the two status-changing actions preview their own outcome
+ * (green for complete, alert red for cancel) instead of all going brand red.
+ */
+function BulkButton({
+  tone = "red",
+  className,
+  ...rest
+}: { tone?: "red" | "green" | "alert" } & ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      {...rest}
+      className={clsx(
+        "inline-flex items-center whitespace-nowrap rounded-[7px] border border-surface-ghost",
+        "bg-white px-[13px] py-1.5 text-xs font-semibold text-brand-black transition",
+        "disabled:cursor-not-allowed disabled:opacity-50",
+        tone === "green" && "hover:border-brand-green hover:text-brand-green",
+        tone === "alert" &&
+          "hover:border-brand-brightred hover:text-brand-brightred",
+        tone === "red" && "hover:border-brand-red hover:text-brand-red",
+        className,
+      )}
+    />
+  );
+}
+
+/** Mobile-only column label — the md+ layout has a real header row instead. */
+function CellLabel({ children }: { children: string }) {
+  return (
+    <span className="micro-label mb-0.5 block text-brand-gray md:hidden">
+      {children}
+    </span>
+  );
 }
 
 export default function Actions() {
@@ -148,6 +190,14 @@ export default function Actions() {
     visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
   const someVisibleSelected =
     visibleIds.some((id) => selectedIds.has(id)) && !allVisibleSelected;
+
+  // Local calendar day as a plain ISO date, so overdue is a pure string compare
+  // against `due_date` (also a plain date) with no timezone drift.
+  const todayIso = format(new Date(), "yyyy-MM-dd");
+  const isOverdue = (a: ActionItem) =>
+    !!a.due_date &&
+    a.due_date < todayIso &&
+    (a.status === "open" || a.status === "pending");
 
   const toggleOne = (id: number, checked: boolean) => {
     setSelectedIds((prev) => {
@@ -283,21 +333,21 @@ export default function Actions() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-[18px]">
       <PageHeader
+        kicker={`${scoped ? currentProject!.name : "All portfolios"} · ${actions.length} total — ${counts.open} open, ${counts.pending} pending, ${counts.completed} completed, ${counts.cancelled} cancelled`}
         title="Rolling action items"
-        subtitle={`${scoped ? currentProject!.name : "All portfolios"} · ${actions.length} total — ${counts.open} open, ${counts.pending} pending, ${counts.completed} completed, ${counts.cancelled} cancelled`}
         actions={
           <>
             {/* Scope toggle: all portfolios (default) vs the header-selected one. */}
-            <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-sm">
+            <div className="inline-flex overflow-hidden rounded-lg border border-surface-border text-[13px]">
               <button
                 type="button"
                 onClick={() => setScopeToProject(false)}
                 className={
                   !scopeToProject
-                    ? "px-3 py-1.5 bg-brand-red text-white font-semibold"
-                    : "px-3 py-1.5 text-brand-gray hover:bg-brand-nearwhite/60"
+                    ? "bg-brand-red px-3.5 py-[7px] font-semibold text-white"
+                    : "bg-white px-3.5 py-[7px] text-brand-gray transition hover:bg-surface-page"
                 }
               >
                 All portfolios
@@ -312,15 +362,15 @@ export default function Actions() {
                 }
                 className={
                   scopeToProject
-                    ? "px-3 py-1.5 bg-brand-red text-white font-semibold"
-                    : "px-3 py-1.5 text-brand-gray hover:bg-brand-nearwhite/60"
+                    ? "bg-brand-red px-3.5 py-[7px] font-semibold text-white"
+                    : "bg-white px-3.5 py-[7px] text-brand-gray transition hover:bg-surface-page"
                 }
               >
                 {currentProject ? "This portfolio" : "Selected portfolio"}
               </button>
             </div>
             <select
-              className="select w-44"
+              className="select w-44 rounded-lg text-[13px]"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               aria-label="Status filter"
@@ -332,7 +382,7 @@ export default function Actions() {
               ))}
             </select>
             <select
-              className="select w-48"
+              className="select w-48 rounded-lg text-[13px]"
               value={ownerFilter}
               onChange={(e) => setOwnerFilter(e.target.value)}
               aria-label="Owner filter"
@@ -381,26 +431,25 @@ export default function Actions() {
       />
 
       {selectedIds.size > 0 && (
-        <div className="sticky top-2 z-20 bg-white border border-slate-200 rounded-lg shadow-sm flex flex-wrap gap-2 p-3 items-center">
-          <span className="text-sm font-semibold text-slate-700 mr-2">
+        <div className="sticky top-2 z-20 flex flex-wrap items-center gap-2 rounded-[10px] border border-surface-border border-l-[3px] border-l-brand-red bg-white px-4 py-2.5">
+          <span className="mr-1 text-[13px] font-bold text-brand-black">
             {selectedIds.size} selected
           </span>
-          <button
-            className="btn-ghost"
+          <BulkButton
+            tone="green"
             onClick={bulkMarkCompleted}
             disabled={bulkBusy}
           >
-            Mark Completed
-          </button>
-          <button
-            className="btn-danger"
+            ✓ Mark completed
+          </BulkButton>
+          <BulkButton
+            tone="alert"
             onClick={bulkMarkCancelled}
             disabled={bulkBusy}
           >
-            Mark Cancelled
-          </button>
-          <button
-            className="btn-ghost"
+            Mark cancelled
+          </BulkButton>
+          <BulkButton
             onClick={() => {
               setBulkMode(bulkMode === "owner" ? null : "owner");
               setBulkOwnerValue("");
@@ -408,9 +457,8 @@ export default function Actions() {
             disabled={bulkBusy}
           >
             Change owner…
-          </button>
-          <button
-            className="btn-ghost"
+          </BulkButton>
+          <BulkButton
             onClick={() => {
               setBulkMode(bulkMode === "due" ? null : "due");
               setBulkDueValue("");
@@ -418,9 +466,9 @@ export default function Actions() {
             disabled={bulkBusy}
           >
             Change due date…
-          </button>
+          </BulkButton>
           <button
-            className="btn-ghost"
+            className="ml-auto text-xs font-semibold text-brand-gray transition hover:text-brand-red disabled:opacity-50"
             onClick={clearSelection}
             disabled={bulkBusy}
           >
@@ -428,7 +476,7 @@ export default function Actions() {
           </button>
 
           {bulkMode === "owner" && (
-            <div className="w-full flex gap-2 items-center pt-2">
+            <div className="flex w-full items-center gap-2 border-t border-surface-hairline pt-2.5">
               <input
                 className="input flex-1"
                 placeholder="New owner (comma-separate for multiple)"
@@ -461,7 +509,7 @@ export default function Actions() {
           )}
 
           {bulkMode === "due" && (
-            <div className="w-full flex gap-2 items-center pt-2">
+            <div className="flex w-full items-center gap-2 border-t border-surface-hairline pt-2.5">
               <input
                 type="date"
                 className="input flex-1"
@@ -516,23 +564,31 @@ export default function Actions() {
           hint="Try a different status or owner filter, or add a new item."
         />
       ) : (
-        <div className="card divide-y divide-brand-lightgray/60 overflow-hidden">
+        <div className="card overflow-hidden">
           {/* Desktop column headers — hidden on mobile because each row
               renders its own inline labels below md (saves a header row
-              that would just steal vertical space on a phone). */}
-          <div className="hidden md:grid md:grid-cols-[32px_1fr_180px_140px_140px_60px] gap-3 px-5 py-2 text-xs uppercase tracking-wider text-brand-gray font-semibold bg-brand-nearwhite/70 items-center">
-            <div className="flex justify-center">
-              <input
-                type="checkbox"
-                aria-label="Select all visible"
-                tabIndex={-1}
-                checked={allVisibleSelected}
-                ref={(el) => {
-                  if (el) el.indeterminate = someVisibleSelected;
-                }}
-                onChange={(e) => toggleAllVisible(e.target.checked)}
-              />
-            </div>
+              that would just steal vertical space on a phone). The
+              transparent left border matches the rows' 3px overdue rail so
+              the columns stay in register. */}
+          <div
+            className={clsx(
+              "hidden gap-3 border-b border-l-[3px] border-surface-hairline border-l-transparent",
+              "bg-surface-rowhover px-5 py-[9px] text-[10.5px] font-semibold uppercase",
+              "tracking-[0.08em] text-brand-gray md:grid md:items-center",
+              ROW_GRID,
+            )}
+          >
+            <input
+              type="checkbox"
+              className="accent-brand-red justify-self-center"
+              aria-label="Select all visible"
+              tabIndex={-1}
+              checked={allVisibleSelected}
+              ref={(el) => {
+                if (el) el.indeterminate = someVisibleSelected;
+              }}
+              onChange={(e) => toggleAllVisible(e.target.checked)}
+            />
             <div>Action</div>
             <div>Owner</div>
             <div>Due</div>
@@ -541,9 +597,10 @@ export default function Actions() {
           </div>
           {/* Mobile-only Select-all bar — surfaces the bulk checkbox that
               would otherwise be hidden in the desktop header. */}
-          <div className="md:hidden px-4 py-2 bg-brand-nearwhite/70 flex items-center gap-3 text-xs">
+          <div className="flex items-center gap-3 border-b border-surface-hairline bg-surface-rowhover px-4 py-2 text-xs md:hidden">
             <input
               type="checkbox"
+              className="accent-brand-red"
               aria-label="Select all visible"
               checked={allVisibleSelected}
               ref={(el) => {
@@ -568,14 +625,22 @@ export default function Actions() {
               <div
                 key={a.id}
                 // Mobile: stacked card layout with explicit labels.
-                // Desktop (md+): the original 6-col grid (180px owner col
-                // up from 140px to fit the new typeahead picker chip).
-                className="flex flex-col gap-2 px-4 py-3 md:grid md:grid-cols-[32px_1fr_180px_140px_140px_60px] md:gap-3 md:px-5 md:py-3 md:items-start"
+                // Desktop (md+): the shared 6-col grid. The left border is the
+                // overdue rail — always 3px so nothing reflows when a due date
+                // slips past today.
+                className={clsx(
+                  "flex flex-col gap-2 border-b border-l-[3px] border-surface-page px-4 py-3",
+                  "last:border-b-0 md:grid md:items-start md:gap-3 md:px-5 md:py-[13px]",
+                  isOverdue(a) ? "border-l-brand-red" : "border-l-transparent",
+                  a.status === "completed" && "opacity-[0.65]",
+                  ROW_GRID,
+                )}
               >
                 {/* Top row on mobile: select checkbox + delete, far ends */}
-                <div className="flex justify-between items-center md:flex md:justify-center md:items-start md:pt-2 md:block">
+                <div className="flex items-center justify-between md:justify-center md:pt-2">
                   <input
                     type="checkbox"
+                    className="accent-brand-red"
                     aria-label={`Select action ${a.id}`}
                     tabIndex={-1}
                     checked={checked}
@@ -589,14 +654,12 @@ export default function Actions() {
                     onClick={() => handleDelete(a)}
                     title="Delete"
                   >
-                    ×
+                    ✕
                   </button>
                 </div>
 
-                <div className="space-y-1">
-                  <span className="text-[10px] uppercase tracking-wider text-brand-gray font-semibold md:hidden">
-                    Action
-                  </span>
+                <div className="min-w-0 space-y-1">
+                  <CellLabel>Action</CellLabel>
                   {/* Which portfolio this action belongs to — only meaningful in
                       the cross-portfolio "All portfolios" view. */}
                   {!scoped && a.project_name && (
@@ -612,7 +675,7 @@ export default function Actions() {
                     </div>
                   )}
                   <textarea
-                    className="textarea text-sm"
+                    className="textarea text-[13.5px] leading-[1.5]"
                     rows={2}
                     value={a.text}
                     onChange={(e) =>
@@ -628,23 +691,18 @@ export default function Actions() {
                         : null
                     }
                   />
-                  <div className="text-[11px] text-brand-gray">
+                  {/* Provenance on one line — raised date + who filed it. */}
+                  <div className="text-[11px] text-brand-lightgray">
                     Raised{" "}
                     {raisedDate
                       ? format(parseISO(raisedDate), "MMM d, yyyy")
                       : "—"}
+                    {a.created_by?.name ? ` · created by ${a.created_by.name}` : ""}
                   </div>
-                  <UpdatedByLine
-                    user={a.created_by}
-                    at={a.created_at}
-                    prefix="Created by"
-                  />
                 </div>
 
                 <div>
-                  <span className="text-[10px] uppercase tracking-wider text-brand-gray font-semibold md:hidden block mb-0.5">
-                    Owner
-                  </span>
+                  <CellLabel>Owner</CellLabel>
                   <OwnerPicker
                     value={a.owner || ""}
                     ownerUserId={a.owner_user_id ?? null}
@@ -662,12 +720,10 @@ export default function Actions() {
                 </div>
 
                 <div>
-                  <span className="text-[10px] uppercase tracking-wider text-brand-gray font-semibold md:hidden block mb-0.5">
-                    Due
-                  </span>
+                  <CellLabel>Due</CellLabel>
                   <input
                     type="date"
-                    className="input"
+                    className="input text-[13px]"
                     value={a.due_date || ""}
                     onChange={(e) =>
                       handlePatch(a.id, { due_date: e.target.value || null })
@@ -676,22 +732,21 @@ export default function Actions() {
                 </div>
 
                 <div>
-                  <span className="text-[10px] uppercase tracking-wider text-brand-gray font-semibold md:hidden block mb-0.5">
-                    Status
-                  </span>
+                  <CellLabel>Status</CellLabel>
                   <StatusSelect
                     value={a.status}
                     onChange={(v) => handlePatch(a.id, { status: v })}
                   />
                 </div>
 
-                {/* Desktop-only delete button (mobile's is in the top row) */}
+                {/* Desktop-only delete (mobile's is in the top row) — a bare
+                    glyph, so the row's only strong colour stays the overdue rail. */}
                 <button
-                  className="btn-danger hidden md:block"
+                  className="hidden justify-center pt-2 text-[15px] leading-none text-brand-lightgray transition hover:text-brand-brightred md:flex"
                   onClick={() => handleDelete(a)}
                   title="Delete"
                 >
-                  ×
+                  ✕
                 </button>
               </div>
             );

@@ -616,7 +616,6 @@ export default function Proposals() {
   const [showHolidays, setShowHolidays] = useState(false);
   // Collapsible header sections (Project Information open by default).
   const [openInfo, setOpenInfo] = useState(true);
-  const [openDrivers, setOpenDrivers] = useState(false);
   const [openPdfOpts, setOpenPdfOpts] = useState(false);
   // Deliverable branding logos (data URLs) — loaded per proposal, not on the
   // board/list responses. company_logo null => bundled Castillo default.
@@ -1943,47 +1942,101 @@ export default function Proposals() {
     await save({ treeNodes: nextFlat });
   }
 
+  // Kicker above the page title: what the open proposal is tied to, or — with
+  // nothing open — how the picker list is currently scoped.
+  const headerKicker = board
+    ? [
+        board.proposal.project_id
+          ? `Linked to 🔗 ${board.proposal.project_name || `#${board.proposal.project_id}`}`
+          : "Standalone proposal",
+        linkedPortfolioName || null,
+        activeVersion?.label || null,
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : `${list.length} proposal${list.length === 1 ? "" : "s"} · ${
+        currentProject ? currentProject.name : "all portfolios"
+      }`;
+
   return (
     <div className="space-y-4">
       <PageHeader
-        title="Proposals"
-        subtitle="Upload a Castillo cost workbook, edit the computed schedule, version it, and generate the branded Project Schedule PDF. Works standalone — link to a portfolio only when you want to project it into the schedule."
+        kicker={headerKicker}
+        title={board ? board.proposal.title || "Untitled proposal" : "Proposals"}
+        subtitle={
+          board
+            ? undefined
+            : "Upload a Castillo cost workbook, edit the computed schedule, version it, and generate the branded Project Schedule PDF. Works standalone — link to a portfolio only when you want to project it into the schedule."
+        }
         actions={
-          <button className="btn-primary text-sm" onClick={() => setShowUpload(true)}>
-            + New / Upload
-          </button>
+          board && !boardLoading ? (
+            <div className="flex flex-wrap items-end gap-x-6 gap-y-3">
+              <HeaderStat
+                label="Start"
+                value={fmtDate(activeVersion?.computed_start_date)}
+              />
+              <HeaderStat
+                label="Finish"
+                value={fmtDate(activeVersion?.computed_end_date)}
+              />
+              <HeaderStat
+                label="Total"
+                value={fmtPrice(activeVersion?.total_price)}
+                accent
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  className="btn-ghost text-[13px] px-3.5"
+                  onClick={() => void openPdf("schedule")}
+                  title="Preview the Project Schedule PDF — deliverables with dates and prices"
+                >
+                  👁 Preview
+                </button>
+                <ExportMenu
+                  onExcel={() => void saveExcel()}
+                  onZip={() => void saveZip()}
+                  onPdf={() => setShowPdfChooser(true)}
+                />
+                <button
+                  className="btn-ghost text-[13px] px-3.5 disabled:opacity-50"
+                  onClick={() => void sendToTimeline()}
+                  disabled={sendingToTimeline}
+                  title="Add this schedule to the Timeline capacity board as unassigned phase bars"
+                >
+                  {sendingToTimeline ? "Sending…" : "📊 Send to Timeline"}
+                </button>
+              </div>
+            </div>
+          ) : null
         }
       />
 
-      {/* picker rail */}
-      <div className="card flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
-        <label className="flex items-center gap-2">
-          <span className="text-[11px] uppercase tracking-wider text-brand-gray">
-            Proposal
-          </span>
-          <select
-            className="rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/30"
-            value={proposalId ?? ""}
-            onChange={(e) => e.target.value && void loadBoard(Number(e.target.value))}
-            disabled={loading || list.length === 0}
-          >
-            <option value="">— pick a proposal —</option>
-            {list.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.title}
-                {p.current_label ? ` · ${p.current_label}` : ""}
-                {p.portfolio_name ? ` · ${p.portfolio_name}` : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        <span className="text-[11px] text-brand-gray">
+      {/* Context rail — proposal picker, version, and the create/delete actions.
+          The redesign draws these in the app-level context row; they stay on the
+          page because Layout's context row is shared chrome with no proposal
+          state, so moving them there would mean lifting the board out of here. */}
+      <div className="card flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5">
+        <span className="micro-label">Proposal</span>
+        <select
+          className={clsx(railSelectCls, "max-w-[380px]")}
+          value={proposalId ?? ""}
+          onChange={(e) => e.target.value && void loadBoard(Number(e.target.value))}
+          disabled={loading || list.length === 0}
+        >
+          <option value="">— pick a proposal —</option>
+          {list.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.title}
+              {p.current_label ? ` · ${p.current_label}` : ""}
+              {p.portfolio_name ? ` · ${p.portfolio_name}` : ""}
+            </option>
+          ))}
+        </select>
+        <span className="text-xs text-brand-gray">
           {currentProject ? (
             <>
               Scoped to{" "}
-              <span className="font-semibold text-slate-700">
-                {currentProject.name}
-              </span>
+              <b className="font-semibold text-brand-black">{currentProject.name}</b>
             </>
           ) : (
             <>All portfolios</>
@@ -1992,8 +2045,30 @@ export default function Proposals() {
           {list.length} proposal{list.length === 1 ? "" : "s"}
         </span>
         {board && (
+          <>
+            <span className="h-[18px] w-px shrink-0 bg-surface-border" />
+            <span className="micro-label">Version</span>
+            <select
+              className={railSelectCls}
+              value={activeVersionId ?? ""}
+              onChange={(e) => void switchVersion(Number(e.target.value))}
+            >
+              {board.versions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.label}
+                  {v.id === board.proposal.current_version_id ? " (active)" : ""}
+                </option>
+              ))}
+            </select>
+            <button className={railPillCls} onClick={() => void newVersion()}>
+              + New version
+            </button>
+          </>
+        )}
+        <div className="flex-1" />
+        {board && (
           <button
-            className="text-[12px] text-brand-red hover:underline ml-auto"
+            className="text-xs font-semibold text-brand-gray transition hover:text-brand-red"
             onClick={async () => {
               const ok = await confirm({
                 title: `Delete proposal “${board.proposal.title}”?`,
@@ -2011,6 +2086,12 @@ export default function Proposals() {
             🗑 Delete proposal
           </button>
         )}
+        <button
+          className="btn-primary text-xs px-3.5 py-1.5"
+          onClick={() => setShowUpload(true)}
+        >
+          + New / Upload
+        </button>
       </div>
 
       {loading && <div className="text-sm text-brand-gray">Loading proposals…</div>}
@@ -2059,13 +2140,7 @@ export default function Proposals() {
             title="Project Information"
             open={openInfo}
             onToggle={() => setOpenInfo((o) => !o)}
-            right={
-              dirty ? (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                  unsaved edits
-                </span>
-              ) : null
-            }
+            right={dirty ? <UnsavedPill /> : null}
           >
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3">
               {INFO_FIELDS.map((f) => (
@@ -2081,78 +2156,83 @@ export default function Proposals() {
             </div>
           </CollapsibleCard>
 
-          {/* schedule drivers (collapsible) */}
-          <CollapsibleCard
-            title="Schedule drivers"
-            open={openDrivers}
-            onToggle={() => setOpenDrivers((o) => !o)}
-            right={
-              <span className="text-[11px] text-brand-gray">
-                Save / Recompute to apply
-              </span>
-            }
-          >
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-x-5 gap-y-3 items-end">
-              <Field label="Start Date">
-                <input
-                  type="date"
-                  className={inputCls}
-                  value={mdyToIso(configDraft.project_start ?? "")}
-                  onChange={(e) =>
-                    updateConfig({
-                      project_start: e.target.value ? isoToMdy(e.target.value) : "",
-                    })
-                  }
-                />
-              </Field>
-              <Field label="Utilization %">
-                <input
-                  type="number"
-                  className={inputCls}
-                  value={configDraft.utilization_percent ?? ""}
-                  onChange={(e) =>
-                    updateConfig({
-                      utilization_percent:
-                        e.target.value === "" ? null : Number(e.target.value),
-                    })
-                  }
-                />
-              </Field>
-              <Field label="Client Review Days">
-                <input
-                  type="number"
-                  min={0}
-                  className={inputCls}
-                  value={infoDraft.client_review_days ?? ""}
-                  onChange={(e) => applyClientReviewDays(e.target.value)}
-                  title="Stamps this duration onto every “client review” task (0 allowed). Recompute to refresh dates."
-                />
-              </Field>
-              <div className="flex flex-col gap-2 pb-1">
-                <label className="flex items-center gap-2 text-sm text-brand-black">
-                  <input
-                    type="checkbox"
-                    checked={!!configDraft.fs_start_next_day}
-                    onChange={(e) =>
-                      updateConfig({ fs_start_next_day: e.target.checked })
-                    }
-                  />
-                  FS Start Next Day
-                </label>
+          {/* project / portfolio tie-in (proposal → Project → Portfolio) */}
+          <section className="card flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 text-[13px]">
+            <span className="micro-label">Project</span>
+            {board.proposal.project_id ? (
+              <>
+                <span className="font-medium text-brand-black">
+                  🔗 {board.proposal.project_name || `#${board.proposal.project_id}`}
+                  {linkedPortfolioName ? (
+                    <span className="font-normal text-brand-gray">
+                      {" · in "}
+                      {linkedPortfolioName}
+                    </span>
+                  ) : null}
+                </span>
                 <button
-                  type="button"
-                  className="btn-ghost text-xs py-1 self-start"
-                  onClick={() => setShowHolidays(true)}
+                  className="text-xs font-semibold text-brand-gray transition hover:text-brand-red"
+                  onClick={() => void doUnlink()}
                 >
-                  🗓 Holidays
-                  <span className="ml-1 text-brand-gray">
-                    ({(configDraft.disabled_holidays?.length ?? 0)} off ·{" "}
-                    {(configDraft.custom_holidays?.length ?? 0)} custom)
-                  </span>
+                  Unlink
                 </button>
-              </div>
-            </div>
-          </CollapsibleCard>
+                <button className={railPillCls} onClick={() => setShowSync(true)}>
+                  ⇄ Sync to portfolio schedule
+                </button>
+              </>
+            ) : currentProject ? (
+              <>
+                <span className="text-brand-gray">
+                  Assign to a project in “{currentProject.name}”:
+                </span>
+                <select
+                  className={railSelectCls}
+                  value=""
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (v) void doLinkProject(v);
+                  }}
+                >
+                  <option value="">Select a project…</option>
+                  {projectsForPortfolio.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <span className="text-brand-gray">or</span>
+                <input
+                  className={clsx(railSelectCls, "w-40")}
+                  placeholder="New project name"
+                  value={newProjectName}
+                  onChange={(e) => setNewProjectName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void doCreateAndLinkProject();
+                  }}
+                />
+                <button
+                  className={clsx(railPillCls, "disabled:opacity-50")}
+                  disabled={!newProjectName.trim()}
+                  onClick={() => void doCreateAndLinkProject()}
+                >
+                  ＋ Create + link
+                </button>
+                {board.proposal.portfolio_id ? (
+                  <button
+                    className="text-xs font-semibold text-brand-gray transition hover:text-brand-red"
+                    onClick={() => void doUnlink()}
+                    title="This proposal is linked at the portfolio level only (no project)"
+                  >
+                    (portfolio-only — unlink)
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <span className="text-brand-gray">
+                Pick a client + portfolio in the header to assign this proposal to a project — a proposal works fully standalone without one.
+              </span>
+            )}
+          </section>
 
           {/* pdf + pricing options (collapsible) */}
           <CollapsibleCard
@@ -2190,6 +2270,7 @@ export default function Proposals() {
                       >
                         <input
                           type="checkbox"
+                          className="accent-brand-red"
                           checked={checked}
                           onChange={() =>
                             updateInfo({
@@ -2209,6 +2290,7 @@ export default function Proposals() {
                 <label className="flex items-center gap-2 text-sm text-brand-black">
                   <input
                     type="checkbox"
+                    className="accent-brand-red"
                     checked={!!infoDraft.include_gantt}
                     onChange={(e) => updateInfo({ include_gantt: e.target.checked })}
                   />
@@ -2217,6 +2299,7 @@ export default function Proposals() {
                 <label className="flex items-center gap-2 text-sm text-brand-black">
                   <input
                     type="checkbox"
+                    className="accent-brand-red"
                     checked={!!infoDraft.milestones_only_pdf}
                     onChange={(e) =>
                       updateInfo({ milestones_only_pdf: e.target.checked })
@@ -2228,7 +2311,7 @@ export default function Proposals() {
             </div>
 
             {/* logos — upload company + client images for the PDF header band */}
-            <div className="mt-4 border-t border-slate-100 pt-3">
+            <div className="mt-4 border-t border-surface-hairline pt-3">
               <div className="text-[11px] uppercase tracking-wider text-brand-gray mb-2">
                 Deliverable logos
               </div>
@@ -2256,159 +2339,97 @@ export default function Proposals() {
             </div>
           </CollapsibleCard>
 
-          {/* version + actions bar */}
-          <section className="card flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
-            <label className="flex items-center gap-2">
-              <span className="text-[11px] uppercase tracking-wider text-brand-gray">
-                Version
-              </span>
-              <select
-                className="rounded-md border border-slate-200 px-2.5 py-1 text-sm"
-                value={activeVersionId ?? ""}
-                onChange={(e) => void switchVersion(Number(e.target.value))}
-              >
-                {board.versions.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.label}
-                    {v.id === board.proposal.current_version_id ? " (active)" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <button className="btn-ghost text-xs py-1" onClick={() => void newVersion()}>
-              + New version
-            </button>
-            <span className="text-brand-gray">
-              Start <b className="text-brand-black">{fmtDate(activeVersion?.computed_start_date)}</b>
-            </span>
-            <span className="text-brand-gray">
-              Finish <b className="text-brand-black">{fmtDate(activeVersion?.computed_end_date)}</b>
-            </span>
-            <span className="text-brand-gray">
-              Total <b className="text-brand-black">{fmtPrice(activeVersion?.total_price)}</b>
-            </span>
-            <div className="flex-1" />
-            <button
-              className="btn-ghost text-xs py-1"
-              onClick={() => void openPdf("schedule")}
-              title="Preview the Project Schedule PDF — deliverables with dates and prices"
-            >
-              👁 Preview
-            </button>
-            <button className="btn-ghost text-xs py-1" onClick={() => void saveExcel()}>
-              ⬇ Save Excel
-            </button>
-            <button className="btn-ghost text-xs py-1" onClick={() => void saveZip()}>
-              🗜 ZIP
-            </button>
-            <button
-              className="btn-ghost text-xs py-1"
-              onClick={() => setShowPdfChooser(true)}
-            >
-              📄 PDF
-            </button>
-            <button
-              className="btn-ghost text-xs py-1 disabled:opacity-50"
-              onClick={() => void sendToTimeline()}
-              disabled={sendingToTimeline}
-              title="Add this schedule to the Timeline capacity board as unassigned phase bars"
-            >
-              {sendingToTimeline ? "Sending…" : "📊 Send to Timeline"}
-            </button>
-          </section>
-
-          {/* project summary (collapsible) */}
-          <SummaryPanel summary={summary} coApproved={coApproved} />
-
-          {/* project / portfolio tie-in (proposal → Project → Portfolio) */}
-          <section className="card flex flex-wrap items-center gap-3 px-4 py-3 text-sm">
-            <span className="text-[11px] uppercase tracking-wider text-brand-gray">
-              Project
-            </span>
-            {board.proposal.project_id ? (
-              <>
-                <span className="font-medium text-brand-black">
-                  🔗 {board.proposal.project_name || `#${board.proposal.project_id}`}
-                  {linkedPortfolioName ? (
-                    <span className="font-normal text-brand-gray">
-                      {" · in "}
-                      {linkedPortfolioName}
-                    </span>
-                  ) : null}
+          {/* three summary cards — project money, disciplines, and the
+              recompute drivers, sitting directly above the schedule they
+              describe. */}
+          <div className="grid gap-4 lg:grid-cols-3 items-stretch">
+            <SummaryPanel
+              summary={summary}
+              coApproved={coApproved}
+              versionLabel={activeVersion?.label}
+            />
+            <DisciplinesPanel disciplines={summary.disciplines} />
+            <section className="card p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="section-title text-sm">Schedule drivers</h3>
+                <span className="text-[11px] text-brand-gray">
+                  Save / Recompute to apply
                 </span>
-                <button className="text-xs text-brand-gray hover:text-brand-red hover:underline" onClick={() => void doUnlink()}>
-                  Unlink
-                </button>
-                <button className="btn-ghost text-xs py-1" onClick={() => setShowSync(true)}>
-                  ⇄ Sync to portfolio schedule
-                </button>
-              </>
-            ) : currentProject ? (
-              <>
-                <span className="text-brand-gray">
-                  Assign to a project in “{currentProject.name}”:
-                </span>
-                <select
-                  className="rounded border border-brand-lightgray/70 px-2 py-1 text-xs"
-                  value=""
-                  onChange={(e) => {
-                    const v = Number(e.target.value);
-                    if (v) void doLinkProject(v);
-                  }}
-                >
-                  <option value="">Select a project…</option>
-                  {projectsForPortfolio.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                <span className="text-brand-gray">or</span>
-                <input
-                  className="rounded border border-brand-lightgray/70 px-2 py-1 text-xs w-40"
-                  placeholder="New project name"
-                  value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void doCreateAndLinkProject();
-                  }}
-                />
-                <button
-                  className="btn-ghost text-xs py-1"
-                  disabled={!newProjectName.trim()}
-                  onClick={() => void doCreateAndLinkProject()}
-                >
-                  ＋ Create + link
-                </button>
-                {board.proposal.portfolio_id ? (
+              </div>
+              <div className="mt-2.5 grid grid-cols-2 gap-x-2.5 gap-y-3">
+                <Field label="Start date">
+                  <input
+                    type="date"
+                    className={inputCls}
+                    value={mdyToIso(configDraft.project_start ?? "")}
+                    onChange={(e) =>
+                      updateConfig({
+                        project_start: e.target.value ? isoToMdy(e.target.value) : "",
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="Utilization %">
+                  <input
+                    type="number"
+                    className={inputCls}
+                    value={configDraft.utilization_percent ?? ""}
+                    onChange={(e) =>
+                      updateConfig({
+                        utilization_percent:
+                          e.target.value === "" ? null : Number(e.target.value),
+                      })
+                    }
+                  />
+                </Field>
+                <Field label="Client review days">
+                  <input
+                    type="number"
+                    min={0}
+                    className={inputCls}
+                    value={infoDraft.client_review_days ?? ""}
+                    onChange={(e) => applyClientReviewDays(e.target.value)}
+                    title="Stamps this duration onto every “client review” task (0 allowed). Recompute to refresh dates."
+                  />
+                </Field>
+                <div className="flex flex-col justify-end gap-1.5 pb-0.5">
+                  <label className="flex items-center gap-2 text-[12.5px] text-brand-black">
+                    <input
+                      type="checkbox"
+                      className="accent-brand-red"
+                      checked={!!configDraft.fs_start_next_day}
+                      onChange={(e) =>
+                        updateConfig({ fs_start_next_day: e.target.checked })
+                      }
+                    />
+                    FS start next day
+                  </label>
                   <button
-                    className="text-xs text-brand-gray hover:text-brand-red hover:underline"
-                    onClick={() => void doUnlink()}
-                    title="This proposal is linked at the portfolio level only (no project)"
+                    type="button"
+                    className="text-left text-xs font-semibold text-brand-gray transition hover:text-brand-red"
+                    onClick={() => setShowHolidays(true)}
                   >
-                    (portfolio-only — unlink)
+                    🗓 Holidays ({configDraft.disabled_holidays?.length ?? 0} off ·{" "}
+                    {configDraft.custom_holidays?.length ?? 0} custom)
                   </button>
-                ) : null}
-              </>
-            ) : (
-              <span className="text-brand-gray">
-                Pick a client + portfolio in the header to assign this proposal to a project — a proposal works fully standalone without one.
-              </span>
-            )}
-          </section>
+                </div>
+              </div>
+            </section>
+          </div>
 
           {/* schedule tree — the card grows to the table's width (w-max) so its
               border always wraps the (wide) schedule and horizontal scrolling
               happens at the page level, never in a nested scrollbar. */}
           <section className="card p-0 w-max min-w-full">
-            {/* Toolbar pins below the app header (h-16) while scrolling the rows. */}
-            <div className="sticky top-16 z-20 flex items-center gap-2 px-4 py-3 border-b border-brand-lightgray/60 bg-white rounded-t-xl">
+            {/* Toolbar pins below the app header while scrolling the rows. The
+                header height is read from --app-header-h (set by Layout) so this
+                keeps working if the shell's header grows; 4rem is today's value. */}
+            <div className="sticky top-[var(--app-header-h,4rem)] z-20 flex items-center gap-2.5 px-4 py-3 border-b border-surface-hairline bg-white rounded-t-[10px]">
               <h3 className="section-title">Schedule</h3>
-              {dirty && (
-                <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
-                  unsaved edits
-                </span>
-              )}
+              {dirty && <UnsavedPill />}
+              <span className="hidden xl:inline text-[11px] text-brand-lightgray">
+                Ctrl+click multi-select · Shift range · Alt link predecessor · Del remove
+              </span>
               <div className="flex-1" />
               {/* Controls stay pinned to the right edge even when the table is
                   wider than the viewport and scrolled horizontally. */}
@@ -2419,7 +2440,7 @@ export default function Proposals() {
                   onClick={() => setShowSplit(true)}
                   title="Split a deposit (or due-diligence) amount out of selected tasks"
                 >
-                  ✂ Split Deposit
+                  ✂ Split deposit
                 </button>
                 <button
                   className="btn-ghost text-xs py-1"
@@ -2440,8 +2461,9 @@ export default function Proposals() {
               </div>
             </div>
 
-            {/* shortcuts hint bar (verbatim desktop) */}
-            <div className="px-4 py-2 text-[11px] text-brand-gray border-b border-brand-lightgray/60">
+            {/* Same shortcuts, spelled out for narrow viewports where the
+                toolbar's inline hint is hidden. */}
+            <div className="xl:hidden px-4 py-2 text-[11px] text-brand-lightgray border-b border-surface-hairline">
               💡 Shortcuts: Ctrl+Click = Multi-select · Shift+Click = Range select · Alt+Click = Link predecessor · Delete = Remove selected
             </div>
 
@@ -2455,34 +2477,37 @@ export default function Proposals() {
 
             {/* No inner scroll box — the table flows in the page like before
                 (older style). The header row floats on its own via the sticky
-                <thead>, which pins just below the sticky toolbar (64px app
-                header + ~61px toolbar = 125px). */}
+                <thead>, which pins just below the sticky toolbar (app header +
+                the toolbar's own 61px). */}
             <div>
-              <table className="min-w-full text-xs">
-                <thead className="bg-brand-red text-white sticky top-[125px] z-10 [&_th]:bg-brand-red">
+              <table className="min-w-full text-[12.5px]">
+                {/* The header keeps an explicit bottom border: while pinned it
+                    floats over white rows, where the light fill alone wouldn't
+                    separate it. */}
+                <thead className="sticky top-[calc(var(--app-header-h,4rem)_+_61px)] z-10 bg-surface-rowhover text-[10.5px] uppercase tracking-[0.08em] text-brand-gray [&_th]:bg-surface-rowhover [&_th]:font-semibold [&_th]:border-b [&_th]:border-surface-border">
                   <tr>
-                    <th className="px-1 py-2 w-6" title="Drag to reorder"></th>
-                    <th className="text-center px-2 py-2 min-w-[300px]">Name</th>
+                    <th className="px-1.5 py-2.5 w-6" title="Drag to reorder"></th>
+                    <th className="text-left px-2.5 py-2.5 min-w-[280px]">Name</th>
                     <th
-                      className="text-center px-2 py-2"
+                      className="text-center px-2.5 py-2.5"
                       title="Duration in working days (Mon–Fri, excluding holidays). The Project Summary shows calendar days, which are larger."
                     >
-                      Dur <span className="font-normal opacity-80">(work days)</span>
+                      Dur
                     </th>
-                    <th className="text-center px-2 py-2">Hrs</th>
-                    <th className="text-center px-2 py-2">Price</th>
-                    <th className="text-center px-2 py-2">Start</th>
-                    <th className="text-center px-2 py-2">Finish</th>
-                    <th className="text-center px-2 py-2 min-w-[200px]">Predecessor</th>
-                    <th className="text-center px-2 py-2">Type</th>
-                    <th className="px-2 py-2">Lag</th>
-                    <th className="px-2 py-2" title="Milestone">MS</th>
-                    <th className="px-2 py-2" title="Enabled">On</th>
-                    <th className="px-2 py-2" title="Price only">$ only</th>
-                    <th className="px-2 py-2" title="Show start date">St</th>
-                    <th className="px-2 py-2" title="Show end date">Fn</th>
-                    <th className="px-2 py-2" title="Task utilization %">Util</th>
-                    <th className="px-2 py-2">Actions</th>
+                    <th className="text-center px-2.5 py-2.5">Hrs</th>
+                    <th className="text-right px-2.5 py-2.5">Price</th>
+                    <th className="text-center px-2.5 py-2.5">Start</th>
+                    <th className="text-center px-2.5 py-2.5">Finish</th>
+                    <th className="text-left px-2.5 py-2.5 min-w-[170px]">Predecessor</th>
+                    <th className="text-center px-2.5 py-2.5">Type</th>
+                    <th className="text-center px-2.5 py-2.5">Lag</th>
+                    <th className="text-center px-2.5 py-2.5" title="Milestone">MS</th>
+                    <th className="text-center px-2.5 py-2.5" title="Enabled">On</th>
+                    <th className="text-center px-2.5 py-2.5" title="Price only">$ only</th>
+                    <th className="text-center px-2.5 py-2.5" title="Show start date">St</th>
+                    <th className="text-center px-2.5 py-2.5" title="Show end date">Fn</th>
+                    <th className="text-center px-2.5 py-2.5" title="Task utilization %">Util</th>
+                    <th className="px-2.5 py-2.5">Actions</th>
                   </tr>
                 </thead>
                 <DndContext
@@ -2570,7 +2595,7 @@ export default function Proposals() {
           <div className="space-y-2">
             <button
               type="button"
-              className="w-full text-left border border-brand-lightgray/60 rounded-lg p-3 hover:border-brand-red transition"
+              className="w-full rounded-lg border border-surface-border p-3 text-left transition hover:border-brand-red hover:bg-surface-rowhover"
               onClick={() => void openPdf("sov")}
             >
               <div className="font-semibold text-brand-black">
@@ -2582,7 +2607,7 @@ export default function Proposals() {
             </button>
             <button
               type="button"
-              className="w-full text-left border border-brand-lightgray/60 rounded-lg p-3 hover:border-brand-red transition"
+              className="w-full rounded-lg border border-surface-border p-3 text-left transition hover:border-brand-red hover:bg-surface-rowhover"
               onClick={() => void openPdf("schedule")}
             >
               <div className="font-semibold text-brand-black">
@@ -2594,7 +2619,7 @@ export default function Proposals() {
             </button>
             <button
               type="button"
-              className="w-full text-left border border-brand-lightgray/60 rounded-lg p-3 hover:border-brand-red transition"
+              className="w-full rounded-lg border border-surface-border p-3 text-left transition hover:border-brand-red hover:bg-surface-rowhover"
               onClick={() => void openPdf("both")}
             >
               <div className="font-semibold text-brand-black">📑 Both</div>
@@ -2700,7 +2725,7 @@ function InfoField({
       {editing ? (
         <input
           autoFocus
-          className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+          className="w-full rounded-[7px] border border-surface-border px-2 py-1 text-sm focus:border-brand-red focus:outline-none"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
@@ -2803,7 +2828,7 @@ function LogoUploader({
         {label}
       </div>
       <div className="flex items-center gap-3">
-        <div className="flex h-16 w-28 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white p-1">
+        <div className="flex h-16 w-28 shrink-0 items-center justify-center rounded-md border border-surface-border bg-white p-1">
           {preview ? (
             <img
               src={preview}
@@ -2854,135 +2879,174 @@ function LogoUploader({
   );
 }
 
-// ---------------- project summary panel (collapsible) ----------------
+// ---------------- project summary card ----------------
 function SummaryPanel({
   summary,
   coApproved,
+  versionLabel,
 }: {
   summary: ProjectSummary;
   coApproved: { total: number; count: number } | null;
+  versionLabel?: string;
 }) {
-  const [open, setOpen] = useState(true);
   const hasCOs = !!coApproved && coApproved.count > 0;
   const revisedTotal = summary.total + (coApproved?.total ?? 0);
-  const datesLabel = (start: Date | null, end: Date | null) =>
-    start || end
-      ? `${fmtSummaryDate(start)} to ${fmtSummaryDate(end)}`
-      : "—";
   return (
-    <section className="card p-0">
-      <button
-        type="button"
-        className="w-full flex items-center gap-2 px-4 py-3 text-left"
-        onClick={() => setOpen((o) => !o)}
-      >
-        <h3 className="section-title">Project Summary</h3>
-        <span className="text-brand-gray text-xs">{open ? "▾" : "▸"}</span>
-        <div className="flex-1" />
-        <span className="text-sm text-brand-gray">
-          Total <b className="text-brand-black">{fmtMoney(summary.total)}</b>
-          {hasCOs && (
-            <>
-              {" · Revised "}
-              <b className="text-brand-black">{fmtMoney(revisedTotal)}</b>
-            </>
-          )}
-        </span>
-      </button>
-      {open && (
-        <div className="px-4 pb-4 grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-2 text-sm">
-          <div className="space-y-1">
-            <SummaryRow label="Total" value={fmtMoney(summary.total)} />
+    <section className="card p-4">
+      <div className="flex items-center gap-2">
+        <h3 className="section-title text-sm">Project summary</h3>
+        {versionLabel && (
+          <span className="text-[11px] text-brand-gray">· {versionLabel}</span>
+        )}
+      </div>
+      <div className="mt-2.5 flex flex-col gap-1 text-[13px]">
+        <SummaryRow label="Total" value={fmtMoney(summary.total)} />
+        <SummaryRow
+          label={`Deposit (${summary.depositPct.toFixed(1)}%)`}
+          value={fmtMoney(summary.depositAmount)}
+        />
+        <SummaryRow label="Net" value={fmtMoney(summary.net)} />
+        {hasCOs && (
+          <>
             <SummaryRow
-              label="Deposit"
-              value={`${fmtMoney(summary.depositAmount)} (${summary.depositPct.toFixed(1)}%)`}
+              label={`Approved COs (${coApproved!.count})`}
+              value={`+ ${fmtMoney(coApproved!.total)}`}
+              tone="green"
             />
-            <SummaryRow label="Net" value={fmtMoney(summary.net)} />
-            {hasCOs && (
-              <>
-                <SummaryRow
-                  label={`Approved change orders (${coApproved!.count})`}
-                  value={`+ ${fmtMoney(coApproved!.total)}`}
-                />
-                <SummaryRow
-                  label="Revised contract value"
-                  value={fmtMoney(revisedTotal)}
-                />
-              </>
-            )}
             <SummaryRow
-              label="Project Start"
-              value={fmtSummaryDate(summary.start)}
+              label="Revised value"
+              value={fmtMoney(revisedTotal)}
+              tone="red"
+              ruled
             />
-            <SummaryRow label="Project End" value={fmtSummaryDate(summary.end)} />
-            <SummaryRow
-              label="Project Duration"
-              value={
-                summary.calendarDays != null
-                  ? `${summary.calendarDays} calendar days`
-                  : "—"
-              }
-            />
-          </div>
-          <div className="space-y-2">
-            {summary.disciplines.map((d) => {
-              const days =
-                d.present && d.start && d.end ? inclusiveDays(d.start, d.end) : null;
-              return (
-                <div key={d.name} className="border-t border-brand-lightgray/50 pt-1 first:border-0 first:pt-0">
-                  <div className="font-medium text-brand-black">{d.name}</div>
-                  <div className="flex flex-wrap gap-x-6 gap-y-0.5 text-xs">
-                    <span>
-                      Amount{" "}
-                      <b className="text-[#991f2b]">
-                        {fmtMoney(d.present ? d.amount : 0)}
-                      </b>
-                    </span>
-                    <span>
-                      Dates{" "}
-                      <b className="text-brand-black">
-                        {d.present ? datesLabel(d.start, d.end) : "—"}
-                      </b>
-                    </span>
-                    <span title="Working days = the same Dur shown for this discipline in the Schedule table (business days: Mon–Fri, excluding holidays).">
-                      Working days{" "}
-                      <b className="text-brand-black">
-                        {d.workingDays != null ? d.workingDays : ""}
-                      </b>
-                    </span>
-                    <span
-                      className="text-brand-gray"
-                      title="Calendar days count every day between the start and finish dates."
-                    >
-                      Calendar days{" "}
-                      <b className="text-brand-black">{days != null ? days : ""}</b>
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <p className="md:col-span-2 border-t border-brand-lightgray/50 pt-2 mt-1 text-[11px] leading-snug text-brand-gray">
-            <b className="text-brand-black">Working days</b> here are the same as each
-            discipline's <b className="text-brand-black">Dur</b> in the Schedule table
-            (Mon–Fri, excluding holidays). <b className="text-brand-black">Calendar days</b>{" "}
-            count every day between the start and finish dates, so they're larger — the
-            two are different measures of the same span.
-          </p>
-        </div>
-      )}
+          </>
+        )}
+        <SummaryRow label="Project start" value={fmtSummaryDate(summary.start)} />
+        <SummaryRow label="Project end" value={fmtSummaryDate(summary.end)} />
+        <SummaryRow
+          label="Duration"
+          value={
+            summary.calendarDays != null
+              ? `${summary.calendarDays} calendar days`
+              : "—"
+          }
+        />
+      </div>
     </section>
   );
 }
 
-function SummaryRow({ label, value }: { label: string; value: string }) {
-  // A ruled row (thin divider under each pair) makes it easy to track which
-  // label on the left maps to which value on the right.
+function SummaryRow({
+  label,
+  value,
+  tone,
+  ruled,
+}: {
+  label: string;
+  value: string;
+  tone?: "green" | "red";
+  ruled?: boolean;
+}) {
   return (
-    <div className="flex justify-between gap-4 border-b border-brand-lightgray/40 py-1 last:border-0">
+    <div
+      className={clsx(
+        "flex justify-between gap-4",
+        ruled && "border-t border-surface-hairline pt-1",
+      )}
+    >
       <span className="text-brand-gray">{label}</span>
-      <span className="text-brand-black font-medium tabular-nums">{value}</span>
+      <span
+        className={clsx(
+          "font-bold tabular-nums",
+          tone === "green"
+            ? "text-brand-green"
+            : tone === "red"
+              ? "text-brand-red"
+              : "text-brand-black",
+        )}
+      >
+        {value}
+      </span>
     </div>
+  );
+}
+
+// ---------------- disciplines card ----------------
+// Letter badges match the discipline tags used across the deliverables:
+// Electrical red, Civil blue, Structural brown.
+const DISCIPLINE_BADGES: Record<string, { letter: string; cls: string }> = {
+  "Electrical Engineering": { letter: "E", cls: "bg-brand-red" },
+  "Civil Engineering": { letter: "C", cls: "bg-[#185fa5]" },
+  "Structural Engineering": { letter: "S", cls: "bg-brand-brown" },
+};
+
+function DisciplinesPanel({ disciplines }: { disciplines: DisciplineLine[] }) {
+  const datesLabel = (start: Date | null, end: Date | null) =>
+    start || end ? `${fmtSummaryDate(start)} → ${fmtSummaryDate(end)}` : "—";
+  return (
+    <section className="card p-4">
+      <h3 className="section-title text-sm">Disciplines</h3>
+      <div className="mt-2.5 flex flex-col gap-2 text-[12.5px]">
+        {disciplines.map((d, i) => {
+          const badge = DISCIPLINE_BADGES[d.name];
+          const days =
+            d.present && d.start && d.end ? inclusiveDays(d.start, d.end) : null;
+          return (
+            <div
+              key={d.name}
+              className={clsx(
+                i > 0 && "border-t border-surface-hairline pt-2",
+                !d.present && "opacity-55",
+              )}
+            >
+              <div className="flex items-center gap-2">
+                {badge && (
+                  <span
+                    className={clsx(
+                      "inline-block rounded-[3px] px-1.5 py-px text-[9px] font-bold text-white",
+                      badge.cls,
+                    )}
+                  >
+                    {badge.letter}
+                  </span>
+                )}
+                <b className="text-brand-black">{d.name.replace(" Engineering", "")}</b>
+                <span className="ml-auto font-bold tabular-nums text-brand-red">
+                  {fmtMoney(d.present ? d.amount : 0)}
+                </span>
+              </div>
+              <div className="mt-0.5 text-brand-gray">
+                {d.present ? (
+                  <>
+                    <span>{datesLabel(d.start, d.end)}</span>
+                    <span
+                      title="Working days = the same Dur shown for this discipline in the Schedule table (business days: Mon–Fri, excluding holidays)."
+                      className="ml-1"
+                    >
+                      · {d.workingDays != null ? d.workingDays : "—"} working days
+                    </span>
+                    {days != null && (
+                      <span title="Calendar days count every day between the start and finish dates.">
+                        {" "}
+                        · {days} calendar days
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  "Not in this proposal"
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-3 border-t border-surface-hairline pt-2 text-[11px] leading-snug text-brand-gray">
+        <b className="text-brand-black">Working days</b> match each discipline&apos;s{" "}
+        <b className="text-brand-black">Dur</b> in the Schedule table (Mon–Fri, excluding
+        holidays). <b className="text-brand-black">Calendar days</b> count every day in
+        the span, so they read larger.
+      </p>
+    </section>
   );
 }
 
@@ -3034,6 +3098,7 @@ function HolidaysModal({
               <label key={h} className="flex items-center gap-2 text-sm text-brand-black">
                 <input
                   type="checkbox"
+                  className="accent-brand-red"
                   checked={disabledSet.has(h)}
                   onChange={() => toggle(h)}
                 />
@@ -3043,7 +3108,7 @@ function HolidaysModal({
           </div>
         </div>
 
-        <div className="border-t border-brand-lightgray/60 pt-3">
+        <div className="border-t border-surface-hairline pt-3">
           <div className="text-[11px] uppercase tracking-wider text-brand-gray mb-2">
             Custom holiday dates
           </div>
@@ -3172,26 +3237,24 @@ function Row({
     [setActivatorNodeRef],
   );
 
-  // Faithful to the desktop tree tags (classification precedence):
-  //   disabled milestone → dark gray bold
-  //   disabled task      → mid gray
-  //   milestone (on)      → light bg, Castillo-red bold
-  //   regular task        → white
+  // Row classification, in precedence order:
+  //   disabled     → muted fill, struck name + a "not contracted" pill
+  //   section      → a top-level milestone; page-tinted band, bold name
+  //   milestone    → red diamond + dark-red bold name on white
+  //   regular task → white
   const milestone = node.is_milestone;
   const disabled = !node.enabled;
-  // Base row scheme — verbatim Tkinter tag_configure (Full_proposal_V9.py:1975-1992):
-  //   milestone #f8f9fa/#991f2b bold · task white/black ·
-  //   disabled #b8b8b8/#555555 · disabled_milestone #9f9f9f/#3d3d3d bold
+  const isSection = milestone && node.indent_level === 0;
   const base = disabled
-    ? milestone
-      ? "bg-[#9f9f9f] text-[#3d3d3d] font-bold"
-      : "bg-[#b8b8b8] text-[#555555]"
-    : milestone
-      ? "bg-[#f8f9fa] text-[#991f2b] font-bold"
+    ? clsx("bg-surface-mute text-[#8a8887]", milestone && "font-bold")
+    : isSection
+      ? "bg-surface-page font-bold"
       : "bg-white";
-  // Dynamic interaction-highlight tags (verbatim Tkinter), override the base.
-  // Selecting a row tints its predecessor green + its successors pink; a task
-  // whose predecessor is missing/disabled tints yellow; drag states amber/blue.
+  // Dynamic interaction-highlight tags, which override the base fill. Same
+  // signals as the desktop tree — selecting a row tints its predecessor green
+  // and its successors red, a task whose predecessor is missing/disabled tints
+  // gold, drag states gold/blue — restated in the brand palette so they sit with
+  // the rest of the table instead of the old Bootstrap-era tints.
   const selNode = selectedKey
     ? allNodes.find((o) => o.key === selectedKey)?.node
     : undefined;
@@ -3207,22 +3270,22 @@ function Row({
     node.predecessor_id != null &&
     !flat.some((n) => n.id === node.predecessor_id && n.enabled);
   const rowFill = isDragging
-    ? "bg-[#ffd54f]"                 // dragging_item
+    ? "bg-surface-mute"                   // dragging_item
     : isOver
-      ? "bg-[#e3f2fd]"               // drag_target
+      ? "bg-[#eaf6fa]"                    // drag_target
       : isPredOfSel
-        ? "bg-[#d4edda]"            // predecessor_highlight
+        ? "bg-[#e4f3e7]"                  // predecessor_highlight
         : isSuccOfSel
-          ? "bg-[#f8d7da]"          // successor_highlight
+          ? "bg-status-open-bg"           // successor_highlight
           : missingDep
-            ? "bg-[#fff3cd]"        // missing_dependency
+            ? "bg-status-pending-bg"      // missing_dependency
             : base;
 
   const rowCls = clsx(
-    "border-t border-brand-lightgray/60 align-middle",
+    "border-t border-surface-hairline align-middle",
     rowFill,
     selected && "ring-2 ring-inset ring-brand-red/40",
-    isLinkSource && "ring-2 ring-inset ring-amber-400",
+    isLinkSource && "ring-2 ring-inset ring-brand-gold",
   );
   const rowStyle: CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -3235,8 +3298,13 @@ function Row({
     (o) => o.node.id != null && o.key !== rowKey,
   );
 
-  const cellNum =
-    "w-16 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums";
+  // Editable cells read as plain text until you point at them — the border only
+  // appears on hover/focus, so a dense schedule stays legible.
+  const cellBase =
+    "rounded-[5px] border border-transparent bg-transparent px-1 py-0.5 text-[12.5px] transition hover:border-surface-border focus:border-brand-red focus:outline-none disabled:hover:border-transparent";
+  const cellNum = clsx(cellBase, "w-11 text-center tabular-nums");
+  const cellSelect =
+    "rounded-[5px] border border-surface-border bg-white px-1.5 py-[3px] text-[11.5px] text-brand-gray transition focus:border-brand-red focus:outline-none";
 
   // Feature 1: only non-milestone (task/leaf) rows carry an editable cost,
   // predecessor, duration + lag. Milestones / sections show read-only roll-ups.
@@ -3270,7 +3338,7 @@ function Row({
           {...listeners}
           aria-label="Drag to reorder"
           title="Drag to reorder"
-          className="inline-flex items-center justify-center w-5 h-5 text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing focus:outline-none touch-none"
+          className="inline-flex items-center justify-center w-5 h-5 text-brand-lightgray hover:text-brand-red cursor-grab active:cursor-grabbing focus:outline-none touch-none"
         >
           <svg width="12" height="12" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
             <circle cx="5" cy="3" r="1.2" />
@@ -3297,25 +3365,40 @@ function Row({
               }}
               className="inline-flex w-4 shrink-0 items-center justify-center text-[10px] leading-none text-brand-gray hover:text-brand-red"
             >
-              {collapsed ? "▶" : "▽"}
+              {collapsed ? "▶" : "▾"}
             </button>
           ) : (
             <span className="inline-block w-4 shrink-0" aria-hidden="true" />
           )}
-          <span className="text-brand-gray mr-1 tabular-nums shrink-0">
+          <span className="text-brand-lightgray mr-1 tabular-nums shrink-0">
             ({node.id ?? "•"})
           </span>
+          {/* Nested milestones carry the red diamond that marks a delivery
+              milestone in the PDF too; sections (indent 0) don't. */}
+          {milestone && !isSection && !disabled && (
+            <span
+              aria-hidden="true"
+              className="h-2 w-2 shrink-0 rotate-45 rounded-[2px] bg-brand-red"
+            />
+          )}
           <input
             className={clsx(
-              "w-full rounded border border-transparent hover:border-slate-200 focus:border-slate-300 bg-transparent px-1 py-0.5 text-xs",
-              milestone &&
-                (disabled ? "text-[#3d3d3d] font-bold" : "text-[#991f2b] font-bold"),
+              cellBase,
+              "w-full text-left",
+              isSection && "font-bold tracking-[0.04em]",
+              milestone && !isSection && !disabled && "font-bold text-brand-darkred",
+              disabled && "line-through",
             )}
             value={node.name}
             disabled={isLocked}
             list={milestone ? "ms-name-options" : undefined}
             onChange={(e) => onUpdate(rowKey, { name: e.target.value })}
           />
+          {disabled && (
+            <span className="shrink-0 rounded-full border border-surface-ghost bg-white px-[7px] py-px text-[10.5px] font-semibold text-brand-gray">
+              not contracted
+            </span>
+          )}
         </div>
       </td>
       <td className="px-1 py-1.5 text-center">
@@ -3334,7 +3417,7 @@ function Row({
               const eff = effectiveDuration(node, rowIndex, flat, projectUtil);
               return eff !== (Number(node.duration) || 0) ? (
                 <span
-                  className="text-[10px] leading-none text-slate-400 tabular-nums"
+                  className="text-[10px] leading-none text-brand-lightgray tabular-nums"
                   title={`Effective ${eff} working days at the applied utilization (base ${node.duration}). Recompute to roll the dates.`}
                 >
                   {eff} d
@@ -3343,7 +3426,7 @@ function Row({
             })()}
           </div>
         ) : (
-          <span className="block w-14 text-right tabular-nums text-xs px-1">
+          <span className="block w-11 text-center tabular-nums px-1 text-brand-gray">
             {node.duration}
           </span>
         )}
@@ -3364,12 +3447,12 @@ function Row({
       <td className="px-1 py-1.5 text-center">
         {isLeaf ? (
           <div className="relative inline-block">
-            <span className="pointer-events-none absolute left-1 top-1/2 -translate-y-1/2 text-xs text-slate-400">
+            <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-[12.5px] text-brand-lightgray">
               $
             </span>
             <input
               type="number"
-              className="w-20 rounded border border-slate-200 pl-3 pr-1 py-0.5 text-xs text-right tabular-nums"
+              className={clsx(cellBase, "w-[76px] pl-4 text-right tabular-nums")}
               value={node.price}
               disabled={isLocked}
               onChange={(e) => onUpdate(rowKey, { price: Number(e.target.value) || 0 })}
@@ -3377,7 +3460,7 @@ function Row({
           </div>
         ) : (
           <span
-            className="block w-20 text-right tabular-nums text-xs px-1"
+            className="block w-[76px] px-1 text-right font-bold tabular-nums"
             title="Cumulative cost of enabled child tasks"
           >
             {fmtMoney(rollupCost)}
@@ -3385,16 +3468,16 @@ function Row({
         )}
       </td>
       {/* server-computed dates — read only */}
-      <td className="px-2 py-1.5 text-center tabular-nums text-brand-gray">
+      <td className="px-2.5 py-1.5 text-center tabular-nums text-brand-gray">
         {node.start_date || "—"}
       </td>
-      <td className="px-2 py-1.5 text-center tabular-nums text-brand-gray">
+      <td className="px-2.5 py-1.5 text-center tabular-nums text-brand-gray">
         {node.end_date || "—"}
       </td>
       <td className="px-1 py-1.5">
         {isLeaf ? (
           <select
-            className="w-full rounded border border-slate-200 px-1 py-0.5 text-xs"
+            className={clsx(cellSelect, "w-full")}
             value={node.predecessor_id ?? ""}
             disabled={isLocked}
             onChange={(e) =>
@@ -3422,7 +3505,7 @@ function Row({
           </select>
         ) : (
           <span
-            className="block text-center text-xs text-brand-gray"
+            className="block text-center text-brand-lightgray"
             title="Milestones derive dates from children, not predecessor chaining"
           >
             —
@@ -3432,7 +3515,7 @@ function Row({
       <td className="px-1 py-1.5 text-center">
         {isLeaf ? (
           <select
-            className="rounded border border-slate-200 px-1 py-0.5 text-xs"
+            className={cellSelect}
             value={node.predecessor_type}
             disabled={isLocked}
             onChange={(e) =>
@@ -3449,20 +3532,20 @@ function Row({
             ))}
           </select>
         ) : (
-          <span className="text-xs text-brand-gray">—</span>
+          <span className="text-brand-lightgray">—</span>
         )}
       </td>
       <td className="px-1 py-1.5 text-center">
         {isLeaf ? (
           <input
             type="number"
-            className="w-12 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums"
+            className={clsx(cellBase, "w-9 text-center tabular-nums")}
             value={node.lag}
             disabled={isLocked}
             onChange={(e) => onUpdate(rowKey, { lag: Number(e.target.value) || 0 })}
           />
         ) : (
-          <span className="block w-12 text-right tabular-nums text-xs px-1">
+          <span className="block w-9 px-1 text-center tabular-nums text-brand-gray">
             {node.lag}
           </span>
         )}
@@ -3490,7 +3573,7 @@ function Row({
       <td className="px-1 py-1.5 text-center">
         <input
           type="number"
-          className="w-12 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums placeholder:text-slate-400"
+          className={clsx(cellBase, "w-11 text-center tabular-nums placeholder:text-brand-lightgray")}
           value={node.task_utilization ?? ""}
           placeholder={String(projectUtil)}
           title={
@@ -3507,7 +3590,7 @@ function Row({
         />
       </td>
       <td className="px-1 py-1.5 whitespace-nowrap">
-        <div className="flex items-center gap-0.5 text-brand-gray">
+        <div className="flex items-center gap-0.5">
           <IconBtn title="Move up" onClick={() => onMove(rowKey, -1)}>↑</IconBtn>
           <IconBtn title="Move down" onClick={() => onMove(rowKey, 1)}>↓</IconBtn>
           <IconBtn title="Outdent" onClick={() => onIndent(rowKey, -1)}>⇤</IconBtn>
@@ -3560,34 +3643,34 @@ function AddMenu({
         + Add ▾
       </button>
       {open && (
-        <div className="absolute right-0 z-20 mt-1 w-40 rounded-md border border-slate-200 bg-white shadow-lg py-1 text-sm">
+        <div className="absolute right-0 z-20 mt-1 w-40 rounded-[10px] border border-surface-border bg-white shadow-page py-1 text-sm">
           <button
             type="button"
-            className="block w-full text-left px-3 py-1.5 hover:bg-slate-100 text-brand-black"
+            className="block w-full text-left px-3 py-1.5 text-brand-black hover:bg-surface-rowhover"
             onClick={() => pick("section")}
           >
             Section
           </button>
           <button
             type="button"
-            className="block w-full text-left px-3 py-1.5 hover:bg-slate-100 text-brand-black"
+            className="block w-full text-left px-3 py-1.5 text-brand-black hover:bg-surface-rowhover"
             onClick={() => pick("milestone")}
           >
             Milestone
           </button>
           <button
             type="button"
-            className="block w-full text-left px-3 py-1.5 hover:bg-slate-100 text-brand-black"
+            className="block w-full text-left px-3 py-1.5 text-brand-black hover:bg-surface-rowhover"
             onClick={() => pick("task")}
           >
             Task
           </button>
           {onSeed && (
             <>
-              <div className="my-1 border-t border-slate-200" />
+              <div className="my-1 border-t border-surface-hairline" />
               <button
                 type="button"
-                className="block w-full text-left px-3 py-1.5 hover:bg-slate-100 text-brand-black"
+                className="block w-full text-left px-3 py-1.5 text-brand-black hover:bg-surface-rowhover"
                 onClick={() => {
                   onSeed();
                   setOpen(false);
@@ -3607,7 +3690,12 @@ function AddMenu({
 function ToggleCell({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   return (
     <td className="px-1 py-1.5 text-center">
-      <input type="checkbox" checked={on} onChange={onToggle} />
+      <input
+        type="checkbox"
+        className="accent-brand-red"
+        checked={on}
+        onChange={onToggle}
+      />
     </td>
   );
 }
@@ -3628,8 +3716,8 @@ function IconBtn({
       title={title}
       onClick={onClick}
       className={clsx(
-        "h-5 w-5 inline-flex items-center justify-center rounded hover:bg-slate-200 text-[11px] leading-none",
-        destructive && "hover:bg-rose-100 hover:text-brand-red",
+        "h-5 w-5 inline-flex items-center justify-center rounded text-[11px] leading-none text-brand-lightgray transition hover:bg-surface-rowhover hover:text-brand-red",
+        destructive && "hover:bg-status-open-bg hover:text-brand-brightred",
       )}
     >
       {children}
@@ -3648,14 +3736,22 @@ function Banner({
   onDismiss: () => void;
 }) {
   const cls = {
-    amber: "border-amber-300 bg-amber-50 text-amber-800",
-    red: "border-rose-300 bg-rose-50 text-brand-red",
-    green: "border-emerald-300 bg-emerald-50 text-emerald-700",
+    amber: "border-status-pending-border bg-status-pending-bg text-status-pending-text",
+    red: "border-brand-red bg-status-open-bg text-status-open-text",
+    green: "border-status-completed-border bg-status-completed-bg text-status-completed-text",
   }[tone];
   return (
-    <div className={clsx("flex items-center gap-2 rounded-md border px-3 py-2 text-sm", cls)}>
+    <div
+      className={clsx(
+        "flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px]",
+        cls,
+      )}
+    >
       <span className="flex-1">{children}</span>
-      <button className="opacity-70 hover:opacity-100" onClick={onDismiss}>
+      <button
+        className="text-xs font-semibold uppercase tracking-wider opacity-70 hover:opacity-100"
+        onClick={onDismiss}
+      >
         dismiss
       </button>
     </div>
@@ -3676,7 +3772,7 @@ function Modal({
 }) {
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-brand-black/40 p-4 overflow-y-auto"
       onClick={onClose}
     >
       <div
@@ -3698,16 +3794,109 @@ function Modal({
   );
 }
 
-const inputCls =
-  "w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/30";
+const inputCls = "input rounded-[7px] px-2.5 py-[7px] text-[13px]";
 const Field = ({ label, children }: { label: string; children: ReactNode }) => (
   <label className="block">
-    <span className="block text-[11px] uppercase tracking-wider text-brand-gray mb-1">
+    <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.08em] text-brand-gray">
       {label}
     </span>
     {children}
   </label>
 );
+
+// Context-rail controls (proposal + version pickers and their pill buttons),
+// sized to the compact rail rather than the standard form controls.
+const railSelectCls =
+  "rounded-md border border-surface-border bg-white px-2.5 py-[5px] text-[13px] text-brand-black transition focus:border-brand-red focus:outline-none";
+const railPillCls =
+  "rounded-full border border-surface-border bg-white px-3 py-[5px] text-xs font-semibold text-brand-gray transition hover:border-brand-red hover:text-brand-red";
+
+/** Gold "unsaved edits" flag — shown wherever the working tree has drifted from
+ *  the saved version (Project Information header + the Schedule toolbar). */
+function UnsavedPill() {
+  return <span className="pill-pending text-[11px]">unsaved edits</span>;
+}
+
+/** One of the Start / Finish / Total figures that sit beside the page title. */
+function HeaderStat({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
+  return (
+    <div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.1em] text-brand-gray">
+        {label}
+      </div>
+      <div
+        className={clsx(
+          "text-lg font-bold tabular-nums",
+          accent ? "text-brand-red" : "text-brand-black",
+        )}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/** The three download actions collapsed into one header control, per the
+ *  redesign. Each entry calls the same handler its standalone button did. */
+function ExportMenu({
+  onExcel,
+  onZip,
+  onPdf,
+}: {
+  onExcel: () => void;
+  onZip: () => void;
+  onPdf: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+  const item = (label: string, run: () => void) => (
+    <button
+      type="button"
+      className="block w-full px-3 py-1.5 text-left text-brand-black hover:bg-surface-rowhover"
+      onClick={() => {
+        setOpen(false);
+        run();
+      }}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        className="btn-ghost text-[13px] px-3.5"
+        onClick={() => setOpen((o) => !o)}
+        title="Download the Excel template, the ZIP bundle, or a branded PDF"
+      >
+        ⬇ Excel · ZIP · PDF ▾
+      </button>
+      {open && (
+        <div className="absolute right-0 z-30 mt-1 w-48 rounded-[10px] border border-surface-border bg-white py-1 text-sm shadow-page">
+          {item("⬇ Save Excel", onExcel)}
+          {item("🗜 ZIP bundle", onZip)}
+          {item("📄 PDF…", onPdf)}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ---------------- upload dialog ----------------
 function UploadDialog({
@@ -3786,7 +3975,8 @@ function UploadDialog({
           <button
             className={clsx(
               "btn-ghost text-xs py-1",
-              !isTemplate && "bg-rose-50 text-brand-red font-semibold",
+              !isTemplate &&
+                "border-brand-red bg-brand-red text-white hover:border-brand-red hover:text-white",
             )}
             onClick={() => switchMode("workbook")}
           >
@@ -3795,7 +3985,8 @@ function UploadDialog({
           <button
             className={clsx(
               "btn-ghost text-xs py-1",
-              isTemplate && "bg-rose-50 text-brand-red font-semibold",
+              isTemplate &&
+                "border-brand-red bg-brand-red text-white hover:border-brand-red hover:text-white",
             )}
             onClick={() => switchMode("template")}
           >
@@ -3816,7 +4007,7 @@ function UploadDialog({
           }}
           className={clsx(
             "rounded-lg border-2 border-dashed p-6 text-center transition",
-            dragOver ? "border-brand-red bg-rose-50" : "border-brand-lightgray/80",
+            dragOver ? "border-brand-red bg-[#fdf6f6]" : "border-surface-ghost",
           )}
         >
           {file ? (
@@ -3882,6 +4073,7 @@ function UploadDialog({
           <label className="flex items-center gap-2 text-sm text-brand-gray">
             <input
               type="checkbox"
+              className="accent-brand-red"
               checked={linkPortfolio}
               onChange={(e) => setLinkPortfolio(e.target.checked)}
             />
@@ -3953,16 +4145,16 @@ function SyncDialog({
   return (
     <Modal title="Sync to portfolio schedule" onClose={onClose}>
       <div className="space-y-3">
-        <p className="text-sm text-slate-700">
+        <p className="text-sm text-brand-black">
           Projects <b>~{itemCount}</b> schedule item(s) into{" "}
           <b>{portfolioName}</b> and creates a <b>new schedule version</b> there
           (reusing the standard schedule-save pipeline). Your proposal is
           unchanged.
         </p>
-        <label className="flex items-start gap-2 text-sm text-slate-700">
+        <label className="flex items-start gap-2 text-sm text-brand-black">
           <input
             type="checkbox"
-            className="mt-0.5"
+            className="mt-0.5 accent-brand-red"
             checked={seedDeliverables}
             onChange={(e) => setSeedDeliverables(e.target.checked)}
           />
@@ -4182,15 +4374,16 @@ function SplitDepositDialog({
               save the schedule first.
             </div>
           )}
-          <div className="max-h-[50vh] overflow-y-auto rounded border border-slate-200">
+          <div className="max-h-[50vh] overflow-y-auto rounded-lg border border-surface-border">
             {eligible.map((n) => (
               <label
                 key={memKey(n)}
-                className="flex items-center gap-2 px-3 py-1.5 text-sm border-b border-slate-100 last:border-0 hover:bg-slate-50"
+                className="flex items-center gap-2 border-b border-surface-hairline px-3 py-1.5 text-sm last:border-0 hover:bg-surface-rowhover"
                 style={{ paddingLeft: 12 + n.indent_level * 16 }}
               >
                 <input
                   type="checkbox"
+                  className="accent-brand-red"
                   checked={selectedKeys.has(memKey(n))}
                   onChange={() => toggleSel(memKey(n))}
                 />
@@ -4239,6 +4432,7 @@ function SplitDepositDialog({
               <label className="flex items-center gap-2 text-sm text-brand-black">
                 <input
                   type="radio"
+                  className="accent-brand-red"
                   name="split-mode"
                   checked={mode === "percent_of_each"}
                   onChange={() => setMode("percent_of_each")}
@@ -4248,6 +4442,7 @@ function SplitDepositDialog({
               <label className="flex items-center gap-2 text-sm text-brand-black">
                 <input
                   type="radio"
+                  className="accent-brand-red"
                   name="split-mode"
                   checked={mode === "percent_of_deposit"}
                   onChange={() => setMode("percent_of_deposit")}
@@ -4262,6 +4457,7 @@ function SplitDepositDialog({
               <label className="flex items-center gap-2 text-sm text-brand-black">
                 <input
                   type="radio"
+                  className="accent-brand-red"
                   name="split-target"
                   checked={targetKind === "deposit"}
                   onChange={() => setTargetKind("deposit")}
@@ -4276,6 +4472,7 @@ function SplitDepositDialog({
               >
                 <input
                   type="radio"
+                  className="accent-brand-red"
                   name="split-target"
                   disabled={ddDisabled}
                   checked={targetKind === "due_diligence"}
@@ -4305,10 +4502,10 @@ function SplitDepositDialog({
           </div>
 
           {/* live preview */}
-          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm space-y-1">
+          <div className="space-y-1 rounded-lg border border-surface-border bg-surface-rowhover px-3 py-2 text-sm">
             <div>
               Target Deposit Amount{" "}
-              <b className="text-[#991f2b] tabular-nums">{fmtMoney(calculatedDeposit)}</b>
+              <b className="text-brand-darkred tabular-nums">{fmtMoney(calculatedDeposit)}</b>
             </div>
             <div>
               Total Proposal{" "}
@@ -4331,16 +4528,16 @@ function SplitDepositDialog({
           </div>
 
           {/* per-task table */}
-          <div className="max-h-[36vh] overflow-y-auto rounded border border-slate-200">
+          <div className="max-h-[36vh] overflow-y-auto rounded-lg border border-surface-border">
             <table className="min-w-full text-xs">
-              <thead className="bg-brand-red text-white sticky top-0">
+              <thead className="sticky top-0 bg-surface-rowhover text-[10.5px] uppercase tracking-[0.08em] text-brand-gray [&_th]:bg-surface-rowhover [&_th]:font-semibold">
                 <tr>
-                  <th className="text-left px-2 py-1.5">Task</th>
-                  <th className="px-2 py-1.5">Current $</th>
-                  <th className="px-2 py-1.5">{pctHeader}</th>
-                  <th className="px-2 py-1.5">Subtract $</th>
-                  <th className="px-2 py-1.5">Result $</th>
-                  <th className="px-2 py-1.5">Status</th>
+                  <th className="text-left px-2 py-2">Task</th>
+                  <th className="px-2 py-2">Current $</th>
+                  <th className="px-2 py-2">{pctHeader}</th>
+                  <th className="px-2 py-2">Subtract $</th>
+                  <th className="px-2 py-2">Result $</th>
+                  <th className="px-2 py-2">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -4353,7 +4550,7 @@ function SplitDepositDialog({
                   );
                   const result = price - sub;
                   return (
-                    <tr key={k} className="border-t border-slate-100">
+                    <tr key={k} className="border-t border-surface-hairline">
                       <td className="px-2 py-1 text-brand-black">
                         [{t.id}] {t.name}
                       </td>
@@ -4363,7 +4560,7 @@ function SplitDepositDialog({
                       <td className="px-2 py-1 text-center">
                         <input
                           type="number"
-                          className="w-16 rounded border border-slate-200 px-1 py-0.5 text-xs text-right tabular-nums disabled:bg-slate-100 disabled:text-brand-gray"
+                          className="w-16 rounded-[5px] border border-surface-border px-1 py-0.5 text-xs text-right tabular-nums focus:border-brand-red focus:outline-none disabled:bg-surface-mute disabled:text-brand-gray"
                           disabled={mode === "percent_of_each"}
                           value={
                             mode === "percent_of_each" ? globalPct : (percents[k] ?? 0)
@@ -4376,13 +4573,13 @@ function SplitDepositDialog({
                           }
                         />
                       </td>
-                      <td className="px-2 py-1 text-right tabular-nums text-[#991f2b]">
+                      <td className="px-2 py-1 text-right tabular-nums text-brand-darkred">
                         {fmtMoney(sub)}
                       </td>
                       <td
                         className={clsx(
                           "px-2 py-1 text-right tabular-nums",
-                          result >= 0 ? "text-emerald-700" : "text-brand-red",
+                          result >= 0 ? "text-brand-green" : "text-brand-red",
                         )}
                       >
                         {fmtMoney(result)}
@@ -4398,7 +4595,7 @@ function SplitDepositDialog({
           </div>
 
           {/* summary */}
-          <div className="rounded border border-slate-200 px-3 py-2 text-sm">
+          <div className="rounded-lg border border-surface-border px-3 py-2 text-sm">
             {mode === "percent_of_each" ? (
               <div className="flex flex-wrap gap-x-6">
                 <span>
@@ -4417,7 +4614,7 @@ function SplitDepositDialog({
                   <b
                     className={clsx(
                       "tabular-nums",
-                      totalOk ? "text-emerald-700" : "text-brand-red",
+                      totalOk ? "text-brand-green" : "text-brand-red",
                     )}
                   >
                     {pctTotal.toFixed(2)}%
@@ -4435,7 +4632,7 @@ function SplitDepositDialog({
               ) : atRisk > 0 ? (
                 <span className="text-brand-red">⚠️ {atRisk} at risk</span>
               ) : (
-                <span className="text-emerald-700">✓ All tasks safe</span>
+                <span className="text-brand-green">✓ All tasks safe</span>
               )}
             </div>
           </div>
