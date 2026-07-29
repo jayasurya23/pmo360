@@ -683,6 +683,10 @@ class TimelineAssignmentOut(BaseModel):
     project_name: Optional[str] = None
     client: Optional[str] = None
     effective_status: Optional[str] = None
+    # Provenance for the proposal auto-resync. `manual_edit_at` is stored but
+    # deliberately not exposed — it would bloat the board payload for no UI gain.
+    origin: str = "manual"          # "proposal" | "manual"
+    manual_edit: bool = False
 
 
 class TimelineTimeOffIn(BaseModel):
@@ -932,6 +936,8 @@ class ProposalOut(ORMModel):
     # project's portfolio. project_name is a read-only derived label.
     project_id: Optional[int] = None
     project_name: Optional[str] = None
+    # Exactly one proposal per Project is the ACTIVE one; the rest are history.
+    is_active_for_project: bool = False
     linked_schedule_id: Optional[int] = None
     current_version_id: Optional[int] = None
     version: int = 1
@@ -978,6 +984,33 @@ class PortfolioProjectUpdate(BaseModel):
 class ProposalLinkProjectRequest(BaseModel):
     project_id: int
     expected_version: Optional[int] = None
+    # None => True, so pre-existing callers keep today's "linking makes it the
+    # live proposal" behaviour. False links it as history instead.
+    make_active: Optional[bool] = None
+
+
+class ProposalTimelineOrphanOut(BaseModel):
+    """A hand-scheduled Timeline bar whose phase no longer exists in the schedule."""
+    assignment_id: int
+    discipline: str
+    milestone: Optional[str] = None
+    resource_id: Optional[int] = None
+    start_date: date
+    end_date: date
+
+
+class ProposalTimelineResyncOut(BaseModel):
+    """What an implicit resync did to the proposal's Timeline project.
+    null whenever the proposal has no Timeline project, the edited version is
+    not the active one, or the projection produced no bars."""
+    timeline_project_id: int
+    version_label: str
+    bars_added: int = 0          # brand-new auto bars
+    bars_updated: int = 0        # existing auto bars re-dated in place
+    bars_removed: int = 0        # auto bars whose phase vanished
+    preserved_manual: int = 0    # hand-owned bars left untouched
+    skipped_no_dates: int = 0
+    orphaned: list[ProposalTimelineOrphanOut] = Field(default_factory=list)
 
 
 class ProposalVersionOut(ORMModel):
@@ -998,6 +1031,9 @@ class ProposalVersionDetail(ProposalVersionOut):
     info: dict = Field(default_factory=dict)
     config: dict = Field(default_factory=dict)
     tree: list[ProposalItemNode] = Field(default_factory=list)
+    # Set only by the write endpoints (tree save / recompute) that re-project
+    # onto an existing Timeline project; reads always leave it null.
+    timeline_resync: Optional[ProposalTimelineResyncOut] = None
 
 
 class ProposalBoardResponse(BaseModel):
@@ -1005,6 +1041,7 @@ class ProposalBoardResponse(BaseModel):
     proposal: ProposalOut
     version: ProposalVersionDetail
     versions: list[ProposalVersionOut] = Field(default_factory=list)
+    timeline_resync: Optional[ProposalTimelineResyncOut] = None
 
 
 class ProposalPatch(BaseModel):
@@ -1076,6 +1113,8 @@ class ProposalToTimelineResult(BaseModel):
     skipped_no_dates: int = 0             # phases dropped for missing start/finish
     start_date: Optional[date] = None     # span of the imported bars — lets the
     end_date: Optional[date] = None       # UI open the board focused on them
+    preserved_manual: int = 0             # hand-owned bars the import left alone
+    orphaned: list[ProposalTimelineOrphanOut] = Field(default_factory=list)
 
 
 class ProposalTimelineMilestoneOut(BaseModel):

@@ -38,6 +38,8 @@ import type {
   ProposalLogos,
   ProposalToTimelineResult,
   ProposalTimelineMilestones,
+  ProposalTimelineResync,
+  ProposalTimelineOrphan,
   ChangeOrder,
   ChangeOrderLineItem,
 } from "./types";
@@ -473,6 +475,12 @@ export const patchTimelineAssignment = (id: number, body: Partial<TimelineAssign
   apiClient.patch<TimelineAssignment>(`/timeline/assignments/${id}`, body).then((r) => r.data);
 export const deleteTimelineAssignment = (id: number) =>
   apiClient.delete(`/timeline/assignments/${id}`);
+/** Hand a Timeline bar back to auto-resync ownership. Clears the manual-edit
+ *  latch that a drag/resize/edit set, so the next proposal save re-dates it. */
+export const releaseTimelineAssignment = (assignmentId: number) =>
+  apiClient
+    .post<TimelineAssignment>(`/timeline/assignments/${assignmentId}/release`)
+    .then((r) => r.data);
 export const createTimelineTimeOff = (body: {
   resource_id: number;
   start_date: string;
@@ -533,10 +541,17 @@ export const uploadProposal = async (
   });
   return res.data;
 };
-export const listProposals = (portfolio_id?: number) =>
+export const listProposals = (
+  portfolio_id?: number,
+  opts?: { project_id?: number; active_only?: boolean },
+) =>
   apiClient
     .get<ProposalListItem[]>("/proposals", {
-      params: portfolio_id != null ? { portfolio_id } : {},
+      params: {
+        ...(portfolio_id != null ? { portfolio_id } : {}),
+        ...(opts?.project_id != null ? { project_id: opts.project_id } : {}),
+        ...(opts?.active_only ? { active_only: true } : {}),
+      },
     })
     .then((r) => r.data);
 export const fetchProposalBoard = (id: number) =>
@@ -585,6 +600,35 @@ export const createProposalVersion = (id: number) =>
   apiClient
     .post<ProposalBoard>(`/proposals/${id}/versions`)
     .then((r) => r.data);
+/** Increment the version of an EXISTING proposal from a freshly uploaded Excel.
+ *  `source`: "workbook" = Castillo cost workbook, "template" = saved template.
+ *  Returns the same board shape as createProposalVersion, new version active. */
+export const createProposalVersionFromUpload = async (
+  id: number,
+  file: File,
+  opts?: {
+    source?: "workbook" | "template";
+    project_start?: string;
+    utilization_percent?: number;
+    update_identity?: boolean;
+  },
+) => {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("source", opts?.source ?? "workbook");
+  if (opts?.project_start) form.append("project_start", opts.project_start);
+  if (opts?.utilization_percent != null)
+    form.append("utilization_percent", String(opts.utilization_percent));
+  if (opts?.update_identity) form.append("update_identity", "true");
+  const res = await apiClient.post<ProposalBoard>(
+    `/proposals/${id}/versions/from-upload`,
+    form,
+    // Let the browser set the multipart boundary; a big workbook parse can
+    // outrun the default timeout, same as the create-proposal upload.
+    { headers: { "Content-Type": "multipart/form-data" }, timeout: 5 * 60 * 1000 },
+  );
+  return res.data;
+};
 export const activateProposalVersion = (id: number, vid: number) =>
   apiClient
     .post<ProposalBoard>(`/proposals/${id}/versions/${vid}/activate`)
@@ -659,9 +703,21 @@ export const linkProposal = (id: number, portfolio_id: number) =>
     .then((r) => r.data);
 /** Link a proposal to a Project (the tier under a Portfolio); the portfolio is
  *  derived from the project server-side. */
-export const linkProposalProject = (id: number, project_id: number) =>
+export const linkProposalProject = (
+  id: number, project_id: number, make_active?: boolean,
+) =>
   apiClient
-    .patch<ProposalOut>(`/proposals/${id}/link-project`, { project_id })
+    .patch<ProposalOut>(`/proposals/${id}/link-project`, {
+      project_id,
+      ...(make_active != null ? { make_active } : {}),
+    })
+    .then((r) => r.data);
+/** Make this proposal the ACTIVE one for its Project (demotes the incumbent).
+ *  Several proposals may share a Project — revisions, re-bids — but only the
+ *  active one represents the live scope. */
+export const activateProposalForProject = (id: number) =>
+  apiClient
+    .post<ProposalOut>(`/proposals/${id}/activate-for-project`)
     .then((r) => r.data);
 export const unlinkProposal = (id: number) =>
   apiClient.patch<ProposalOut>(`/proposals/${id}/unlink`).then((r) => r.data);

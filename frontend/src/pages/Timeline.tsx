@@ -20,6 +20,7 @@ import {
   createTimelineAssignment,
   patchTimelineAssignment,
   deleteTimelineAssignment,
+  releaseTimelineAssignment,
   listTimelineResources,
   createTimelineResource,
   patchTimelineResource,
@@ -511,6 +512,19 @@ export default function Timeline() {
         await saveAssign(a, before, { force: true });
         await reload();
       });
+    } catch (e) {
+      await onWriteError(e);
+    }
+  }
+
+  // Give a hand-touched bar back to the proposal auto-resync. Nothing is patched
+  // optimistically: the server owns the provenance flags and the bar only moves
+  // on the *next* proposal save, so a reload is the only honest picture.
+  async function releaseAssignment(a: TimelineAssignment) {
+    setMenu(null);
+    try {
+      await releaseTimelineAssignment(a.id);
+      await reload();
     } catch (e) {
       await onWriteError(e);
     }
@@ -1166,6 +1180,7 @@ export default function Timeline() {
           onDuplicate={duplicateAssignment}
           onDelete={deleteAssignment}
           onUnassign={(a) => quickPatch(a, { resource_id: null }, "unassign")}
+          onRelease={releaseAssignment}
           onSetStatus={(a, s) => quickPatch(a, { status: s }, "status")}
           onSetUtil={(a, u) => quickPatch(a, { utilization: u }, "utilization")}
           onAddHere={(resId, wk) => { setMenu(null); setAddPreset({ resourceId: resId, start: wk }); }}
@@ -1404,13 +1419,20 @@ function Bar({ a, ctx, top = (ROW_H - BAR_H) / 2, height = BAR_H }: { a: Timelin
   const left = vS * dw + 3;
   const width = Math.max(dw - 6, (vE - vS) * dw - 6);
   const util = a.utilization != null ? `${Math.round(a.utilization * 100)}%` : "";
+  // A bar projected from a proposal that a PM has since dragged / resized /
+  // re-staffed is exempt from the proposal auto-resync — it needs to look
+  // different from the auto-dated bars around it, otherwise "why didn't this
+  // one move?" is invisible. Both fields are checked explicitly because a
+  // backend without the provenance columns sends neither, and `undefined`
+  // must render nothing rather than a false positive.
+  const handScheduled = a.manual_edit === true && a.origin === "proposal";
 
   return (
     <div
       onPointerDown={(e) => ctx.onBarDown(e, a, "move")}
       onDoubleClick={(e) => { e.stopPropagation(); ctx.onEditBar(a); }}
       onContextMenu={(e) => ctx.onBarMenu(e, a)}
-      title={`${a.project_name || a.label || ""} · ${a.discipline}${a.milestone ? " · " + a.milestone : ""} · ${util}  (double-click to edit · right-click for options)`}
+      title={`${a.project_name || a.label || ""} · ${a.discipline}${a.milestone ? " · " + a.milestone : ""} · ${util}${handScheduled ? " · ✎ hand-scheduled — kept as-is when the proposal is updated" : ""}  (double-click to edit · right-click for options)`}
       className={clsx(
         "absolute rounded-md text-xs font-semibold truncate px-[11px] cursor-grab active:cursor-grabbing group shadow-bar",
         active && "ring-2 ring-brand-black/30 z-10",
@@ -1437,6 +1459,27 @@ function Bar({ a, ctx, top = (ROW_H - BAR_H) / 2, height = BAR_H }: { a: Timelin
         onPointerDown={(e) => { e.stopPropagation(); ctx.onBarDown(e, a, "r"); }}
         className="absolute right-0 top-0 h-full w-1.5 cursor-ew-resize opacity-0 group-hover:opacity-100 bg-black/20"
       />
+      {/* Hand-scheduled marker: the bar's top-right corner is notched out and
+          filled with the board's own card colour, so it reads as a cut on every
+          status fill and follows the theme (white out of the bar in light,
+          near-black in dark) instead of being a fixed tint. The 1px larger
+          triangle underneath leaves a grey hairline along the diagonal — the
+          "Not Contracted" fill is itself a pale surface, and without that edge
+          the notch would all but vanish on it. Painted after the resize handle
+          so it sits on top, and pointer-transparent so the handle keeps the
+          drag. */}
+      {handScheduled && (
+        <>
+          <span
+            aria-hidden
+            className="pointer-events-none absolute right-0 top-0 h-0 w-0 border-l-[10px] border-t-[10px] border-l-transparent border-t-brand-gray"
+          />
+          <span
+            aria-hidden
+            className="pointer-events-none absolute right-0 top-0 h-0 w-0 border-l-[9px] border-t-[9px] border-l-transparent border-t-surface-card"
+          />
+        </>
+      )}
       {a.label || a.project_name || "—"}
       {!a.label && a.milestone ? ` ${a.milestone}` : ""} · {util}
     </div>
@@ -2108,7 +2151,7 @@ function ResourceManagerDialog({ onClose, onChanged }: { onClose: () => void; on
 // ---------------- right-click context menu ----------------
 type MenuState = { x: number; y: number; a?: TimelineAssignment; resourceId?: number | null; weekIso?: string; timeoff?: TimelineTimeOff };
 function ContextMenu({
-  menu, onClose, onEdit, onDuplicate, onDelete, onUnassign, onSetStatus, onSetUtil, onAddHere, onBlockTime, onRemoveTimeOff,
+  menu, onClose, onEdit, onDuplicate, onDelete, onUnassign, onRelease, onSetStatus, onSetUtil, onAddHere, onBlockTime, onRemoveTimeOff,
 }: {
   menu: MenuState;
   onClose: () => void;
@@ -2116,6 +2159,7 @@ function ContextMenu({
   onDuplicate: (a: TimelineAssignment) => void;
   onDelete: (a: TimelineAssignment) => void;
   onUnassign: (a: TimelineAssignment) => void;
+  onRelease: (a: TimelineAssignment) => void;
   onSetStatus: (a: TimelineAssignment, status: string) => void;
   onSetUtil: (a: TimelineAssignment, util: number) => void;
   onAddHere: (resourceId: number | null, weekIso: string) => void;
@@ -2143,6 +2187,14 @@ function ContextMenu({
           <MenuItem onClick={() => onEdit(a)}>✎ Edit…</MenuItem>
           <MenuItem onClick={() => onDuplicate(a)}>⧉ Duplicate</MenuItem>
           {a.resource_id != null && <MenuItem onClick={() => onUnassign(a)}>⇤ Unassign</MenuItem>}
+          {/* Offered on every bar, not just the hand-scheduled ones: a board
+              served by a backend without the provenance columns reports no
+              `manual_edit` at all, and hiding the only escape hatch behind a
+              field that reads `undefined` would make it unreachable. On a bar
+              that was never proposal-owned the call is simply a no-op. */}
+          <MenuItem onClick={() => onRelease(a)} title="Stop protecting this bar from proposal updates — the next proposal save re-dates it from the schedule.">
+            ↺ Re-sync to schedule dates
+          </MenuItem>
           <div className="border-t border-surface-hairline my-1" />
           <div className="px-3 py-0.5 micro-label">Set status</div>
           {STATUSES.map((s) => (
@@ -2194,11 +2246,12 @@ function ContextMenu({
     </div>
   );
 }
-function MenuItem({ children, onClick, destructive }: { children: ReactNode; onClick: () => void; destructive?: boolean }) {
+function MenuItem({ children, onClick, destructive, title }: { children: ReactNode; onClick: () => void; destructive?: boolean; title?: string }) {
   return (
     <button
       className={clsx("flex w-full items-center px-3 py-1.5 text-left hover:bg-surface-rowhover", destructive ? "text-brand-red" : "text-brand-black")}
       onClick={onClick}
+      title={title}
     >
       {children}
     </button>

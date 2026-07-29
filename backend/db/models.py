@@ -10,7 +10,7 @@ rolling action log can track when items were raised vs when they were closed.
 from datetime import datetime, date
 from sqlalchemy import (
     Column, Integer, String, Text, Date, DateTime, ForeignKey, Boolean, JSON,
-    Float,
+    Float, Index, text,
 )
 from sqlalchemy.orm import declarative_base, relationship, backref
 
@@ -638,6 +638,15 @@ class TimelineAssignment(Base):
     status = Column(String(30))                             # overrides project status when set
     label = Column(String(200))                             # bar label override
     order_index = Column(Integer, default=0)
+    # Provenance for the proposal-driven auto-resync. `origin` records who made
+    # the bar; `manual_edit` latches True the moment a PM drags / resizes /
+    # reassigns / edits it. Auto-resync rebuilds ONLY rows that are
+    # origin="proposal" AND manual_edit is False.
+    origin = Column(String(20), nullable=False, default="manual",
+                    server_default="manual")           # "proposal" | "manual"
+    manual_edit = Column(Boolean, nullable=False, default=False,
+                         server_default="0")
+    manual_edit_at = Column(DateTime)
     version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic concurrency
     created_by_id = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -742,6 +751,14 @@ class Proposal(Base):
     # ``portfolio_id`` in sync = this project's portfolio, so portfolio-scoped
     # behavior is unchanged. NULL => no project assigned (legacy/standalone).
     project_id = Column(Integer, ForeignKey("portfolio_projects.id"))
+    # "Allow many, mark one active": several proposals may sit under the same
+    # Project (revisions, re-bids), but exactly ONE is live — the rest are
+    # history. Enforced by the partial unique index below plus the
+    # link-project / activate-for-project endpoints. Always False when
+    # project_id is NULL.
+    is_active_for_project = Column(
+        Boolean, nullable=False, default=False, server_default="0",
+    )
     linked_schedule_id = Column(Integer, ForeignKey("schedules.id"))  # last synced schedule
     # use_alter=True so create_all (fresh-DB path) can break the circular
     # proposals↔proposal_versions FK by adding this one via a post-create ALTER.
@@ -772,6 +789,17 @@ class Proposal(Base):
     project = relationship("PortfolioProject", foreign_keys=[project_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
     updated_by = relationship("User", foreign_keys=[updated_by_id])
+
+    # At most one ACTIVE proposal per Project. PARTIAL unique index so history
+    # rows (active=False) and unlinked rows (project_id NULL) are unconstrained.
+    # Both dialect kwargs are declared; each backend reads only its own.
+    __table_args__ = (
+        Index(
+            "uq_proposals_active_per_project", "project_id", unique=True,
+            sqlite_where=text("is_active_for_project = 1 AND project_id IS NOT NULL"),
+            postgresql_where=text("is_active_for_project AND project_id IS NOT NULL"),
+        ),
+    )
 
     @property
     def project_name(self):
