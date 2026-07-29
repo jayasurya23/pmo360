@@ -257,9 +257,10 @@ export default function Home() {
       <div className="grid grid-cols-1 xl:grid-cols-[1.6fr_1fr] gap-[22px] items-start">
         {/* ---------- Left: the working column ---------- */}
         <div className="min-w-0 space-y-[22px]">
-          {/* Upcoming Outlook meetings + my Microsoft Planner tasks — both are
-              personal to the signed-in user. */}
-          {isAuthenticated && <CalendarCard />}
+          {/* My Microsoft Planner tasks — personal to the signed-in user.
+              Today's meetings used to sit above this; it now leads the right-hand
+              column so the day's schedule reads as standing context rather than
+              as the first item of the work queue. */}
           {isAuthenticated && <PlannerCard />}
 
           <CardShell
@@ -381,6 +382,9 @@ export default function Home() {
 
         {/* ---------- Right: the standing brief ---------- */}
         <div className="min-w-0 space-y-[22px]">
+          {/* The day's schedule leads the brief; everything below it is context
+              you scan rather than act on. */}
+          {isAuthenticated && <CalendarCard />}
           {isAuthenticated && (
             <BriefingCard
               briefing={briefing}
