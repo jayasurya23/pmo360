@@ -46,7 +46,7 @@ def _project_label(project):
 
 
 @router.get("", response_model=DashboardResponse)
-def get_dashboard(db: Session = Depends(get_db)):
+def get_dashboard(db: Session = Depends(get_db), _user=Depends(require_db_user)):
     actions = []
     for a in all_open_actions_across_portfolios(db):
         proj_name, client_name = _project_label(getattr(a, "originating_meeting", None) and a.originating_meeting.project)

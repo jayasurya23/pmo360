@@ -24,6 +24,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
+from auth import require_db_user
 from core.deps import get_db
 from db.models import Client, Project, Meeting, Agenda, ActionItem
 from schemas.common import SearchResponse, SearchResultOut
@@ -60,6 +61,7 @@ def _fmt_date(d) -> str:
 def search(
     q: str = Query("", description="Case-insensitive substring query"),
     db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
 ) -> SearchResponse:
     query = (q or "").strip()
     if not query:

@@ -1,5 +1,5 @@
 """/api/settings — read-only environment + branding info exposed to the React app."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from config import (
     APP_TITLE, APP_TAGLINE, TOOL_NAME, DEFAULT_TIMEZONE,
@@ -7,11 +7,13 @@ from config import (
 )
 
 
+from auth import require_db_user
+
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("")
-def get_settings():
+def get_settings(_user=Depends(require_db_user)):
     """Expose branding + non-secret config so the frontend doesn't need to
     hardcode anything that lives in the backend's .env or BrandColors."""
     return {

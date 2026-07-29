@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
+from auth import require_db_user
 from core.deps import get_db
 from db.models import Schedule, ScheduleItem, Project
 from schedule_parser.parser import parse_schedule_file
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 
 
 @router.get("", response_model=list[ScheduleOut])
-def list_schedules(project_id: int = Query(...), db: Session = Depends(get_db)):
+def list_schedules(project_id: int = Query(...), db: Session = Depends(get_db), _user=Depends(require_db_user)):
     return (
         db.query(Schedule)
         .filter_by(project_id=project_id)
@@ -24,7 +25,7 @@ def list_schedules(project_id: int = Query(...), db: Session = Depends(get_db)):
 
 
 @router.get("/{schedule_id}", response_model=ScheduleOut)
-def get_one(schedule_id: int, db: Session = Depends(get_db)):
+def get_one(schedule_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     s = db.get(Schedule, schedule_id)
     if not s:
         raise HTTPException(404, "Schedule not found")
@@ -35,6 +36,7 @@ def get_one(schedule_id: int, db: Session = Depends(get_db)):
 async def parse_uploaded(
     file: UploadFile = File(...),
     engine: str = Form("auto"),
+    _user=Depends(require_db_user),
 ):
     """Parse an uploaded proposal/schedule file.
 
@@ -66,7 +68,7 @@ async def parse_uploaded(
 
 
 @router.post("", response_model=ScheduleOut, status_code=201)
-def save_schedule(payload: ScheduleSaveRequest, db: Session = Depends(get_db)):
+def save_schedule(payload: ScheduleSaveRequest, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     project = db.get(Project, payload.project_id)
     if not project:
         raise HTTPException(404, "Project not found")
@@ -103,7 +105,7 @@ def save_schedule(payload: ScheduleSaveRequest, db: Session = Depends(get_db)):
 
 
 @router.delete("/{schedule_id}", status_code=204)
-def remove(schedule_id: int, db: Session = Depends(get_db)):
+def remove(schedule_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     s = db.get(Schedule, schedule_id)
     if not s:
         raise HTTPException(404, "Schedule not found")

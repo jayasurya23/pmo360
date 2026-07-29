@@ -20,7 +20,7 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from auth import get_current_db_user
+from auth import get_current_db_user, require_db_user
 from core.deps import get_db
 from core.services import safe_filename_slug
 from db.models import Meeting, MeetingAttachment
@@ -93,7 +93,7 @@ def _storage_path_for(meeting: Meeting, original_filename: str) -> str:
     "/api/meetings/{meeting_id}/attachments",
     response_model=list[MeetingAttachmentOut],
 )
-def list_meeting_attachments(meeting_id: int, db: Session = Depends(get_db)):
+def list_meeting_attachments(meeting_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     """Return attachments for a meeting, newest first."""
     meeting = db.get(Meeting, meeting_id)
     if not meeting:
@@ -177,7 +177,7 @@ async def upload_meeting_attachment(
 # Per-attachment endpoints
 # ---------------------------------------------------------------------------
 @router.get("/api/attachments/{attachment_id}/download")
-def download_attachment(attachment_id: int, db: Session = Depends(get_db)):
+def download_attachment(attachment_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     """Stream the raw bytes back with the original filename so the browser
     saves "site_photo_3.jpg" instead of "8f3a91c2_site_photo_3.jpg".
 
@@ -219,7 +219,7 @@ def download_attachment(attachment_id: int, db: Session = Depends(get_db)):
 
 
 @router.delete("/api/attachments/{attachment_id}", status_code=204)
-def delete_attachment(attachment_id: int, db: Session = Depends(get_db)):
+def delete_attachment(attachment_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     """Remove the row and make a best-effort attempt to delete the file
     from storage. Storage failures (file already gone, SharePoint hiccup,
     etc.) don't block the row delete — the DB is the source of truth for

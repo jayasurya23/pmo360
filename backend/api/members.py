@@ -39,7 +39,7 @@ class AddMemberRequest(BaseModel):
     "/api/projects/{project_id}/members",
     response_model=list[ProjectMemberOut],
 )
-def get_project_members(project_id: int, db: Session = Depends(get_db)):
+def get_project_members(project_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")

@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from core.deps import get_db
-from auth import get_current_db_user
+from auth import get_current_db_user, require_db_user
 from db.models import Note
 from db.repository import list_notes, get_project_roster
 from schemas.common import NoteOut, NoteIn, NoteUpdate
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/notes", tags=["notes"])
 
 
 @router.get("", response_model=list[NoteOut])
-def get_notes(project_id: int = Query(...), db: Session = Depends(get_db)):
+def get_notes(project_id: int = Query(...), db: Session = Depends(get_db), _user=Depends(require_db_user)):
     return list_notes(db, project_id)
 
 
@@ -72,7 +72,7 @@ def patch_note(
 
 
 @router.delete("/{note_id}", status_code=204)
-def delete_note(note_id: int, db: Session = Depends(get_db)):
+def delete_note(note_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     n = db.get(Note, note_id)
     if not n:
         raise HTTPException(404, "Note not found")
@@ -81,7 +81,7 @@ def delete_note(note_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{note_id}/suggest-action", response_model=SuggestedActionOut)
-def suggest_action_from_note(note_id: int, db: Session = Depends(get_db)):
+def suggest_action_from_note(note_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
     """Ask the LLM to extract a concrete ActionItem proposal from this
     note's text. Returns text/owner/due_date/rationale; empty `text` means
     the note looks informational and no action was extracted.
