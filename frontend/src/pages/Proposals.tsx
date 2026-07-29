@@ -80,6 +80,14 @@ import clsx from "clsx";
 const PRED_TYPES = ["FS", "FF", "SS", "SF"] as const;
 type PredType = (typeof PRED_TYPES)[number];
 
+// Deepest indent the schedule tree accepts. The Name cell pads 10 + 24×depth
+// inside a column that is now pinned by the table's <colgroup> rather than
+// growing with content, so an unbounded indent eventually crushes the name input
+// to nothing. Capped here, on the depth itself, because indent_level is also what
+// derives parent_id on save — clamping only the padding would leave rows nested
+// deeper than they look. Eight levels is far past anything a proposal uses.
+const MAX_INDENT = 8;
+
 // Editable project-info fields live on the Proposal row (PATCH), not the
 // version's info_json — matches the backend ProposalPatch shape.
 const INFO_FIELDS: { key: keyof ProposalOut; label: string }[] = [
@@ -1322,12 +1330,20 @@ export default function Proposals() {
       if (idx < 0) return rows;
       const cur = rows[idx];
       if (delta === 1 && idx === 0) return rows; // can't indent the first row
-      const newLvl = Math.max(0, cur.indent_level + delta);
-      if (newLvl === cur.indent_level) return rows;
+      const newLvl = cur.indent_level + delta;
+      if (newLvl < 0 || newLvl > MAX_INDENT) return rows;
       // shift the node + its subtree by delta
       let end = idx + 1;
       while (end < rows.length && rows[end].indent_level > cur.indent_level)
         end++;
+      // Refuse the whole move if it would push a descendant past the cap, rather
+      // than clamping per row: a clamp would fold two levels into one and so
+      // reparent the deeper rows the next time parent_id is derived.
+      if (
+        delta === 1 &&
+        rows.slice(idx, end).some((n) => n.indent_level + delta > MAX_INDENT)
+      )
+        return rows;
       return rows.map((n, i) =>
         i >= idx && i < end
           ? { ...n, indent_level: Math.max(0, n.indent_level + delta) }
@@ -2578,10 +2594,18 @@ export default function Proposals() {
             </section>
           </div>
 
-          {/* schedule tree — the card grows to the table's width (w-max) so its
-              border always wraps the (wide) schedule and horizontal scrolling
-              happens at the page level, never in a nested scrollbar. */}
-          <section className="card p-0 w-max min-w-full">
+          {/* schedule tree — from xl up the card is exactly page-width so its
+              right edge lines up with every other card on the page; the table
+              inside declares its columns (see the colgroup) instead of deriving
+              them from content. The gate is xl (1280px), not 2xl: a 1366/1440
+              laptop is the common case here, and gating at 1536 would have made
+              the alignment a no-op on exactly those machines. Below xl there
+              isn't enough room for a usable Name column, so it falls back to
+              w-max: the card grows to the table's width, its border still wraps
+              the whole schedule and the horizontal scrolling happens at the page
+              level, never in a nested scrollbar (which would break the sticky
+              toolbar + thead below). */}
+          <section className="card p-0 w-max min-w-full xl:w-full">
             {/* Toolbar pins below the app header while scrolling the rows. The
                 header height is read from --app-header-h (set by Layout) so this
                 keeps working if the shell's header grows; 4rem is today's value. */}
@@ -2641,25 +2665,93 @@ export default function Proposals() {
                 <thead>, which pins just below the sticky toolbar (app header +
                 the toolbar's own 61px). */}
             <div>
-              <table className="min-w-full text-[12.5px]">
+              <table className="min-w-full text-[12.5px] xl:w-full xl:table-fixed">
+                {/* Column budget — declared, not content-derived, so the table
+                    is exactly as wide as the card and its right edge lines up
+                    with every other card by construction. Only ONE col is left
+                    auto (Name): under table-layout:fixed the width-less columns
+                    "equally divide the remaining space", so with a single one it
+                    absorbs the whole remainder and the total is always exactly
+                    100% — no percentages, no browser-dependent surplus split.
+                    Widths are xl-gated because a <col width> acts as a *minimum*
+                    under table-layout:auto, so below the gate it has to be absent
+                    rather than merely ignored.
+
+                    Widths are in rem, not px, to stay in the same unit as the
+                    cell controls they budget (w-9, px-1, gap-0 are all rem). A
+                    browser font-size of Large scales rem but not px, so a px
+                    budget would be overflowed by its own contents and the last
+                    column (Actions) would spill past the card.
+
+                    Fixed columns sum to 66rem / 1056px; the content box is
+                    min(vw,1560) − 74 (max-w-shell 1560, px-9 72, the card's 1px
+                    border ×2), so Name gets 150px at 1280, 310px at 1440 and
+                    430px from 1560 up. */}
+                <colgroup>
+                  {/* drag handle: px-1 + w-5 */}
+                  <col className="xl:w-[1.75rem]" />
+                  {/* Name: the one width-less col — takes the whole remainder */}
+                  <col />
+                  {/* Dur: px-1 + w-9 input */}
+                  <col className="xl:w-[2.75rem]" />
+                  {/* Hrs: px-1 + w-10 input — wider than Dur/Util because hours
+                      run to four digits (1200) where days and % do not. */}
+                  <col className="xl:w-[3.25rem]" />
+                  {/* Price: px-1 + w-24 MoneyInput ("12,345,678" needs 65.7px) */}
+                  <col className="xl:w-[6.5rem]" />
+                  {/* Start: px-2.5 + "07/29/26" 56.4px */}
+                  <col className="xl:w-[4.875rem]" />
+                  {/* Finish: same */}
+                  <col className="xl:w-[4.875rem]" />
+                  {/* Predecessor: select truncates, full name is on hover. Funds
+                      the extra Hrs width — the header (~103px) is the real floor
+                      here, so 134px still clears it. */}
+                  <col className="xl:w-[8.375rem]" />
+                  {/* Type: FS/SS/FF/SF + UA arrow */}
+                  <col className="xl:w-[3.5rem]" />
+                  {/* Lag: px-1 + w-9 input */}
+                  <col className="xl:w-[2.875rem]" />
+                  {/* MS — header-bound */}
+                  <col className="xl:w-[2.5rem]" />
+                  {/* On — header-bound */}
+                  <col className="xl:w-[2.5rem]" />
+                  {/* $ only — widest toggle header */}
+                  <col className="xl:w-[4.125rem]" />
+                  {/* St — header-bound */}
+                  <col className="xl:w-[2.25rem]" />
+                  {/* Fn — header-bound */}
+                  <col className="xl:w-[2.375rem]" />
+                  {/* Util: px-1 + w-9 input */}
+                  <col className="xl:w-[2.75rem]" />
+                  {/* Actions: px-1 + 8 × w-5 at gap-0 = 10.5rem, +0.25rem slack.
+                      Last column, so anything that outgrows this escapes the
+                      card and brings the page scrollbar back — keep the slack. */}
+                  <col className="xl:w-[10.75rem]" />
+                </colgroup>
                 {/* The header keeps an explicit bottom border: while pinned it
                     floats over white rows, where the light fill alone wouldn't
-                    separate it. */}
-                <thead className="sticky top-[calc(var(--app-header-h,4rem)_+_61px)] z-10 bg-brand-red text-[10.5px] uppercase tracking-[0.08em] text-white [&_th]:bg-brand-red [&_th]:text-white [&_th]:font-semibold">
+                    separate it. nowrap protects the tight header-governed columns
+                    (St has under 2px of slack): a header wrapping to two lines
+                    would desynchronise the hardcoded +61px sticky offset below. */}
+                <thead className="sticky top-[calc(var(--app-header-h,4rem)_+_61px)] z-10 bg-brand-red text-[10.5px] uppercase tracking-[0.08em] text-white [&_th]:bg-brand-red [&_th]:text-white [&_th]:font-semibold xl:[&_th]:whitespace-nowrap">
                   <tr>
                     <th className="px-1.5 py-2.5 w-6" title="Drag to reorder"></th>
-                    <th className="text-left px-2.5 py-2.5 min-w-[280px]">Name</th>
+                    <th className="text-left px-2.5 py-2.5 min-w-[280px] xl:min-w-0">Name</th>
+                    {/* px-1 from xl up on the three narrow numeric headers: at
+                        px-2.5 "DUR"/"UTIL" are wider than the 2.75rem their
+                        column is budgeted at, and a nowrap header in a fixed
+                        table overflows into its neighbour instead of growing. */}
                     <th
-                      className="text-center px-2.5 py-2.5"
+                      className="text-center px-2.5 xl:px-1 py-2.5"
                       title="Duration in working days (Mon–Fri, excluding holidays). The Project Summary shows calendar days, which are larger."
                     >
                       Dur
                     </th>
-                    <th className="text-center px-2.5 py-2.5">Hrs</th>
+                    <th className="text-center px-2.5 xl:px-1 py-2.5">Hrs</th>
                     <th className="text-right px-2.5 py-2.5">Price</th>
                     <th className="text-center px-2.5 py-2.5">Start</th>
                     <th className="text-center px-2.5 py-2.5">Finish</th>
-                    <th className="text-left px-2.5 py-2.5 min-w-[170px]">Predecessor</th>
+                    <th className="text-left px-2.5 py-2.5 min-w-[170px] xl:min-w-0">Predecessor</th>
                     <th className="text-center px-2.5 py-2.5">Type</th>
                     <th className="text-center px-2.5 py-2.5">Lag</th>
                     <th className="text-center px-2.5 py-2.5" title="Milestone">MS</th>
@@ -2667,7 +2759,7 @@ export default function Proposals() {
                     <th className="text-center px-2.5 py-2.5" title="Price only">$ only</th>
                     <th className="text-center px-2.5 py-2.5" title="Show start date">St</th>
                     <th className="text-center px-2.5 py-2.5" title="Show end date">Fn</th>
-                    <th className="text-center px-2.5 py-2.5" title="Task utilization %">Util</th>
+                    <th className="text-center px-2.5 xl:px-1 py-2.5" title="Task utilization %">Util</th>
                     <th className="px-2.5 py-2.5">Actions</th>
                   </tr>
                 </thead>
@@ -2683,7 +2775,11 @@ export default function Proposals() {
                     <tbody>
                       {visibleNodes.length === 0 && (
                         <tr>
-                          <td colSpan={18} className="px-4 py-6 text-center text-brand-gray">
+                          {/* 17, not 18: the table model grows to fit a colSpan,
+                              so an over-long one invents an 18th column that the
+                              colgroup doesn't declare — under table-fixed that
+                              phantom is also auto-width and would halve Name. */}
+                          <td colSpan={17} className="px-4 py-6 text-center text-brand-gray">
                             <div>Empty schedule.</div>
                             <button
                               type="button"
@@ -3502,12 +3598,32 @@ function Row({
   const predOptions = allNodes.filter(
     (o) => o.node.id != null && o.key !== rowKey,
   );
+  // The select is clipped to its budgeted column, so a long predecessor name is
+  // only fully discoverable on hover. Branch on the *id*, not the resolved name:
+  // an id pointing at a deleted row resolves to "" exactly like "no predecessor"
+  // does, and asserting "No predecessor" on a row the missing-dependency rule has
+  // just tinted gold sends the PM hunting in the wrong place.
+  const predOption = predOptions.find((o) => o.node.id === node.predecessor_id);
+  const predTitle =
+    node.predecessor_id == null
+      ? "No predecessor"
+      : predOption
+        ? // same blank-name fallback the option list renders
+          predOption.node.name || `#${predOption.node.id}`
+        : `Predecessor #${node.predecessor_id} no longer exists — pick a new one or clear it`;
 
   // Editable cells read as plain text until you point at them — the border only
   // appears on hover/focus, so a dense schedule stays legible.
   const cellBase =
     "rounded-[5px] border border-transparent bg-transparent px-1 py-0.5 text-[12.5px] transition hover:border-surface-border focus:border-brand-red focus:outline-none disabled:hover:border-transparent";
-  const cellNum = clsx(cellBase, "w-11 text-center tabular-nums");
+  // w-9, not w-11: Dur/Util are budgeted at 2.75rem in the schedule <colgroup>
+  // (w-9 + the td's px-1), which is what buys the Name column enough room to
+  // stay usable once the table is pinned to the card at xl.
+  const cellNum = clsx(cellBase, "w-9 text-center tabular-nums");
+  // Hours gets its own width: a w-9 content box holds three tabular digits, and
+  // targeted_hours routinely runs to four (1200). Days and % never do, so only
+  // this column pays the extra 8px — funded out of Predecessor, not Name.
+  const cellNumHrs = clsx(cellBase, "w-10 text-center tabular-nums");
   const cellSelect =
     "rounded-[5px] border border-surface-border bg-surface-card px-1.5 py-[3px] text-[11.5px] text-brand-gray transition focus:border-brand-red focus:outline-none";
 
@@ -3555,8 +3671,17 @@ function Row({
           </svg>
         </button>
       </td>
-      <td className="px-2 py-1.5" style={{ paddingLeft: 10 + depth * 24 }}>
-        <div className="flex items-center gap-1">
+      {/* The indent is clamped for *display* as well as in indentRow: rows can
+          also arrive over-indented from an import or a repeated Add-child, and
+          the Name column no longer grows to absorb the padding. */}
+      <td
+        className="px-2 py-1.5"
+        style={{ paddingLeft: 10 + Math.min(depth, MAX_INDENT) * 24 }}
+      >
+        {/* min-w-0: the name input is a flex item, and its default min-width:auto
+            is its intrinsic (~20ch) size — without this it refuses to shrink and
+            overflows the declared Name column at deep indents. */}
+        <div className="flex items-center gap-1 min-w-0">
           {/* disclosure caret on parent rows; equal-width spacer otherwise so
               the (N) ids + names stay vertically aligned across levels. */}
           {hasChildren ? (
@@ -3589,21 +3714,30 @@ function Row({
           <input
             className={clsx(
               cellBase,
-              "w-full text-left",
+              "w-full min-w-0 text-left",
               isSection && !disabled && "font-bold tracking-[0.04em] text-brand-darkred",
               isSection && disabled && "font-bold tracking-[0.04em]",
               milestone && !isSection && !disabled && "font-bold text-brand-darkred",
               disabled && "line-through",
             )}
             value={node.name}
+            // An <input> clips with no ellipsis, so a name too long for the
+            // column looks complete — and these names ship in the client PDF.
+            title={node.name || undefined}
             disabled={isLocked}
             list={milestone ? "ms-name-options" : undefined}
             onChange={(e) => onUpdate(rowKey, { name: e.target.value })}
           />
           {disabled && (
-            <span className="shrink-0 rounded-full border border-surface-ghost bg-surface-card px-[7px] py-px text-[10.5px] font-semibold text-brand-gray">
-              not contracted
-            </span>
+            /* A dot, not the old "not contracted" pill: the pill was shrink-0 and
+               so took ~87px out of the single column that absorbs the table's
+               whole remainder. Same wording, now on hover. */
+            <span
+              role="img"
+              aria-label="Not contracted"
+              title="Not contracted"
+              className="h-2.5 w-2.5 shrink-0 rounded-full bg-brand-gray"
+            />
           )}
         </div>
       </td>
@@ -3632,7 +3766,7 @@ function Row({
             })()}
           </div>
         ) : (
-          <span className="block w-11 text-center tabular-nums px-1 text-brand-gray">
+          <span className="block w-9 text-center tabular-nums px-1 text-brand-gray">
             {node.duration}
           </span>
         )}
@@ -3640,7 +3774,7 @@ function Row({
       <td className="px-1 py-1.5 text-center">
         <input
           type="number"
-          className={cellNum}
+          className={cellNumHrs}
           value={node.targeted_hours ?? ""}
           disabled={isLocked}
           onChange={(e) =>
@@ -3661,7 +3795,7 @@ function Row({
                 a text field that hands back a bare number. The node keeps a JS
                 number: a comma on the wire 422s the whole tree save. */}
             <MoneyInput
-              className="w-[104px] pl-4 text-right tabular-nums"
+              className="w-24 pl-4 text-right tabular-nums"
               value={node.price}
               disabled={isLocked}
               onChange={(n) => onUpdate(rowKey, { price: n })}
@@ -3669,25 +3803,29 @@ function Row({
           </div>
         ) : (
           <span
-            className="block w-[104px] px-1 text-right font-bold tabular-nums"
+            className="block w-24 px-1 text-right font-bold tabular-nums"
             title="Cumulative cost of enabled child tasks"
           >
             {fmtMoney(rollupCost)}
           </span>
         )}
       </td>
-      {/* server-computed dates — read only */}
-      <td className="px-2.5 py-1.5 text-center tabular-nums text-brand-gray">
+      {/* server-computed dates — read only. The columns are budgeted for the
+          backend's "%m/%d/%y" with ~22px to spare, so truncate is a guard rather
+          than an expected state; no title, which could only ever repeat text the
+          cell is already showing in full. */}
+      <td className="px-2.5 py-1.5 text-center tabular-nums text-brand-gray xl:truncate">
         {node.start_date || "—"}
       </td>
-      <td className="px-2.5 py-1.5 text-center tabular-nums text-brand-gray">
+      <td className="px-2.5 py-1.5 text-center tabular-nums text-brand-gray xl:truncate">
         {node.end_date || "—"}
       </td>
       <td className="px-1 py-1.5">
         {isLeaf ? (
           <select
-            className={clsx(cellSelect, "w-full")}
+            className={clsx(cellSelect, "w-full min-w-0")}
             value={node.predecessor_id ?? ""}
+            title={predTitle}
             disabled={isLocked}
             onChange={(e) =>
               onUpdate(rowKey, {
@@ -3726,7 +3864,10 @@ function Row({
       <td className="px-1 py-1.5 text-center">
         {isLeaf ? (
           <select
-            className={cellSelect}
+            // w-full min-w-0 like the Predecessor select: without a declared
+            // width the intrinsic size is the platform's dropdown-arrow width
+            // plus the text, which the budgeted column then cannot clamp.
+            className={clsx(cellSelect, "w-full min-w-0")}
             value={node.predecessor_type}
             disabled={isLocked}
             onChange={(e) =>
@@ -3784,7 +3925,7 @@ function Row({
       <td className="px-1 py-1.5 text-center">
         <input
           type="number"
-          className={clsx(cellBase, "w-11 text-center tabular-nums placeholder:text-brand-lightgray")}
+          className={clsx(cellBase, "w-9 text-center tabular-nums placeholder:text-brand-lightgray")}
           value={node.task_utilization ?? ""}
           placeholder={String(projectUtil)}
           title={
@@ -3800,8 +3941,12 @@ function Row({
           }
         />
       </td>
+      {/* Actions is the LAST column and is budgeted to 10.75rem by the schedule
+          <colgroup>; anything wider than that escapes the card instead of just
+          crowding a neighbour. Adding a button or padding here means editing
+          that <col> too. */}
       <td className="px-1 py-1.5 whitespace-nowrap">
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-0">
           <IconBtn title="Move up" onClick={() => onMove(rowKey, -1)}>↑</IconBtn>
           <IconBtn title="Move down" onClick={() => onMove(rowKey, 1)}>↓</IconBtn>
           <IconBtn title="Outdent" onClick={() => onIndent(rowKey, -1)}>⇤</IconBtn>
@@ -3910,6 +4055,9 @@ function ToggleCell({ on, onToggle }: { on: boolean; onToggle: () => void }) {
     </td>
   );
 }
+// h-5/w-5 is load-bearing: eight of these at gap-0 are what the Actions <col>
+// in the schedule colgroup (10.75rem) is sized from. Widen one and that col has
+// to grow with it, or the row overflows the card.
 function IconBtn({
   children,
   title,
