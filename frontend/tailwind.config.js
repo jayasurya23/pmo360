@@ -1,6 +1,17 @@
 /** @type {import('tailwindcss').Config} */
+
+// Every colour resolves through a CSS variable holding space-separated RGB
+// channels, so `.dark` on <html> can redefine the whole palette in one place
+// and the entire app follows — no `dark:` variant on thousands of classes.
+// The channel form (not hex) is what keeps Tailwind's opacity modifiers
+// working, e.g. `bg-brand-black/40`. Values live in styles/index.css.
+const token = (name) => `rgb(var(--${name}) / <alpha-value>)`;
+
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  // Opt in to class-based dark mode. `media` would follow the OS and ignore
+  // the in-app toggle, which is the control PMs actually reach for.
+  darkMode: "class",
   theme: {
     extend: {
       fontFamily: {
@@ -14,58 +25,64 @@ export default {
         mono: ["Jost", "Helvetica", "system-ui", "sans-serif"],
       },
       colors: {
-        // Castillo brand palette. Keep these in sync with backend
-        // config.BrandColors — the values are also exposed at /api/settings.
+        // Castillo brand palette. Light values stay in sync with backend
+        // config.BrandColors — those are also what the PDFs and Excel use, and
+        // documents have no dark mode, so the light values are the canonical
+        // ones. Dark overrides are a screen-only concern.
         brand: {
-          red: "#ad1f2b",
-          darkred: "#991f2b",
-          black: "#333132",
-          gray: "#4d4d4f",
-          lightgray: "#bcbec0",
-          nearwhite: "#e6e7e8",
-          brown: "#5e4b40",
-          brightred: "#e12a3f",
-          blue: "#1aa6c9",
-          green: "#278747",
-          brightgreen: "#4ab751",
-          gold: "#c7bb2e",
-          // Readable text-weight variants — the base gold and blue are too
-          // light to sit on white at body sizes.
-          deepgold: "#8a8021",
-          deepblue: "#0e6b85",
+          red: token("brand-red"),
+          darkred: token("brand-darkred"),
+          black: token("brand-black"),
+          gray: token("brand-gray"),
+          lightgray: token("brand-lightgray"),
+          nearwhite: token("brand-nearwhite"),
+          brown: token("brand-brown"),
+          brightred: token("brand-brightred"),
+          blue: token("brand-blue"),
+          green: token("brand-green"),
+          brightgreen: token("brand-brightgreen"),
+          gold: token("brand-gold"),
+          // Readable text-weight variants — base gold and blue are too light
+          // to sit on white. In dark they invert: they become the *lighter*
+          // step, since the surface is now the dark one.
+          deepgold: token("brand-deepgold"),
+          deepblue: token("brand-deepblue"),
         },
         // Warm neutral surfaces derived from the brand near-black. These
         // replace Tailwind's slate scale app-wide: slate reads cool/blue
         // beside Castillo red, these sit with it.
         surface: {
-          page: "#f5f4f3",      // app background
-          card: "#ffffff",
-          border: "#e6e7e8",    // card + control borders (= brand.nearwhite)
-          hairline: "#f0efee",  // dividers inside cards
-          rowhover: "#faf9f9",  // row hover + table headers
-          ghost: "#d8d6d5",     // ghost-button border
-          mute: "#eceae9",      // disabled / inactive fills
+          page: token("surface-page"),
+          card: token("surface-card"),
+          border: token("surface-border"),
+          hairline: token("surface-hairline"),
+          rowhover: token("surface-rowhover"),
+          ghost: token("surface-ghost"),
+          mute: token("surface-mute"),
+          // Always-white paper. A rendered PDF page is a document, not a UI
+          // surface — it stays white in both themes.
+          paper: token("surface-paper"),
         },
         status: {
           open: {
-            bg: "#fce8ea",
-            text: "#791f1f",
-            border: "#ad1f2b",
+            bg: token("status-open-bg"),
+            text: token("status-open-text"),
+            border: token("status-open-border"),
           },
           pending: {
-            bg: "#fdeac0",
-            text: "#5e3f00",
-            border: "#c7bb2e",
+            bg: token("status-pending-bg"),
+            text: token("status-pending-text"),
+            border: token("status-pending-border"),
           },
           completed: {
-            bg: "#c7e9a3",
-            text: "#1a3a04",
-            border: "#278747",
+            bg: token("status-completed-bg"),
+            text: token("status-completed-text"),
+            border: token("status-completed-border"),
           },
           cancelled: {
-            bg: "#e6e7e8",
-            text: "#1a1a1a",
-            border: "#888780",
+            bg: token("status-cancelled-bg"),
+            text: token("status-cancelled-text"),
+            border: token("status-cancelled-border"),
           },
         },
       },
@@ -76,10 +93,11 @@ export default {
         narrow: "860px",
       },
       boxShadow: {
-        card: "0 1px 2px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.04)",
-        // Document page (Preview/Send paper) and timeline bars.
-        page: "0 6px 18px rgba(51,49,50,0.08)",
-        bar: "0 1px 2px rgba(51,49,50,0.15)",
+        // Shadows are variables too — the light theme's soft grey shadows
+        // vanish on a dark background, so dark uses deeper, larger ones.
+        card: "var(--shadow-card)",
+        page: "var(--shadow-page)",
+        bar: "var(--shadow-bar)",
       },
     },
   },

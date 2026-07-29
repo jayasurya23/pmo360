@@ -35,6 +35,121 @@ input[type="number"] {
   appearance: textfield;
 }
 
+/* ============================================================
+ * Theme tokens.
+ *
+ * Every colour in tailwind.config.js resolves through one of these
+ * variables, so flipping `.dark` on <html> re-themes the whole app without
+ * a single `dark:` utility. Values are space-separated RGB channels because
+ * that is the form Tailwind's `<alpha-value>` opacity modifiers need.
+ *
+ * The LIGHT values are canonical — they mirror backend config.BrandColors,
+ * which the PDFs and the Excel action log also use. Documents have no dark
+ * mode, so dark is a screen-only concern and may diverge freely.
+ *
+ * Dark is a warm near-black derived from brand #333132, deliberately not a
+ * cool slate/blue-black: Castillo red sits badly on blue-tinted greys.
+ * ============================================================ */
+:root {
+  --brand-red: 173 31 43;          /* #ad1f2b */
+  --brand-darkred: 153 31 43;      /* #991f2b — hover, darker on light */
+  --brand-black: 51 49 50;         /* #333132 — primary text */
+  --brand-gray: 77 77 79;          /* #4d4d4f — secondary text */
+  --brand-lightgray: 188 190 192;  /* #bcbec0 — micro-labels, tertiary */
+  --brand-nearwhite: 230 231 232;  /* #e6e7e8 */
+  --brand-brown: 94 75 64;         /* #5e4b40 */
+  --brand-brightred: 225 42 63;    /* #e12a3f — alert/destructive */
+  --brand-blue: 26 166 201;        /* #1aa6c9 */
+  --brand-green: 39 135 71;        /* #278747 */
+  --brand-brightgreen: 74 183 81;  /* #4ab751 */
+  --brand-gold: 199 187 46;        /* #c7bb2e */
+  --brand-deepgold: 138 128 33;    /* #8a8021 — gold as text */
+  --brand-deepblue: 14 107 133;    /* #0e6b85 — blue as text */
+
+  --surface-page: 245 244 243;     /* #f5f4f3 */
+  --surface-card: 255 255 255;
+  --surface-border: 230 231 232;   /* #e6e7e8 */
+  --surface-hairline: 240 239 238; /* #f0efee */
+  --surface-rowhover: 250 249 249; /* #faf9f9 */
+  --surface-ghost: 216 214 213;    /* #d8d6d5 */
+  --surface-mute: 236 234 233;     /* #eceae9 */
+  --surface-paper: 255 255 255;    /* rendered PDF pages — white in both */
+
+  --status-open-bg: 252 232 234;
+  --status-open-text: 121 31 31;
+  --status-open-border: 173 31 43;
+  --status-pending-bg: 253 234 192;
+  --status-pending-text: 94 63 0;
+  --status-pending-border: 199 187 46;
+  --status-completed-bg: 199 233 163;
+  --status-completed-text: 26 58 4;
+  --status-completed-border: 39 135 71;
+  --status-cancelled-bg: 230 231 232;
+  --status-cancelled-text: 77 77 79;
+  --status-cancelled-border: 136 135 128;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.04);
+  --shadow-page: 0 6px 18px rgba(51, 49, 50, 0.08);
+  --shadow-bar: 0 1px 2px rgba(51, 49, 50, 0.15);
+}
+
+.dark {
+  /* Red lightens so it stays legible as text and as an icon on a dark
+     surface; it still reads as Castillo red when used as a button fill.
+     `darkred` is the hover step, and in dark mode hover BRIGHTENS rather
+     than darkens — the semantic name is kept, the behaviour inverts. */
+  --brand-red: 210 67 79;          /* #d2434f */
+  --brand-darkred: 224 85 97;      /* #e05561 */
+  --brand-black: 237 237 236;      /* primary text, now near-white */
+  --brand-gray: 168 165 164;       /* secondary text */
+  --brand-lightgray: 122 120 119;  /* micro-labels — dimmer than body here */
+  --brand-nearwhite: 58 56 57;
+  --brand-brown: 156 133 120;
+  --brand-brightred: 240 74 92;
+  --brand-blue: 53 188 221;
+  --brand-green: 63 165 99;
+  --brand-brightgreen: 94 201 106;
+  --brand-gold: 212 200 60;
+  /* The "deep" text variants invert: against a dark surface the readable
+     step is the lighter one, not the darker one. */
+  --brand-deepgold: 216 204 74;
+  --brand-deepblue: 79 201 232;
+
+  --surface-page: 25 24 25;        /* app background */
+  --surface-card: 35 34 35;        /* raised card */
+  --surface-border: 58 56 57;
+  --surface-hairline: 46 44 45;
+  --surface-rowhover: 42 40 41;
+  --surface-ghost: 74 72 73;
+  --surface-mute: 46 44 45;
+  --surface-paper: 255 255 255;    /* unchanged — paper is paper */
+
+  /* Status tints flip: dark tinted fill, light tinted text. Hues are held so
+     "red = open, gold = pending, green = done" survives the theme change. */
+  --status-open-bg: 58 31 35;
+  --status-open-text: 240 168 176;
+  --status-open-border: 200 67 78;
+  --status-pending-bg: 58 50 24;
+  --status-pending-text: 232 212 138;
+  --status-pending-border: 199 187 46;
+  --status-completed-bg: 30 51 32;
+  --status-completed-text: 168 217 138;
+  --status-completed-border: 63 165 99;
+  --status-cancelled-bg: 46 44 45;
+  --status-cancelled-text: 168 165 164;
+  --status-cancelled-border: 74 72 73;
+
+  /* Soft grey shadows disappear on a dark background — go deeper and wider. */
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-page: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --shadow-bar: 0 1px 3px rgba(0, 0, 0, 0.5);
+
+  /* Tells the browser to render native form controls, scrollbars and the
+     `<select>` option popups dark. Without this the OS chrome stays light
+     and every dropdown flashes white. */
+  color-scheme: dark;
+}
+
 @layer base {
   html,
   body,
@@ -43,6 +158,9 @@ input[type="number"] {
   }
   body {
     @apply font-sans bg-surface-page text-brand-black antialiased;
+    /* Theme switches should feel like a dip, not a strobe. Colour only —
+       animating layout properties here would jank every page transition. */
+    transition: background-color 150ms ease, color 150ms ease;
   }
   /* Jost everywhere — cover form controls, their <option> popups and buttons
      so nothing falls back to a system font (Tailwind Preflight sets these to
