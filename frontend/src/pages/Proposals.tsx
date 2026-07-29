@@ -27,6 +27,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
+import { businessDaysBetween } from "@/lib/businessDays";
 import PdfPagePreview from "@/components/PdfPagePreview";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
@@ -271,6 +272,9 @@ interface ProjectSummary {
   start: Date | null;
   end: Date | null;
   calendarDays: number | null;
+  /** Weekdays in the span minus holidays — counted the same way the backend
+   *  scheduler counts the Schedule table's Dur column, so the two agree. */
+  businessDays: number | null;
   disciplines: DisciplineLine[];
 }
 
@@ -288,6 +292,7 @@ const SUMMARY_DISCIPLINES = [
 function computeSummary(
   flat: ProposalItemNode[],
   info: Record<string, any>,
+  config: Record<string, any> = {},
 ): ProjectSummary {
   const enabled = flat.filter((n) => n.enabled);
 
@@ -317,6 +322,12 @@ function computeSummary(
     }
   }
   const calendarDays = start && end ? inclusiveDays(start, end) : null;
+  // Honour the same holiday config the scheduler used, so this figure matches
+  // the Dur values in the Schedule table rather than offering a second opinion.
+  const businessDays = businessDaysBetween(start, end, {
+    disabled: config?.disabled_holidays,
+    custom: config?.custom_holidays,
+  });
 
   const disciplines: DisciplineLine[] = SUMMARY_DISCIPLINES.map((name) => {
     const node = enabled.find(
@@ -352,6 +363,7 @@ function computeSummary(
     start,
     end,
     calendarDays,
+    businessDays,
     disciplines,
   };
 }
@@ -1687,10 +1699,11 @@ export default function Proposals() {
   // enabled leaf count (rough sync preview)
   const syncItemCount = flat.filter((n) => n.enabled).length;
 
-  // client-side project summary (mirrors the desktop summary panel)
+  // client-side project summary (mirrors the desktop summary panel).
+  // configDraft feeds the business-day count its holiday rules.
   const summary = useMemo(
-    () => computeSummary(flat, infoDraft),
-    [flat, infoDraft],
+    () => computeSummary(flat, infoDraft, configDraft),
+    [flat, infoDraft, configDraft],
   );
 
   // ---- Split Deposit dialog ----
@@ -2484,7 +2497,7 @@ export default function Proposals() {
                 {/* The header keeps an explicit bottom border: while pinned it
                     floats over white rows, where the light fill alone wouldn't
                     separate it. */}
-                <thead className="sticky top-[calc(var(--app-header-h,4rem)_+_61px)] z-10 bg-surface-rowhover text-[10.5px] uppercase tracking-[0.08em] text-brand-gray [&_th]:bg-surface-rowhover [&_th]:font-semibold [&_th]:border-b [&_th]:border-surface-border">
+                <thead className="sticky top-[calc(var(--app-header-h,4rem)_+_61px)] z-10 bg-brand-red text-[10.5px] uppercase tracking-[0.08em] text-white [&_th]:bg-brand-red [&_th]:text-white [&_th]:font-semibold">
                   <tr>
                     <th className="px-1.5 py-2.5 w-6" title="Drag to reorder"></th>
                     <th className="text-left px-2.5 py-2.5 min-w-[280px]">Name</th>
@@ -2930,6 +2943,16 @@ function SummaryPanel({
               ? `${summary.calendarDays} calendar days`
               : "—"
           }
+          title="Every day from project start to project end, weekends and holidays included."
+        />
+        <SummaryRow
+          label="Working time"
+          value={
+            summary.businessDays != null
+              ? `${summary.businessDays} business days`
+              : "—"
+          }
+          title="Weekdays in the same span, minus holidays — counted exactly the way the Schedule table's Dur column is."
         />
       </div>
     </section>
@@ -2941,23 +2964,33 @@ function SummaryRow({
   value,
   tone,
   ruled,
+  title,
 }: {
   label: string;
   value: string;
   tone?: "green" | "red";
   ruled?: boolean;
+  title?: string;
 }) {
   return (
     <div
       className={clsx(
-        "flex justify-between gap-4",
+        "flex items-baseline gap-2",
         ruled && "border-t border-surface-hairline pt-1",
       )}
+      title={title}
     >
-      <span className="text-brand-gray">{label}</span>
+      <span className="shrink-0 text-brand-gray">{label}</span>
+      {/* Dotted leader between label and value. `items-baseline` on the row
+          would drop the rule onto the text baseline, so nudge it down to sit
+          in the visual gap under the type. */}
+      <span
+        aria-hidden
+        className="min-w-[1rem] flex-1 translate-y-[-0.28em] border-b border-dotted border-surface-ghost"
+      />
       <span
         className={clsx(
-          "font-bold tabular-nums",
+          "shrink-0 font-bold tabular-nums",
           tone === "green"
             ? "text-brand-green"
             : tone === "red"
@@ -3244,16 +3277,21 @@ function Row({
 
   // Row classification, in precedence order:
   //   disabled     → muted fill, struck name + a "not contracted" pill
-  //   section      → a top-level milestone; page-tinted band, bold name
+  //   section      → a top-level milestone; red band, bold name
   //   milestone    → red diamond + dark-red bold name on white
   //   regular task → white
+  //
+  // Sections use a red tint rather than the solid red of the column header:
+  // a proposal has several disciplines, and solid bands that heavy would
+  // out-shout the header they sit under. The tint still reads as red and
+  // separates a discipline from its tasks at a glance.
   const milestone = node.is_milestone;
   const disabled = !node.enabled;
   const isSection = milestone && node.indent_level === 0;
   const base = disabled
     ? clsx("bg-surface-mute text-brand-gray", milestone && "font-bold")
     : isSection
-      ? "bg-surface-page font-bold"
+      ? "bg-brand-red/[0.12] font-bold"
       : "bg-surface-card";
   // Dynamic interaction-highlight tags, which override the base fill. Same
   // signals as the desktop tree — selecting a row tints its predecessor green
@@ -3395,7 +3433,8 @@ function Row({
             className={clsx(
               cellBase,
               "w-full text-left",
-              isSection && "font-bold tracking-[0.04em]",
+              isSection && !disabled && "font-bold tracking-[0.04em] text-brand-darkred",
+              isSection && disabled && "font-bold tracking-[0.04em]",
               milestone && !isSection && !disabled && "font-bold text-brand-darkred",
               disabled && "line-through",
             )}
