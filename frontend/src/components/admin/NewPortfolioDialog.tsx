@@ -107,7 +107,7 @@ export default function NewPortfolioDialog({ open, onClose }: Props) {
       aria-labelledby="new-portfolio-title"
     >
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => !submitting && onClose()}
       />
       <form
@@ -116,7 +116,7 @@ export default function NewPortfolioDialog({ open, onClose }: Props) {
       >
         <h3
           id="new-portfolio-title"
-          className="text-base font-semibold text-slate-900"
+          className="text-base font-semibold text-brand-black"
         >
           New portfolio
         </h3>
@@ -173,13 +173,13 @@ export default function NewPortfolioDialog({ open, onClose }: Props) {
             value={subProjectsText}
             onChange={(e) => setSubProjectsText(e.target.value)}
           />
-          <p className="text-[11px] text-slate-500 mt-1">
+          <p className="text-[11px] text-brand-gray mt-1">
             One project per line. Used by the Notes tab to filter.
           </p>
         </div>
 
         {error && (
-          <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
+          <div className="text-sm text-status-open-text bg-status-open-bg border border-status-open-border rounded-md px-3 py-2">
             {error}
           </div>
         )}

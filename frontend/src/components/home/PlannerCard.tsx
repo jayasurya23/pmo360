@@ -11,6 +11,7 @@
  * header has an "Open Planner ↗" link.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import clsx from "clsx";
 import {
   format,
   parseISO,
@@ -124,22 +125,18 @@ export default function PlannerCard() {
   const groups = useMemo(() => groupByDue(tasks), [tasks]);
 
   return (
-    <div className="card p-5 border-l-4 border-l-[#7c3aed] bg-gradient-to-r from-violet-50/40 to-white">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
-            My Planner tasks
-          </div>
-          <div className="text-base font-semibold text-brand-black mt-1">
-            📋 Open tasks from Microsoft Planner
-          </div>
-        </div>
-        <div className="flex items-center gap-1">
+    <div className="card overflow-hidden">
+      <div className="flex items-center gap-2.5 px-5 py-3.5 border-b border-surface-hairline">
+        <h2 className="section-title">Your Planner tasks</h2>
+        <span className="text-xs text-brand-gray truncate">
+          from Microsoft Planner
+        </span>
+        <div className="ml-auto flex items-center gap-3 shrink-0">
           <a
             href={PLANNER_URL}
             target="_blank"
             rel="noreferrer"
-            className="text-xs text-brand-gray hover:text-brand-black px-2 py-1 rounded hover:bg-brand-nearwhite/60"
+            className="text-xs font-semibold text-brand-gray hover:text-brand-red"
             title="Open Microsoft Planner"
           >
             Open Planner ↗
@@ -149,7 +146,7 @@ export default function PlannerCard() {
               type="button"
               onClick={() => load()}
               disabled={phase === "loading"}
-              className="text-xs text-brand-gray hover:text-brand-black px-2 py-1 rounded hover:bg-brand-nearwhite/60 disabled:opacity-40"
+              className="text-xs font-semibold text-brand-gray hover:text-brand-red disabled:opacity-40"
               title="Refresh from Planner"
             >
               {phase === "loading" ? "Loading…" : "↻ Refresh"}
@@ -158,17 +155,17 @@ export default function PlannerCard() {
         </div>
       </div>
 
-      <div className="mt-3 space-y-3">
+      <div className="px-5 py-3 space-y-3">
         {phase === "signed-out" && (
-          <div className="text-sm text-violet-900 bg-violet-50 border border-violet-200 rounded px-3 py-2">
+          <div className="text-sm text-brand-deepblue bg-brand-blue/10 border border-brand-blue/30 rounded-lg px-3 py-2">
             Sign in with your Castillo account to see the Microsoft Planner
             tasks assigned to you.
           </div>
         )}
 
         {phase === "needs-consent" && (
-          <div className="flex items-center justify-between gap-3 bg-violet-50 border border-violet-200 rounded px-3 py-2">
-            <div className="text-sm text-violet-900">
+          <div className="flex items-center justify-between gap-3 bg-brand-blue/10 border border-brand-blue/30 rounded-lg px-3 py-2">
+            <div className="text-sm text-brand-deepblue">
               Connect Microsoft Planner so we can list the tasks assigned to you
               and let you tick them off here.
             </div>
@@ -183,17 +180,17 @@ export default function PlannerCard() {
         )}
 
         {phase === "error" && errorDetail && (
-          <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+          <div className="rounded-lg border border-status-open-border bg-status-open-bg px-3 py-2 text-sm text-status-open-text">
             <div className="font-semibold">{errorDetail.message}</div>
             {errorDetail.hint && (
-              <div className="mt-1 text-xs text-rose-800 leading-relaxed">
+              <div className="mt-1 text-xs leading-relaxed">
                 {errorDetail.hint}
               </div>
             )}
             <button
               type="button"
               onClick={() => load()}
-              className="mt-2 text-xs underline text-rose-900 hover:text-rose-700"
+              className="mt-2 text-xs font-semibold underline hover:no-underline"
             >
               Try again
             </button>
@@ -201,11 +198,11 @@ export default function PlannerCard() {
         )}
 
         {phase === "loading" && tasks.length === 0 && (
-          <div className="card divide-y divide-brand-lightgray/60">
+          <div className="space-y-2">
             {[0, 1].map((i) => (
-              <div key={i} className="px-5 py-3 space-y-2">
-                <div className="h-4 w-3/4 bg-slate-200/70 rounded animate-pulse" />
-                <div className="h-3 w-1/2 bg-slate-100 rounded animate-pulse" />
+              <div key={i} className="py-2 space-y-2">
+                <div className="h-4 w-3/4 bg-surface-mute rounded animate-pulse" />
+                <div className="h-3 w-1/2 bg-surface-hairline rounded animate-pulse" />
               </div>
             ))}
           </div>
@@ -218,13 +215,15 @@ export default function PlannerCard() {
         )}
 
         {(phase === "loaded" || (phase === "loading" && tasks.length > 0)) && (
-          <div className="space-y-4">
+          // Negative inset so the rows run edge-to-edge inside the card while
+          // the surrounding states keep the body padding.
+          <div className="-mx-5 space-y-3">
             {groups.map((g) => (
               <div key={g.key}>
-                <div className="text-[11px] uppercase tracking-wider text-brand-gray font-semibold mb-1">
+                <div className="micro-label px-5 mb-1">
                   {g.label} ({g.tasks.length})
                 </div>
-                <div className="card divide-y divide-brand-lightgray/60">
+                <div>
                   {g.tasks.map((t) => (
                     <TaskRow
                       key={t.id}
@@ -262,37 +261,56 @@ function TaskRow({
   const progress = task.percentComplete >= 50 ? "In progress" : "Not started";
 
   return (
-    <div className="px-5 py-3 flex items-start gap-3">
+    <div className="px-5 py-3 flex items-center gap-4 border-b border-b-surface-page last:border-b-0 hover:bg-surface-rowhover transition">
+      <div className="w-[70px] shrink-0 text-right">
+        {due ? (
+          <>
+            <div
+              className={clsx(
+                "text-sm font-semibold tabular-nums",
+                overdue ? "text-brand-red" : "text-brand-black"
+              )}
+            >
+              {format(due, "MMM d")}
+            </div>
+            <div className="text-[11px] text-brand-gray">
+              {overdue ? "overdue" : "due"}
+            </div>
+          </>
+        ) : (
+          <div className="text-[11px] font-semibold uppercase tracking-[0.06em] text-brand-lightgray">
+            No date
+          </div>
+        )}
+      </div>
+
+      <div
+        className={clsx(
+          "w-[3px] self-stretch rounded-sm",
+          overdue ? "bg-brand-red" : "bg-brand-green"
+        )}
+      />
+
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium text-brand-black truncate">
+          {task.title}
+        </div>
+        <div className="text-xs text-brand-gray mt-px truncate">
+          {task.planTitle ? `${task.planTitle} · ` : ""}
+          {progress}
+        </div>
+      </div>
+
       <button
         type="button"
         onClick={onComplete}
         disabled={busy}
         title="Mark complete"
         aria-label={`Mark "${task.title}" complete`}
-        className="mt-0.5 h-4 w-4 shrink-0 rounded-full border-2 border-slate-300 text-emerald-600 text-[10px] leading-none flex items-center justify-center hover:border-emerald-500 hover:bg-emerald-50 disabled:opacity-50 transition"
+        className="h-[22px] w-[22px] shrink-0 rounded-full border-2 border-brand-lightgray text-[10px] leading-none text-brand-green flex items-center justify-center hover:border-brand-green hover:bg-brand-green/10 disabled:opacity-50 transition"
       >
         {busy ? "…" : ""}
       </button>
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-brand-black truncate">
-          {task.title}
-        </div>
-        <div className="text-xs text-brand-gray mt-0.5 flex items-center gap-2 flex-wrap">
-          {task.planTitle && (
-            <span className="truncate max-w-[12rem]" title={task.planTitle}>
-              {task.planTitle}
-            </span>
-          )}
-          {due && (
-            <span className={overdue ? "text-rose-600 font-semibold" : ""}>
-              {format(due, "EEE, MMM d")}
-            </span>
-          )}
-          <span className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
-            {progress}
-          </span>
-        </div>
-      </div>
     </div>
   );
 }

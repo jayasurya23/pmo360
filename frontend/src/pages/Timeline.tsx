@@ -49,28 +49,61 @@ import clsx from "clsx";
 
 // ---------------- constants ----------------
 const LABEL_W = 264;
-const ROW_H = 48;
-const LANE_H = 42; // height of one stacked bar lane inside an engineer row
+const ROW_H = 44;
+const LANE_H = 44; // height of one stacked bar lane inside an engineer row
+const BAR_H = 34;  // bar height inside a lane — the rest is breathing room
 const ZOOMS: Record<string, number> = { Compact: 84, Comfortable: 116, Wide: 156 };
 
+// Utilization heat painted behind the bars. The grid tints are near-transparent
+// so a bar sitting on top stays legible; the legend swatches are the same hues
+// at a higher alpha because 10px chips need the extra contrast to register.
+//
+// These are Tailwind token classes rather than colour strings for two reasons:
+// the hue follows the theme, and a 7% wash that reads on white is invisible on
+// the near-black board — so dark gets a stronger step via `dark:`.
+const HEAT_LOADED_CLS = "bg-brand-green/[0.07] dark:bg-brand-green/[0.16]";
+const HEAT_OVER_CLS = "bg-brand-red/[0.08] dark:bg-brand-red/[0.18]";
+const HEAT_BLOCKED_CLS = "bg-surface-mute";
+const HEAT_LOADED_CHIP_CLS = "bg-brand-green/[0.12] dark:bg-brand-green/40";
+const HEAT_OVER_CHIP_CLS = "bg-brand-red/[0.12] dark:bg-brand-red/40";
+// Same blocked tint as an inline colour string, for the Workload load bars.
+const HEAT_BLOCKED = "rgb(var(--surface-mute))";
+
+// Bar fills. The four solid status colours are deliberately theme-independent:
+// a saturated fill carrying white text reads correctly on white and on the dark
+// board alike, and pinning them keeps the board legend matching the PDFs.
 const STATUSES = [
-  { value: "in_progress", label: "In Progress", bg: "#2563eb", fg: "#ffffff" },
+  { value: "in_progress", label: "In Progress", bg: "#ad1f2b", fg: "#ffffff" },
   { value: "ahead", label: "Ahead of Schedule", bg: "#1aa6c9", fg: "#ffffff" },
-  { value: "on_hold", label: "On Hold", bg: "#c7bb2e", fg: "#1a1a1a" },
+  { value: "on_hold", label: "On Hold", bg: "#c7bb2e", fg: "#3d3800" },
   { value: "delayed", label: "Delayed", bg: "#e12a3f", fg: "#ffffff" },
-  { value: "not_contracted", label: "Not Contracted", bg: "#bcbec0", fg: "#1a1a1a" },
+  // Not-contracted work reads as a placeholder rather than a commitment:
+  // pale fill + dashed outline instead of a solid status colour. "Pale" is a
+  // relationship to the board, not a fixed hue — it has to follow the theme or
+  // it turns into the brightest thing on a dark screen.
+  {
+    value: "not_contracted",
+    label: "Not Contracted",
+    bg: "rgb(var(--surface-mute))",
+    fg: "rgb(var(--brand-gray))",
+    dashed: true,
+  },
   { value: "complete", label: "Complete", bg: "#278747", fg: "#ffffff" },
 ] as const;
-const STATUS_MAP: Record<string, { label: string; bg: string; fg: string }> =
+const STATUS_MAP: Record<string, { label: string; bg: string; fg: string; dashed?: boolean }> =
   Object.fromEntries(STATUSES.map((s) => [s.value, s]));
 
 const DISCIPLINES = ["Electrical", "Civil", "Structural", "Water", "Vendors", "General", "Other"];
+// Categorical identity colours — always a solid chip carrying white text, so
+// they read on either theme and are intentionally NOT themed: these hues are
+// the discipline key shared with the generated documents, and the light-theme
+// token steps (which brighten in dark) would drop white text below contrast.
 const DISC_TAG: Record<string, { short: string; color: string }> = {
   Electrical: { short: "E", color: "#ad1f2b" },
   Civil: { short: "C", color: "#185fa5" },
   Structural: { short: "S", color: "#5e4b40" },
   Water: { short: "W", color: "#1aa6c9" },
-  Vendors: { short: "V", color: "#6d28d9" },
+  Vendors: { short: "V", color: "#8a8021" },
   General: { short: "G", color: "#4d4d4f" },
   Other: { short: "•", color: "#4d4d4f" },
 };
@@ -133,9 +166,12 @@ function msKey(ms: ProposalTimelineMilestone): string {
   return `${ms.discipline}|${ms.milestone}|${ms.start_date}|${ms.end_date}`;
 }
 /** Faint vertical line every work-day (weekW/5 px) so the 5-day grid + the
- *  day-snapping of drags is legible. */
+ *  day-snapping of drags is legible. Tinted off the brand text colour so it
+ *  sits under the surface-hairline week rules rather than reading cool/blue —
+ *  and so it inverts with the theme (dark ink on paper, light ink on the dark
+ *  board) instead of vanishing. */
 const dayGridBg = (weekW: number) =>
-  `repeating-linear-gradient(to right, rgba(120,120,130,0.13) 0px, rgba(120,120,130,0.13) 1px, transparent 1px, transparent ${weekW / 5}px)`;
+  `repeating-linear-gradient(to right, rgb(var(--brand-black) / 0.055) 0px, rgb(var(--brand-black) / 0.055) 1px, transparent 1px, transparent ${weekW / 5}px)`;
 function workdaysOverlap(aStart: string, aEnd: string, weekMonday: string): number {
   const ws = parseISO(weekMonday);
   const we = addDays(ws, 4); // Friday
@@ -784,21 +820,17 @@ export default function Timeline() {
       {/* shared client pick-list (used by New Project panel + per-project editor) */}
       <datalist id="timeline-clients">{(board?.clients ?? []).map((c) => <option key={c} value={c} />)}</datalist>
       <PageHeader
-        title="Timeline Estimator"
-        subtitle="Capacity planner — each cell is a work-week. Drag bars to reschedule, drag edges to resize, right-click for options."
+        kicker="Capacity planner · one cell = one work-week"
+        title="Timeline estimator"
         actions={
-          <div className="flex items-center gap-2">
-            <button className="btn-ghost text-sm" onClick={() => setShowResources(true)}>
-              👥 Resources
-            </button>
-            <button className="btn-primary text-sm" onClick={() => setShowNewProject((v) => !v)}>
-              {showNewProject ? "✕ Close form" : "+ New project"}
-            </button>
-          </div>
+          <span className="text-xs text-brand-gray">
+            Drag bars to reschedule · drag edges to resize · right-click for options
+          </span>
         }
       />
 
-      {/* toolbar */}
+      {/* Board toolbar. The redesign puts these controls in the shell's context
+          row — that row lives in Layout, so they stay on the page for now. */}
       <div className="card flex flex-wrap items-center gap-1.5 px-3 py-2 text-xs">
         <Segmented
           options={[
@@ -811,15 +843,14 @@ export default function Timeline() {
         />
         <Divider />
         <Segmented options={Object.keys(ZOOMS).map((z) => [z, z] as [string, string])} value={zoom} onChange={setZoom} />
-        <button className="btn-ghost py-1 px-2.5" onClick={jumpToToday}>Today</button>
-        <button
-          className="btn-ghost py-1 px-2.5 disabled:opacity-40"
+        <ToolbarPill onClick={jumpToToday}>Today</ToolbarPill>
+        <ToolbarPill
           onClick={() => void doUndo()}
           disabled={undoStack.length === 0}
           title={undoStack.length ? `Undo ${undoStack[undoStack.length - 1].label} (Ctrl+Z)` : "Nothing to undo"}
         >
           ↩ Undo{undoStack.length ? ` (${undoStack.length})` : ""}
-        </button>
+        </ToolbarPill>
         <Divider />
         <FilterMenu label="Discipline" options={DISCIPLINES} selected={discFilter} onChange={setDiscFilter} />
         <FilterMenu
@@ -829,43 +860,48 @@ export default function Timeline() {
           selected={statusFilter}
           onChange={setStatusFilter}
         />
+        <LegendMenu />
         <Divider />
         <label className="flex items-center gap-1 text-brand-gray">
-          <span className="text-[10px] uppercase tracking-wider">From</span>
-          <input type="date" className="rounded-md border border-slate-300 px-2 py-1" value={winStart} onChange={(e) => setWinStart(e.target.value)} />
+          <span className="text-[10px] font-semibold uppercase tracking-[0.1em]">From</span>
+          <input type="date" className="rounded-md border border-surface-border px-2 py-1 focus:outline-none focus:border-brand-red" value={winStart} onChange={(e) => setWinStart(e.target.value)} />
         </label>
         <label className="flex items-center gap-1 text-brand-gray">
-          <span className="text-[10px] uppercase tracking-wider">To</span>
-          <input type="date" className="rounded-md border border-slate-300 px-2 py-1" value={winEnd} onChange={(e) => setWinEnd(e.target.value)} />
+          <span className="text-[10px] font-semibold uppercase tracking-[0.1em]">To</span>
+          <input type="date" className="rounded-md border border-surface-border px-2 py-1 focus:outline-none focus:border-brand-red" value={winEnd} onChange={(e) => setWinEnd(e.target.value)} />
         </label>
         {(winStart || winEnd) && (
           <button className="text-brand-red hover:underline" onClick={() => { setWinStart(""); setWinEnd(""); }}>reset</button>
         )}
         <div className="flex-1" />
         <LiveDot lastSync={lastSync} onRefresh={() => void reload()} />
-        <Divider />
-        <LegendMenu />
+        <button className="btn-ghost px-3.5 py-1.5 text-xs text-brand-black" onClick={() => setShowResources(true)}>
+          👥 Resources
+        </button>
+        <button className="btn-primary px-3.5 py-1.5 text-xs" onClick={() => setShowNewProject((v) => !v)}>
+          {showNewProject ? "✕ Close form" : "+ New project"}
+        </button>
       </div>
 
       {/* Proposal milestone palette — pick a proposal, drag its phase chips onto engineers */}
-      <div className="rounded-md border border-brand-lightgray bg-white">
+      <div className="card">
         <button
           type="button"
-          className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm"
+          className="w-full flex items-center gap-2.5 px-4 py-2.5 text-left text-[13px]"
           onClick={() => setPaletteOpen((o) => !o)}
         >
-          <span className="text-brand-gray text-xs">{paletteOpen ? "▾" : "▸"}</span>
-          <span className="font-medium">📋 From a proposal</span>
+          <span className="text-brand-lightgray text-[11px]">{paletteOpen ? "▾" : "▸"}</span>
+          <span className="font-semibold">📋 From a proposal</span>
           <span className="text-brand-gray text-xs hidden sm:inline">
             — pick a proposal, then drag its engineering milestones onto an engineer
           </span>
         </button>
         {paletteOpen && (
-          <div className="flex flex-col gap-2 px-3 pb-3">
+          <div className="flex flex-col gap-2 px-4 pb-4">
             <div className="flex flex-wrap items-center gap-1.5">
               <select
                 aria-label="Client"
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm"
+                className="select w-auto px-2 py-1"
                 value={tlClientId ?? ""}
                 onChange={(e) => {
                   setTlClientId(e.target.value ? Number(e.target.value) : null);
@@ -881,10 +917,10 @@ export default function Timeline() {
                   </option>
                 ))}
               </select>
-              <span className="text-slate-300" aria-hidden="true">›</span>
+              <span className="text-brand-lightgray" aria-hidden="true">›</span>
               <select
                 aria-label="Portfolio"
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                className="select w-auto px-2 py-1 disabled:bg-surface-page disabled:text-brand-lightgray"
                 value={tlPortfolioId ?? ""}
                 disabled={tlClientId == null}
                 onChange={(e) => {
@@ -902,10 +938,10 @@ export default function Timeline() {
                     </option>
                   ))}
               </select>
-              <span className="text-slate-300" aria-hidden="true">›</span>
+              <span className="text-brand-lightgray" aria-hidden="true">›</span>
               <select
                 aria-label="Project"
-                className="rounded-md border border-slate-300 px-2 py-1 text-sm disabled:bg-slate-50 disabled:text-slate-400"
+                className="select w-auto px-2 py-1 disabled:bg-surface-page disabled:text-brand-lightgray"
                 value={paletteProposalId ?? ""}
                 disabled={tlPortfolioId == null}
                 onChange={(e) => setPaletteProposalId(e.target.value ? Number(e.target.value) : null)}
@@ -955,10 +991,10 @@ export default function Timeline() {
                           draggedMsRef.current = null;
                           setMilestoneDragging(false);
                         }}
-                        className={`flex items-center gap-1.5 rounded border px-2 py-1 text-xs cursor-grab active:cursor-grabbing ${
+                        className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs cursor-grab active:cursor-grabbing ${
                           placed
                             ? "border-brand-green/40 bg-brand-green/5 opacity-60 hover:opacity-100"
-                            : "border-brand-lightgray bg-slate-50 hover:bg-slate-100"
+                            : "border-surface-border bg-surface-page hover:border-brand-red hover:text-brand-red"
                         }`}
                         title={
                           `${ms.discipline}${ms.milestone ? " · " + ms.milestone : ""} · ${ms.start_date} → ${ms.end_date}` +
@@ -988,9 +1024,9 @@ export default function Timeline() {
       {loading && <div className="text-sm text-brand-gray">Loading timeline…</div>}
       {error && <div className="text-sm text-brand-red">{error}</div>}
       {conflict && (
-        <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <div className="flex items-center gap-2 rounded-[10px] border border-brand-gold/30 bg-brand-gold/10 px-3 py-2 text-sm text-brand-deepgold">
           <span>⚠️ {conflict}</span>
-          <button className="ml-auto text-amber-800/70 hover:text-amber-900" onClick={() => setConflict(null)}>dismiss</button>
+          <button className="ml-auto font-semibold hover:underline" onClick={() => setConflict(null)}>dismiss</button>
         </div>
       )}
 
@@ -1005,70 +1041,83 @@ export default function Timeline() {
                 hint="Add resources (engineers / placeholders) via Resources, then create a project and assign work."
               />
             ) : (
-              <div className="card p-0 overflow-x-auto" ref={scrollRef}>
-            <div style={{ width: gridWidth, minWidth: gridWidth, position: "relative" }}>
-              {/* header */}
-              <div className="flex sticky top-0 z-20 bg-white border-b border-brand-lightgray">
-                <div
-                  className="shrink-0 px-3 py-2 text-[11px] uppercase tracking-wider text-brand-gray sticky left-0 bg-white z-10 border-r border-brand-lightgray"
-                  style={{ width: LABEL_W }}
-                >
-                  {view === "engineer" ? "Engineer" : "Project"}
-                </div>
-                {weeks.map((w, i) => (
-                  <div
-                    key={w}
-                    className={clsx(
-                      "shrink-0 px-1.5 py-2.5 text-xs text-center border-r border-brand-lightgray/80",
-                      i === todayCol ? "text-brand-red font-semibold" : "text-brand-gray",
+              <>
+                <div className="card p-0 overflow-x-auto" ref={scrollRef}>
+                  <div style={{ width: gridWidth, minWidth: gridWidth, position: "relative" }}>
+                    {/* header */}
+                    <div className="flex sticky top-0 z-20 bg-surface-card border-b border-surface-border">
+                      <div
+                        className="shrink-0 px-3.5 py-2.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-brand-gray sticky left-0 bg-surface-card z-10 border-r border-surface-border"
+                        style={{ width: LABEL_W }}
+                      >
+                        {view === "engineer" ? "Engineer" : "Project"}
+                      </div>
+                      {weeks.map((w, i) => (
+                        <div
+                          key={w}
+                          className={clsx(
+                            "shrink-0 px-1.5 py-2.5 text-xs text-center border-r border-surface-hairline",
+                            i === todayCol ? "text-brand-red font-bold" : "text-brand-gray",
+                          )}
+                          style={{ width: weekW }}
+                        >
+                          {format(parseISO(w), "d MMM")}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* today line + flag — positioned at today's work-day */}
+                    {weeks.length > 0 && (() => {
+                      const tp = workdayPos(todayISO(), weeks[0]);
+                      if (tp < 0 || tp >= weeks.length * 5) return null;
+                      const left = LABEL_W + tp * (weekW / 5);
+                      return (
+                        <>
+                          <div
+                            className="absolute top-0 bottom-0 w-[1.5px] bg-brand-red z-10 pointer-events-none"
+                            style={{ left }}
+                          />
+                          {/* flag hangs just under the week-header row (38px tall) */}
+                          <div
+                            className="absolute z-[11] pointer-events-none rounded-[3px] bg-brand-red px-1 py-px text-[9px] font-bold text-white"
+                            style={{ left: left - 6, top: 38 }}
+                          >
+                            TODAY
+                          </div>
+                        </>
+                      );
+                    })()}
+
+                    {view === "engineer" ? (
+                      <EngineerView
+                        board={board}
+                        assignments={visibleAssignments}
+                        load={load}
+                        ctx={ctx}
+                        collapsed={collapsed}
+                        onToggle={(d) =>
+                          setCollapsed((c) => {
+                            const n = new Set(c);
+                            n.has(d) ? n.delete(d) : n.add(d);
+                            return n;
+                          })
+                        }
+                        onRowDown={onRowDown}
+                      />
+                    ) : (
+                      <ProjectView
+                        board={board}
+                        assignments={visibleAssignments}
+                        ctx={ctx}
+                        onAddTo={setAddingToProject}
+                        onPatchProject={patchProjectField}
+                        onDeleteProject={deleteProject}
+                      />
                     )}
-                    style={{ width: weekW }}
-                  >
-                    {format(parseISO(w), "d-MMM")}
                   </div>
-                ))}
-              </div>
-
-              {/* today line — positioned at today's work-day */}
-              {weeks.length > 0 && (() => {
-                const tp = workdayPos(todayISO(), weeks[0]);
-                if (tp < 0 || tp >= weeks.length * 5) return null;
-                return (
-                  <div
-                    className="absolute top-0 bottom-0 w-px bg-brand-red/50 z-10 pointer-events-none"
-                    style={{ left: LABEL_W + tp * (weekW / 5) }}
-                  />
-                );
-              })()}
-
-              {view === "engineer" ? (
-                <EngineerView
-                  board={board}
-                  assignments={visibleAssignments}
-                  load={load}
-                  ctx={ctx}
-                  collapsed={collapsed}
-                  onToggle={(d) =>
-                    setCollapsed((c) => {
-                      const n = new Set(c);
-                      n.has(d) ? n.delete(d) : n.add(d);
-                      return n;
-                    })
-                  }
-                  onRowDown={onRowDown}
-                />
-              ) : (
-                <ProjectView
-                  board={board}
-                  assignments={visibleAssignments}
-                  ctx={ctx}
-                  onAddTo={setAddingToProject}
-                  onPatchProject={patchProjectField}
-                  onDeleteProject={deleteProject}
-                />
-              )}
-            </div>
-          </div>
+                </div>
+                <BoardLegend />
+              </>
             )}
           </div>
           {showNewProject ? (
@@ -1077,7 +1126,7 @@ export default function Timeline() {
             <button
               onClick={() => setShowNewProject(true)}
               title="Open New project panel"
-              className="shrink-0 self-start sticky top-4 card flex flex-col items-center gap-2 py-3 text-brand-red hover:bg-rose-50 transition"
+              className="shrink-0 self-start sticky top-4 card flex flex-col items-center gap-2 py-3 text-brand-red hover:bg-brand-red/5 transition"
               style={{ width: 38 }}
             >
               <span className="text-lg leading-none">＋</span>
@@ -1140,12 +1189,15 @@ export default function Timeline() {
 // ---------------- toolbar bits ----------------
 function Segmented({ options, value, onChange }: { options: [string, string][]; value: string; onChange: (v: string) => void }) {
   return (
-    <div className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 font-semibold">
+    <div className="inline-flex items-center rounded-full border border-surface-border bg-surface-page p-0.5 font-semibold">
       {options.map(([v, label]) => (
         <button
           key={v}
           onClick={() => onChange(v)}
-          className={clsx("px-3 py-1 rounded-full transition", value === v ? "bg-white text-brand-red shadow-sm" : "text-slate-500 hover:text-slate-900")}
+          className={clsx(
+            "px-3 py-1 rounded-full transition",
+            value === v ? "bg-surface-card text-brand-red shadow-sm" : "text-brand-gray hover:text-brand-black",
+          )}
         >
           {label}
         </button>
@@ -1153,6 +1205,32 @@ function Segmented({ options, value, onChange }: { options: [string, string][]; 
     </div>
   );
 }
+
+/** The rounded outline control the toolbar is built from (Today, Undo, the
+ *  filter/legend triggers). Ghost-button hover language: border + text go red. */
+function ToolbarPill({
+  children, onClick, disabled, title, active,
+}: { children: ReactNode; onClick: () => void; disabled?: boolean; title?: string; active?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={clsx(
+        "rounded-full border bg-surface-card px-3 py-1 font-semibold transition",
+        disabled
+          ? "border-surface-border text-brand-lightgray"
+          : active
+            ? "border-brand-red text-brand-red"
+            : "border-surface-border text-brand-gray hover:border-brand-red hover:text-brand-red",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 function FilterMenu({ label, options, labels, selected, onChange }: { label: string; options: string[]; labels?: Record<string, string>; selected: Set<string>; onChange: (s: Set<string>) => void }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1163,13 +1241,13 @@ function FilterMenu({ label, options, labels, selected, onChange }: { label: str
   }, []);
   return (
     <div ref={ref} className="relative">
-      <button className={clsx("rounded-full border px-3 py-1 font-semibold", selected.size ? "border-brand-red text-brand-red" : "border-slate-200 text-slate-600")} onClick={() => setOpen((o) => !o)}>
-        {label}{selected.size ? ` (${selected.size})` : ""}
-      </button>
+      <ToolbarPill active={selected.size > 0} onClick={() => setOpen((o) => !o)}>
+        {label}{selected.size ? ` (${selected.size})` : ""} ▾
+      </ToolbarPill>
       {open && (
-        <div className="absolute z-30 mt-1 w-44 bg-white border border-slate-200 rounded-lg shadow-lg p-2 space-y-1">
+        <div className="absolute z-30 mt-1 w-44 bg-surface-card border border-surface-border rounded-[10px] shadow-lg p-2 space-y-1">
           {options.map((o) => (
-            <label key={o} className="flex items-center gap-2 text-xs px-1 py-0.5 hover:bg-slate-50 rounded">
+            <label key={o} className="flex items-center gap-2 text-xs px-1 py-0.5 hover:bg-surface-rowhover rounded">
               <input
                 type="checkbox"
                 checked={selected.has(o)}
@@ -1194,7 +1272,7 @@ function FilterMenu({ label, options, labels, selected, onChange }: { label: str
 }
 
 function Divider() {
-  return <span className="mx-1 h-5 w-px bg-slate-200" aria-hidden />;
+  return <span className="mx-1 h-[18px] w-px bg-surface-border" aria-hidden />;
 }
 function LiveDot({ lastSync, onRefresh }: { lastSync: number; onRefresh: () => void }) {
   const [, force] = useState(0);
@@ -1208,11 +1286,11 @@ function LiveDot({ lastSync, onRefresh }: { lastSync: number; onRefresh: () => v
     <button
       onClick={onRefresh}
       title="Live — the board auto-refreshes every ~12s and when you focus the tab, so other PMs' changes appear here. Click to refresh now."
-      className="inline-flex items-center gap-1.5 font-semibold text-brand-gray hover:text-slate-900"
+      className="inline-flex items-center gap-1.5 font-semibold text-brand-gray hover:text-brand-black"
     >
       <span className="relative flex h-2 w-2">
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-        <span className="relative inline-flex h-2 w-2 rounded-full bg-green-500" />
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-brightgreen opacity-75" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-brand-green" />
       </span>
       Live{ago ? ` · ${ago}` : ""}
     </button>
@@ -1228,33 +1306,28 @@ function LegendMenu() {
   }, []);
   return (
     <div ref={ref} className="relative">
-      <button
-        className="rounded-full border border-slate-200 px-3 py-1 font-semibold text-slate-500 hover:text-slate-900"
-        onClick={() => setOpen((o) => !o)}
-      >
-        Legend
-      </button>
+      <ToolbarPill onClick={() => setOpen((o) => !o)}>Legend</ToolbarPill>
       {open && (
-        <div className="absolute right-0 z-30 mt-1 w-60 bg-white border border-slate-200 rounded-lg shadow-lg p-3 space-y-2">
-          <div className="text-[10px] uppercase tracking-wider text-brand-gray">Status</div>
+        <div className="absolute left-0 z-30 mt-1 w-60 bg-surface-card border border-surface-border rounded-[10px] shadow-lg p-3 space-y-2">
+          <div className="micro-label">Status</div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
             {STATUSES.map((s) => (
-              <span key={s.value} className="inline-flex items-center gap-1.5 text-[11px] text-slate-700">
-                <span className="inline-block h-3 w-3 rounded" style={{ background: s.bg }} />
+              <span key={s.value} className="inline-flex items-center gap-1.5 text-[11px] text-brand-black">
+                <StatusSwatch status={s.value} />
                 {s.label}
               </span>
             ))}
           </div>
-          <div className="border-t border-slate-100 pt-2 text-[10px] uppercase tracking-wider text-brand-gray">Cell utilization</div>
-          <div className="flex flex-col gap-1.5 text-[11px] text-slate-700">
+          <div className="border-t border-surface-hairline pt-2 micro-label">Cell utilization</div>
+          <div className="flex flex-col gap-1.5 text-[11px] text-brand-black">
             <span className="inline-flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded border border-brand-lightgray" style={{ background: "#eaf6ee" }} /> ≤ 100% (has capacity)
+              <Swatch cls={HEAT_LOADED_CHIP_CLS} /> ≤ 100% (has capacity)
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded border border-brand-lightgray" style={{ background: "#fce8ea" }} /> &gt; 100% over-allocated
+              <Swatch cls={HEAT_OVER_CHIP_CLS} /> &gt; 100% over-allocated
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <span className="inline-block h-3 w-3 rounded" style={{ background: "#eceef1" }} /> time off / not started
+              <Swatch cls={HEAT_BLOCKED_CLS} /> time off / not started
             </span>
           </div>
         </div>
@@ -1263,8 +1336,51 @@ function LegendMenu() {
   );
 }
 
+/** 10px colour chip used by both legends. `color` carries a status fill (which
+ *  can be a literal or a token-backed rgb(var(...))); `cls` is for the cell
+ *  tints, which need a `dark:` step to stay visible at chip size. */
+function Swatch({ color, dashed, cls }: { color?: string; dashed?: boolean; cls?: string }) {
+  return (
+    <span
+      className={clsx("inline-block h-2.5 w-2.5 rounded-[3px] shrink-0", cls)}
+      style={{ background: color, border: dashed ? "1px dashed rgb(var(--brand-lightgray))" : undefined }}
+    />
+  );
+}
+function StatusSwatch({ status }: { status: string }) {
+  const st = STATUS_MAP[status] || STATUS_MAP["in_progress"];
+  return <Swatch color={st.bg} dashed={st.dashed} />;
+}
+
+/** Always-visible key under the board — the Legend popover stays for the
+ *  denser utilization detail, this is the at-a-glance version from the design. */
+function BoardLegend() {
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-4 text-[11.5px] text-brand-gray">
+      <span className="micro-label">Status</span>
+      {STATUSES.map((s) => (
+        <span key={s.value} className="inline-flex items-center gap-1.5">
+          <StatusSwatch status={s.value} />
+          {s.label}
+        </span>
+      ))}
+      <span className="h-3.5 w-px bg-surface-border" aria-hidden />
+      <span className="micro-label">Cells</span>
+      <span className="inline-flex items-center gap-1.5">
+        <Swatch cls={HEAT_LOADED_CHIP_CLS} /> ≤ 100% loaded
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <Swatch cls={HEAT_OVER_CHIP_CLS} /> Over-allocated
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <Swatch cls={HEAT_BLOCKED_CLS} /> Time off / not started
+      </span>
+    </div>
+  );
+}
+
 // ---------------- bar ----------------
-function Bar({ a, ctx, top = 4, height = ROW_H - 8 }: { a: TimelineAssignment; ctx: Ctx; top?: number; height?: number }) {
+function Bar({ a, ctx, top = (ROW_H - BAR_H) / 2, height = BAR_H }: { a: TimelineAssignment; ctx: Ctx; top?: number; height?: number }) {
   const { weeks, weekW, drag } = ctx;
   if (!weeks.length) return null;
   const fm = weeks[0];
@@ -1285,8 +1401,8 @@ function Bar({ a, ctx, top = 4, height = ROW_H - 8 }: { a: TimelineAssignment; c
 
   const vS = active ? sPos : Math.max(0, sPos);
   const vE = active ? ePos : Math.min(total, ePos);
-  const left = vS * dw + 2;
-  const width = Math.max(dw - 4, (vE - vS) * dw - 4);
+  const left = vS * dw + 3;
+  const width = Math.max(dw - 6, (vE - vS) * dw - 6);
   const util = a.utilization != null ? `${Math.round(a.utilization * 100)}%` : "";
 
   return (
@@ -1296,10 +1412,21 @@ function Bar({ a, ctx, top = 4, height = ROW_H - 8 }: { a: TimelineAssignment; c
       onContextMenu={(e) => ctx.onBarMenu(e, a)}
       title={`${a.project_name || a.label || ""} · ${a.discipline}${a.milestone ? " · " + a.milestone : ""} · ${util}  (double-click to edit · right-click for options)`}
       className={clsx(
-        "absolute rounded text-xs font-medium truncate px-2.5 cursor-grab active:cursor-grabbing group",
-        active && "ring-2 ring-black/30 z-10 shadow",
+        "absolute rounded-md text-xs font-semibold truncate px-[11px] cursor-grab active:cursor-grabbing group shadow-bar",
+        active && "ring-2 ring-brand-black/30 z-10",
       )}
-      style={{ left, width, top, height, background: st.bg, color: st.fg, lineHeight: `${height}px` }}
+      style={{
+        left,
+        width,
+        top,
+        height,
+        background: st.bg,
+        color: st.fg,
+        // Dashed (not-contracted) bars lose 2px to the border, so the text
+        // baseline has to come in by the same amount to stay centred.
+        border: st.dashed ? "1px dashed rgb(var(--brand-lightgray))" : undefined,
+        lineHeight: `${height - (st.dashed ? 2 : 0)}px`,
+      }}
     >
       {/* resize handles */}
       <span
@@ -1321,7 +1448,7 @@ function Track({ ctx, children }: { ctx: Ctx; children?: ReactNode }) {
     <div className="relative shrink-0" style={{ width: weeks.length * weekW, height: ROW_H }}>
       <div className="absolute inset-0 flex">
         {weeks.map((w) => (
-          <div key={w} className="border-r border-brand-lightgray/60" style={{ width: weekW }} />
+          <div key={w} className="border-r border-surface-hairline" style={{ width: weekW }} />
         ))}
       </div>
       <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: dayGridBg(weekW) }} />
@@ -1333,10 +1460,14 @@ function LabelCell({ children, indent, highlight, height = ROW_H }: { children: 
   return (
     <div
       className={clsx(
-        "shrink-0 px-3 sticky left-0 z-[1] border-r border-brand-lightgray/60 flex items-center text-sm",
-        highlight ? "bg-rose-50" : "bg-white",
+        // The label column is sticky, so bars scroll underneath it — its fill
+        // has to stay opaque. The drop-target tint is therefore a flat gradient
+        // painted ON TOP of the opaque card colour rather than a translucent
+        // background-color that the bars would show through.
+        "shrink-0 px-3.5 sticky left-0 z-[1] border-r border-surface-border flex items-center text-[13.5px] bg-surface-card",
+        highlight && "bg-gradient-to-r from-brand-red/[0.06] to-brand-red/[0.06]",
       )}
-      style={{ width: LABEL_W, height, paddingLeft: 12 + (indent || 0) * 14 }}
+      style={{ width: LABEL_W, height, paddingLeft: 14 + (indent || 0) * 14 }}
     >
       <span className="truncate w-full">{children}</span>
     </div>
@@ -1345,7 +1476,7 @@ function LabelCell({ children, indent, highlight, height = ROW_H }: { children: 
 function DiscTag({ d }: { d: string }) {
   const t = DISC_TAG[d] || DISC_TAG["Other"];
   return (
-    <span className="inline-block text-[9px] font-bold rounded px-1 mr-1 align-middle" style={{ background: t.color, color: "#fff" }} title={d}>
+    <span className="inline-block text-[9px] font-bold rounded-[3px] px-[5px] py-px mr-1 align-middle" style={{ background: t.color, color: "#fff" }} title={d}>
       {t.short}
     </span>
   );
@@ -1404,10 +1535,10 @@ function EngineerView({
       {groups.map((g) => (
         <div key={g.discipline}>
           <button
-            className="flex w-full bg-slate-400/80 border-y border-brand-lightgray/60 sticky left-0"
+            className="flex w-full bg-surface-page border-b border-surface-border sticky left-0"
             onClick={() => onToggle(g.discipline)}
           >
-            <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-900 flex items-center gap-1" style={{ width: LABEL_W }}>
+            <div className="px-3.5 py-1.5 text-[11px] font-bold uppercase tracking-[0.1em] text-brand-black flex items-center gap-1.5" style={{ width: LABEL_W }}>
               {collapsed.has(g.discipline) ? "▸" : "▾"} <DiscTag d={g.discipline} /> {g.discipline} · {g.rows.length}
             </div>
           </button>
@@ -1425,19 +1556,19 @@ function EngineerView({
                   key={r.id}
                   data-res-row={r.id}
                   className={clsx(
-                    "flex items-stretch border-b border-brand-lightgray/60",
-                    isHover && "bg-rose-50/40",
+                    "flex items-stretch border-b border-surface-hairline",
+                    isHover && "bg-brand-red/5",
                   )}
                 >
                   <LabelCell highlight={isHover} height={rowH}>
                     <span
-                      className="cursor-grab active:cursor-grabbing text-brand-gray mr-1"
+                      className="cursor-grab active:cursor-grabbing text-brand-lightgray mr-1.5"
                       title="Drag to reorder"
                       onPointerDown={(e) => onRowDown(e, r)}
                     >
                       ⠿
                     </span>
-                    <span className="font-medium">{r.name}</span>
+                    <span className="font-semibold">{r.name}</span>
                     {r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
                   </LabelCell>
                   <div
@@ -1458,13 +1589,11 @@ function EngineerView({
                       return (
                         <div
                           key={w}
-                          className="absolute top-0 border-r border-brand-lightgray/60"
-                          style={{
-                            left: i * weekW,
-                            width: weekW,
-                            height: rowH,
-                            background: over ? "#fce8ea" : blocked ? "#eceef1" : v > 0 ? "#eaf6ee" : "transparent",
-                          }}
+                          className={clsx(
+                            "absolute top-0 border-r border-surface-hairline",
+                            over ? HEAT_OVER_CLS : blocked ? HEAT_BLOCKED_CLS : v > 0 ? HEAT_LOADED_CLS : "",
+                          )}
+                          style={{ left: i * weekW, width: weekW, height: rowH }}
                           title={
                             blocked
                               ? `${Math.round((1 - a) * 100)}% time off${v > 0 ? `, ${Math.round(v * 100)}% load` : ""}`
@@ -1489,15 +1618,17 @@ function EngineerView({
                           key={`to-${t.id}`}
                           onContextMenu={(ev) => ctx.onTimeOffMenu(ev, t)}
                           title={`${t.reason || "OOO"} — right-click to remove`}
-                          className="absolute top-0 z-[1] flex items-center gap-1 px-1.5 text-[10px] font-semibold text-slate-500 truncate"
+                          className="absolute top-0 z-[1] flex items-center gap-1 px-2 text-[10px] font-bold text-brand-gray truncate"
                           style={{
                             left: sP * dwpx + 1,
                             width: (eP - sP) * dwpx - 2,
                             height: rowH,
+                            // Opaque two-tone hatch: the mute/page pair reads as
+                            // "greyed out" against the card in either theme.
                             background:
-                              "repeating-linear-gradient(45deg,#e5e7eb,#e5e7eb 6px,#eef0f2 6px,#eef0f2 12px)",
-                            border: "1px solid #d1d5db",
-                            borderRadius: 4,
+                              "repeating-linear-gradient(45deg,rgb(var(--surface-mute)),rgb(var(--surface-mute)) 6px,rgb(var(--surface-page)) 6px,rgb(var(--surface-page)) 12px)",
+                            border: "1px solid rgb(var(--surface-ghost))",
+                            borderRadius: 6,
                           }}
                         >
                           🛇 {t.reason || "OOO"}
@@ -1512,14 +1643,19 @@ function EngineerView({
                       return (
                         <div
                           title={`Not started yet — available from ${format(parseISO(r.available_from), "d MMM yyyy")}`}
-                          className="absolute top-0 z-[1] flex items-center gap-1 px-1.5 text-[10px] font-semibold text-violet-700 truncate"
+                          className="absolute top-0 z-[1] flex items-center gap-1 px-2 text-[10px] font-bold text-brand-brown truncate"
                           style={{
                             left: 1,
                             width: endPos * dwpx - 2,
                             height: rowH,
-                            background: "repeating-linear-gradient(45deg,#ede9fe,#ede9fe 6px,#f5f3ff 6px,#f5f3ff 12px)",
-                            border: "1px dashed #c4b5fd",
-                            borderRadius: 4,
+                            // Warm "not started yet" hatch, tinted off brand
+                            // brown so it follows the theme; the flat card
+                            // colour is the final layer, keeping it opaque over
+                            // the utilization heat underneath.
+                            background:
+                              "repeating-linear-gradient(45deg,rgb(var(--brand-brown) / 0.14),rgb(var(--brand-brown) / 0.14) 6px,rgb(var(--brand-brown) / 0.05) 6px,rgb(var(--brand-brown) / 0.05) 12px), rgb(var(--surface-card))",
+                            border: "1px dashed rgb(var(--brand-brown) / 0.35)",
+                            borderRadius: 6,
                           }}
                         >
                           ⏳ Starts {format(parseISO(r.available_from), "d MMM")}
@@ -1527,7 +1663,7 @@ function EngineerView({
                       );
                     })()}
                     {placed.map(({ a, lane }) => (
-                      <Bar key={a.id} a={a} ctx={ctx} top={lane * LANE_H + 2} height={LANE_H - 4} />
+                      <Bar key={a.id} a={a} ctx={ctx} top={lane * LANE_H + (LANE_H - BAR_H) / 2} height={BAR_H} />
                     ))}
                   </div>
                 </div>
@@ -1541,13 +1677,13 @@ function EngineerView({
           const { placed, lanes } = packLanes(unassigned, weeks);
           const rowH = lanes * LANE_H;
           return (
-            <div data-res-row="0" className={clsx(hoverRes === 0 && "bg-rose-50/40")}>
-              <div className="flex bg-slate-400/80 border-y border-brand-lightgray/60">
-                <div className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-900" style={{ width: LABEL_W }}>
+            <div data-res-row="0" className={clsx(hoverRes === 0 && "bg-brand-red/5")}>
+              <div className="flex bg-surface-page border-b border-surface-border">
+                <div className="px-3.5 py-1.5 text-[11px] font-bold uppercase tracking-[0.1em] text-brand-black" style={{ width: LABEL_W }}>
                   Unassigned
                 </div>
               </div>
-              <div className="flex items-stretch border-b border-brand-lightgray/60">
+              <div className="flex items-stretch border-b border-surface-hairline">
                 <LabelCell height={rowH}>
                   <span className="text-xs text-brand-gray">Drag a bar onto an engineer →</span>
                 </LabelCell>
@@ -1560,11 +1696,11 @@ function EngineerView({
                   onDrop={(e) => { e.preventDefault(); const w = weekAt(e); if (w) ctx.onMilestoneDrop(null, w); }}
                 >
                   {weeks.map((w, i) => (
-                    <div key={w} className="absolute top-0 border-r border-brand-lightgray/60" style={{ left: i * weekW, width: weekW, height: rowH }} />
+                    <div key={w} className="absolute top-0 border-r border-surface-hairline" style={{ left: i * weekW, width: weekW, height: rowH }} />
                   ))}
                   <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: dayGridBg(weekW) }} />
                   {placed.map(({ a, lane }) => (
-                    <Bar key={a.id} a={a} ctx={ctx} top={lane * LANE_H + 2} height={LANE_H - 4} />
+                    <Bar key={a.id} a={a} ctx={ctx} top={lane * LANE_H + (LANE_H - BAR_H) / 2} height={BAR_H} />
                   ))}
                 </div>
               </div>
@@ -1612,13 +1748,13 @@ function ProjectView({
         const rows = byProject.get(p.id) || [];
         const st = STATUS_MAP[p.status] || STATUS_MAP["in_progress"];
         return (
-          <div key={p.id} className="border-b border-brand-lightgray/60">
-            <div className="flex items-stretch bg-slate-50/60">
+          <div key={p.id} className="border-b border-surface-border">
+            <div className="flex items-stretch bg-surface-rowhover">
               <LabelCell>
                 {edit?.id === p.id && edit.field === "name" ? (
                   <input
                     autoFocus
-                    className="w-full rounded border border-slate-300 px-1.5 py-0.5 text-sm"
+                    className="w-full rounded-md border border-surface-border px-1.5 py-0.5 text-sm focus:outline-none focus:border-brand-red"
                     value={edit.val}
                     onChange={(e) => setEdit({ ...edit, val: e.target.value })}
                     onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEdit(null); }}
@@ -1636,11 +1772,19 @@ function ProjectView({
                   value={p.status}
                   title="Change status"
                   onChange={(e) => onPatchProject(p.id, { status: e.target.value })}
-                  className="text-[10px] rounded px-1 py-0.5 font-medium border-0 cursor-pointer"
+                  className="text-[10px] rounded-[3px] px-1 py-0.5 font-semibold border-0 cursor-pointer"
                   style={{ background: st.bg, color: st.fg }}
                 >
+                  {/* The <select> itself carries the status fill, so each option
+                      has to reclaim the normal popup surface/text colours. */}
                   {STATUSES.map((s) => (
-                    <option key={s.value} value={s.value} style={{ background: "#fff", color: "#1a1a1a" }}>{s.label}</option>
+                    <option
+                      key={s.value}
+                      value={s.value}
+                      style={{ background: "rgb(var(--surface-card))", color: "rgb(var(--brand-black))" }}
+                    >
+                      {s.label}
+                    </option>
                   ))}
                 </select>
                 {edit?.id === p.id && edit.field === "client" ? (
@@ -1648,7 +1792,7 @@ function ProjectView({
                     <input
                       list="timeline-clients"
                       autoFocus
-                      className="rounded border border-slate-300 px-1.5 py-0.5 text-xs"
+                      className="rounded-md border border-surface-border px-1.5 py-0.5 text-xs focus:outline-none focus:border-brand-red"
                       style={{ width: 190 }}
                       placeholder="Pick or type a client"
                       value={edit.val}
@@ -1705,10 +1849,10 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
     </div>
   );
 }
-const inputCls = "w-full rounded-md border border-slate-200 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/30";
+const inputCls = "input py-1.5";
 const Field = ({ label, children }: { label: string; children: ReactNode }) => (
   <label className="block">
-    <span className="block text-[11px] uppercase tracking-wider text-brand-gray mb-1">{label}</span>
+    <span className="label">{label}</span>
     {children}
   </label>
 );
@@ -1754,7 +1898,7 @@ function NewProjectPanel({ board, onClose, onSaved }: { board: TimelineBoard | n
           <input className={inputCls} list="timeline-clients" placeholder="Pick a client or type a new one" value={client} onChange={(e) => setClient(e.target.value)} />
         </Field>
         <Field label="Status"><select className={inputCls} value={status} onChange={(e) => setStatus(e.target.value)}>{STATUSES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}</select></Field>
-        <div className="border-t border-brand-lightgray/60 pt-3 text-[11px] uppercase tracking-wider text-brand-gray">First assignment (optional)</div>
+        <div className="border-t border-surface-border pt-3 text-[11px] font-semibold uppercase tracking-wider text-brand-gray">First assignment (optional)</div>
         <Field label="Assigned to"><select className={inputCls} value={resourceId} onChange={(e) => setResourceId(e.target.value)}><option value="">Unassigned</option>{(board?.resources ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}</select></Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Discipline"><select className={inputCls} value={discipline} onChange={(e) => setDiscipline(e.target.value)}>{DISCIPLINES.map((d) => <option key={d}>{d}</option>)}</select></Field>
@@ -1764,7 +1908,7 @@ function NewProjectPanel({ board, onClose, onSaved }: { board: TimelineBoard | n
         </div>
         <Field label="Milestone"><select className={inputCls} value={milestone} onChange={(e) => setMilestone(e.target.value)}>{MILESTONES.map((m) => <option key={m} value={m}>{m || "—"}</option>)}</select></Field>
         {err && <div className="text-sm text-brand-red">{err}</div>}
-        {done && <div className="text-xs text-green-600">{done} Add another or close ×.</div>}
+        {done && <div className="text-xs text-brand-green">{done} Add another or close ×.</div>}
         <button className="btn-primary w-full" onClick={save} disabled={saving}>{saving ? "Saving…" : "Create project"}</button>
       </div>
     </div>
@@ -1902,8 +2046,8 @@ function ResourceManagerDialog({ onClose, onChanged }: { onClose: () => void; on
   return (
     <Modal title="Manage resources" onClose={onClose}>
       <div className="space-y-3">
-        <div className="rounded-lg border border-brand-lightgray/60 p-3 space-y-2">
-          <div className="text-[11px] uppercase tracking-wider text-brand-gray">Add engineer or placeholder</div>
+        <div className="rounded-[10px] border border-surface-border p-3 space-y-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-brand-gray">Add engineer or placeholder</div>
           <input className={inputCls} list="timeline-roster" placeholder="Type a name (roster suggestions) or a placeholder like 'New Hire'" value={name} onChange={(e) => setName(e.target.value)} />
           <datalist id="timeline-roster">{roster.map((g) => <option key={g.id} value={g.full_name} />)}</datalist>
           <div className="grid grid-cols-2 gap-2">
@@ -1917,33 +2061,33 @@ function ResourceManagerDialog({ onClose, onChanged }: { onClose: () => void; on
           {placeholder && (
             <label className="flex items-center gap-2 text-xs text-brand-gray">
               Potential start date
-              <input type="date" className="rounded border border-slate-200 px-2 py-1" value={availFrom} onChange={(e) => setAvailFrom(e.target.value)} />
+              <input type="date" className="rounded-md border border-surface-border px-2 py-1 focus:outline-none focus:border-brand-red" value={availFrom} onChange={(e) => setAvailFrom(e.target.value)} />
               <span className="text-[11px]">(weeks before are blocked)</span>
             </label>
           )}
           <button className="btn-primary text-sm" onClick={add} disabled={busy || !name.trim()}>{busy ? "Adding…" : "Add resource"}</button>
         </div>
-        <div className="max-h-80 overflow-y-auto divide-y divide-brand-lightgray/40">
+        <div className="max-h-80 overflow-y-auto divide-y divide-surface-hairline">
           {resources.map((r) => (
             <div key={r.id} className="py-2 text-sm">
               <div className="flex items-center gap-2">
                 <span className={clsx("flex-1 truncate", !r.active && "text-brand-gray line-through")}>
                   <DiscTag d={r.discipline} />
                   {r.name}{r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
-                  {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded bg-violet-100 text-violet-700">placeholder</span>}
+                  {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded-[3px] bg-brand-brown/10 text-brand-brown">placeholder</span>}
                 </span>
-                <select className="rounded border border-slate-200 text-xs px-1 py-0.5" value={r.discipline} onChange={(e) => void setDisc(r, e.target.value)}>{DISCIPLINES.map((d) => <option key={d}>{d}</option>)}</select>
+                <select className="rounded-md border border-surface-border text-xs px-1 py-0.5 focus:outline-none focus:border-brand-red" value={r.discipline} onChange={(e) => void setDisc(r, e.target.value)}>{DISCIPLINES.map((d) => <option key={d}>{d}</option>)}</select>
                 <button className="text-xs text-brand-gray hover:text-brand-red" onClick={() => void toggleActive(r)}>{r.active ? "Hide" : "Show"}</button>
                 <button className="text-xs text-brand-red hover:underline" onClick={() => void remove(r)}>Remove</button>
               </div>
               {r.is_placeholder && (
                 <div className="flex flex-wrap items-center gap-2 pl-1 pt-1.5 text-xs text-brand-gray">
                   <span>Starts</span>
-                  <input type="date" className="rounded border border-slate-200 px-1.5 py-0.5" value={r.available_from || ""} onChange={(e) => void setAvail(r, e.target.value)} />
+                  <input type="date" className="rounded-md border border-surface-border px-1.5 py-0.5 focus:outline-none focus:border-brand-red" value={r.available_from || ""} onChange={(e) => void setAvail(r, e.target.value)} />
                   <span className="text-brand-lightgray">·</span>
                   {linkingId === r.id ? (
                     <span className="inline-flex items-center gap-1">
-                      <input list="timeline-roster" autoFocus className="rounded border border-slate-200 px-1.5 py-0.5" placeholder="Real person's name" value={linkName} onChange={(e) => setLinkName(e.target.value)} />
+                      <input list="timeline-roster" autoFocus className="rounded-md border border-surface-border px-1.5 py-0.5 focus:outline-none focus:border-brand-red" placeholder="Real person's name" value={linkName} onChange={(e) => setLinkName(e.target.value)} />
                       <button className="text-brand-red font-semibold hover:underline" onClick={() => void linkToPerson(r)}>Link</button>
                       <button className="text-brand-gray hover:underline" onClick={() => { setLinkingId(null); setLinkName(""); }}>cancel</button>
                     </span>
@@ -1992,31 +2136,31 @@ function ContextMenu({
   const top = Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 800) - 380);
 
   return (
-    <div ref={ref} className="fixed z-[60] w-56 bg-white border border-slate-200 rounded-lg shadow-xl py-1 text-sm" style={{ left, top }}>
+    <div ref={ref} className="fixed z-[60] w-56 bg-surface-card border border-surface-border rounded-[10px] shadow-xl py-1 text-sm" style={{ left, top }}>
       {a ? (
         <>
           <div className="px-3 py-1 text-[11px] text-brand-gray truncate">{a.project_name || a.label || "Assignment"}</div>
           <MenuItem onClick={() => onEdit(a)}>✎ Edit…</MenuItem>
           <MenuItem onClick={() => onDuplicate(a)}>⧉ Duplicate</MenuItem>
           {a.resource_id != null && <MenuItem onClick={() => onUnassign(a)}>⇤ Unassign</MenuItem>}
-          <div className="border-t border-slate-100 my-1" />
-          <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-brand-gray">Set status</div>
+          <div className="border-t border-surface-hairline my-1" />
+          <div className="px-3 py-0.5 micro-label">Set status</div>
           {STATUSES.map((s) => (
             <MenuItem key={s.value} onClick={() => onSetStatus(a, s.value)}>
-              <span className="inline-block h-2.5 w-2.5 rounded mr-2 align-middle" style={{ background: s.bg }} />
+              <span className="mr-2 inline-flex align-middle"><StatusSwatch status={s.value} /></span>
               {s.label}
               {(a.status || a.effective_status) === s.value && <span className="ml-auto text-brand-red">✓</span>}
             </MenuItem>
           ))}
-          <div className="border-t border-slate-100 my-1" />
-          <div className="px-3 py-0.5 text-[10px] uppercase tracking-wider text-brand-gray">Utilization</div>
+          <div className="border-t border-surface-hairline my-1" />
+          <div className="px-3 py-0.5 micro-label">Utilization</div>
           <div className="flex flex-wrap gap-1 px-3 pb-1.5 pt-0.5">
             {UTILS.map((u) => (
               <button
                 key={u}
                 className={clsx(
-                  "text-[11px] rounded border px-1.5 py-0.5 hover:border-brand-red hover:text-brand-red",
-                  Math.abs((a.utilization ?? 1) - u) < 0.001 ? "border-brand-red text-brand-red" : "border-slate-200 text-slate-600",
+                  "text-[11px] rounded-md border px-1.5 py-0.5 hover:border-brand-red hover:text-brand-red",
+                  Math.abs((a.utilization ?? 1) - u) < 0.001 ? "border-brand-red text-brand-red" : "border-surface-border text-brand-gray",
                 )}
                 onClick={() => onSetUtil(a, u)}
               >
@@ -2024,7 +2168,7 @@ function ContextMenu({
               </button>
             ))}
           </div>
-          <div className="border-t border-slate-100 my-1" />
+          <div className="border-t border-surface-hairline my-1" />
           <MenuItem destructive onClick={() => onDelete(a)}>🗑 Delete</MenuItem>
         </>
       ) : menu.timeoff ? (
@@ -2053,7 +2197,7 @@ function ContextMenu({
 function MenuItem({ children, onClick, destructive }: { children: ReactNode; onClick: () => void; destructive?: boolean }) {
   return (
     <button
-      className={clsx("flex w-full items-center px-3 py-1.5 text-left hover:bg-slate-50", destructive ? "text-brand-red" : "text-slate-700")}
+      className={clsx("flex w-full items-center px-3 py-1.5 text-left hover:bg-surface-rowhover", destructive ? "text-brand-red" : "text-brand-black")}
       onClick={onClick}
     >
       {children}
@@ -2177,23 +2321,34 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
   const teamNowAvg = nPeople ? teamNow / nPeople : 0;
 
   const pct = (v: number) => `${Math.round(v * 100)}%`;
-  // green = room · amber = near capacity · red = over · black = OOO/PTO/not-started
+  // green = room · gold = near capacity · red = over · brand ink = OOO/PTO/not-started.
+  // These are bare bars with no text on them, so they read straight off the
+  // tokens — and the OOO bar has to invert (dark ink on paper, light ink on the
+  // dark board) or it disappears into the card.
   const loadColor = (v: number, blocked: boolean, over: boolean) =>
-    over ? "#e12a3f" : blocked ? "#1a1a1a" : v >= 0.85 ? "#f59e0b" : v > 0 ? "#278747" : "#eef0f2";
+    over
+      ? "rgb(var(--brand-brightred))"
+      : blocked
+        ? "rgb(var(--brand-black))"
+        : v >= 0.85
+          ? "rgb(var(--brand-gold))"
+          : v > 0
+            ? "rgb(var(--brand-green))"
+            : HEAT_BLOCKED;
 
   return (
     <div className="card p-0 overflow-x-auto">
-      <div className="px-4 py-3 border-b border-brand-lightgray/60 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-        <span className="font-semibold">Team workload</span>
+      <div className="px-4 py-3 border-b border-surface-border flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+        <span className="font-bold">Team workload</span>
         <span className="text-brand-gray">{nPeople} people</span>
         <span className="text-brand-gray">avg load now {pct(teamNowAvg)}</span>
         <span className="text-brand-gray">{teamOver} over-allocated engineer-weeks</span>
         <span className="text-brand-gray">{teamOoo} time-off engineer-weeks</span>
-        <span className="ml-auto text-[11px] text-brand-gray">click an engineer to see their projects · green ≤ capacity · amber near full · red over · black = OOO/PTO</span>
+        <span className="ml-auto text-[11px] text-brand-gray">click an engineer to see their projects · green ≤ capacity · gold near full · red over · dark = OOO/PTO</span>
       </div>
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-[11px] uppercase tracking-wider text-brand-gray border-b border-brand-lightgray/60 align-bottom">
+          <tr className="text-[11px] uppercase tracking-wider text-brand-gray border-b border-surface-border align-bottom">
             <th className="text-left px-4 py-2 font-semibold">Engineer</th>
             <th className="text-right px-2 py-2 font-semibold">Projects</th>
             <th className="text-right px-2 py-2 font-semibold">Now</th>
@@ -2216,8 +2371,8 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
         <tbody>
           {groups.map((g) => (
             <Fragment key={g.discipline}>
-              <tr className="bg-slate-400/80">
-                <td colSpan={N_COLS} className="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-900">
+              <tr className="bg-surface-page border-y border-surface-border">
+                <td colSpan={N_COLS} className="px-4 py-1.5 text-[11px] font-bold uppercase tracking-[0.1em] text-brand-black">
                   <DiscTag d={g.discipline} /> {g.discipline} · {g.rows.length}
                 </td>
               </tr>
@@ -2229,14 +2384,14 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
                 return (
                   <Fragment key={r.id}>
                     <tr
-                      className="border-b border-brand-lightgray/40 hover:bg-slate-50/60 cursor-pointer"
+                      className="border-b border-surface-hairline hover:bg-surface-rowhover cursor-pointer"
                       onClick={() => toggle(r.id)}
                     >
                       <td className="px-4 py-2">
                         <span className="text-brand-gray mr-1 inline-block w-3">{isOpen ? "▾" : "▸"}</span>
-                        <span className="font-medium">{r.name}</span>
+                        <span className="font-semibold">{r.name}</span>
                         {r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
-                        {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded bg-slate-100 text-brand-gray">placeholder</span>}
+                        {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded-[3px] bg-brand-brown/10 text-brand-brown">placeholder</span>}
                       </td>
                       <td className="text-right px-2 py-2 text-brand-gray">{m.projects || "—"}</td>
                       <td className={clsx("text-right px-2 py-2 font-medium", m.now > 1.0001 ? "text-brand-red" : m.now > 0 ? "" : "text-brand-gray")}>{pct(m.now)}</td>
@@ -2264,7 +2419,7 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
                       </td>
                     </tr>
                     {isOpen && (
-                      <tr className="bg-slate-50/40 border-b border-brand-lightgray/40">
+                      <tr className="bg-surface-rowhover border-b border-surface-hairline">
                         <td colSpan={N_COLS} className="px-4 py-2">
                           <div className="pl-5 space-y-1.5">
                             {rowAssigns.length === 0 && rowTimeoff.length === 0 && (
@@ -2275,23 +2430,23 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
                               return (
                                 <div key={a.id} className="flex items-center gap-2 text-xs">
                                   <DiscTag d={a.discipline} />
-                                  <span className="font-medium text-slate-700 truncate" style={{ minWidth: 180 }}>
+                                  <span className="font-semibold text-brand-black truncate" style={{ minWidth: 180 }}>
                                     {a.label || projName(a.timeline_project_id)}
                                     {!a.label && a.milestone ? ` · ${a.milestone}` : ""}
                                   </span>
                                   <span className="text-brand-gray tabular-nums">{fmtRange(a.start_date, a.end_date)}</span>
                                   <span className="text-brand-gray">· {pct(a.utilization ?? 1)}</span>
                                   <span className="inline-flex items-center gap-1 ml-auto">
-                                    <span className="inline-block h-2.5 w-2.5 rounded" style={{ background: st.bg }} />
+                                    <Swatch color={st.bg} dashed={st.dashed} />
                                     <span className="text-brand-gray">{st.label}</span>
                                   </span>
                                 </div>
                               );
                             })}
                             {rowTimeoff.map((t) => (
-                              <div key={`to-${t.id}`} className="flex items-center gap-2 text-xs text-slate-500">
-                                <span className="inline-block text-[9px] font-bold rounded px-1 mr-1 align-middle bg-slate-300 text-white">🛇</span>
-                                <span className="font-medium" style={{ minWidth: 180 }}>{t.reason || "OOO"}</span>
+                              <div key={`to-${t.id}`} className="flex items-center gap-2 text-xs text-brand-gray">
+                                <span className="inline-block text-[9px] font-bold rounded-[3px] px-[5px] py-px mr-1 align-middle bg-brand-lightgray text-white">🛇</span>
+                                <span className="font-semibold" style={{ minWidth: 180 }}>{t.reason || "OOO"}</span>
                                 <span className="tabular-nums">{fmtRange(t.start_date, t.end_date)}</span>
                                 <span className="ml-auto italic">time off</span>
                               </div>

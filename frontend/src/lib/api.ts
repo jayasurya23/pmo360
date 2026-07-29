@@ -933,6 +933,9 @@ export interface UserPreferences {
   /** When true, the Send page auto-emails minutes to attendees right after
    *  the PM finalizes a meeting (client-side Graph send). Off by default. */
   auto_send_minutes_on_finalize?: boolean;
+  /** Portfolios the PM has starred, in pin order. Rendered as quick-jump
+   *  chips in the header's context row. */
+  pinned_project_ids?: number[];
 }
 export const fetchMyPreferences = () =>
   apiClient.get<UserPreferences>("/users/me/preferences").then((r) => r.data);

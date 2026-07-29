@@ -110,14 +110,14 @@ export default function RenameDialog({ open, kind, onClose }: Props) {
       aria-labelledby="rename-title"
     >
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => !submitting && onClose()}
       />
       <form
         onSubmit={handleSubmit}
         className="relative w-full max-w-md card p-5 space-y-4 shadow-xl"
       >
-        <h3 id="rename-title" className="text-base font-semibold text-slate-900">
+        <h3 id="rename-title" className="text-base font-semibold text-brand-black">
           {kind === "client" ? "Rename client" : "Edit portfolio"}
         </h3>
 
@@ -147,7 +147,7 @@ export default function RenameDialog({ open, kind, onClose }: Props) {
         </div>
 
         {kind === "portfolio" && (
-          <div className="space-y-3 border-t border-slate-100 pt-3">
+          <div className="space-y-3 border-t border-surface-hairline pt-3">
             <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
               Project details — reused on Change Orders &amp; documents
             </div>
@@ -187,7 +187,7 @@ export default function RenameDialog({ open, kind, onClose }: Props) {
         )}
 
         {error && (
-          <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
+          <div className="text-sm text-status-open-text bg-status-open-bg border border-status-open-border rounded-md px-3 py-2">
             {error}
           </div>
         )}

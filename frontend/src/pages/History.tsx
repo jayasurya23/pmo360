@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
-import UpdatedByLine from "@/components/UpdatedByLine";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
 import {
@@ -17,7 +16,13 @@ import {
   meetingDocUrl,
   getMeeting,
 } from "@/lib/api";
-import type { Meeting, Agenda, Note, ChangeOrder } from "@/lib/types";
+import type {
+  Meeting,
+  Agenda,
+  Note,
+  ChangeOrder,
+  UserStub,
+} from "@/lib/types";
 import { mergeSubProjects } from "@/lib/subprojects";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
@@ -31,8 +36,17 @@ type NoteSort = "newest" | "oldest" | "priority" | "followup" | "topic";
 const NOTE_AREA_ALL = "__all__";
 const NOTE_AREA_UNSPEC = "__unspecified__";
 
+/** Row-level ghost button — the `.btn-ghost` hover language at the smaller
+ *  size these dense list rows call for (12px text, 7px radius). */
+const ROW_BTN =
+  "inline-flex items-center whitespace-nowrap rounded-[7px] border border-surface-ghost bg-surface-card px-[13px] py-1.5 text-xs font-semibold text-brand-black transition hover:border-brand-red hover:text-brand-red";
+/** Destructive sibling of ROW_BTN — muted until hover, then bright red. */
+const ROW_BTN_DANGER =
+  "inline-flex items-center whitespace-nowrap rounded-[7px] border border-surface-mute bg-surface-card px-2.5 py-1.5 text-xs font-semibold text-brand-lightgray transition hover:border-brand-brightred hover:text-brand-brightred";
+
 export default function History() {
   const {
+    currentClient,
     currentProject,
     setDraftMeetingId,
     setParsed,
@@ -286,65 +300,82 @@ export default function History() {
   };
 
   return (
-    <div className="space-y-6">
+    <div>
       <PageHeader
+        kicker={
+          currentClient
+            ? `${currentClient.name} / ${currentProject.name}`
+            : currentProject.name
+        }
         title="History"
-        subtitle="Past meetings, saved pre-meeting agendas, and planner notes for this portfolio."
       />
 
-      <div className="flex border-b border-brand-lightgray gap-6">
-        <TabBtn active={tab === "meetings"} onClick={() => setTab("meetings")}>
-          Meetings ({meetings.length})
-        </TabBtn>
-        <TabBtn active={tab === "agendas"} onClick={() => setTab("agendas")}>
-          Pre-Meeting Agendas ({agendas.length})
-        </TabBtn>
-        <TabBtn active={tab === "notes"} onClick={() => setTab("notes")}>
-          Notes ({notes.length})
-        </TabBtn>
-        <TabBtn
-          active={tab === "change_orders"}
-          onClick={() => setTab("change_orders")}
-        >
-          Change Orders ({changeOrders.length})
-        </TabBtn>
-      </div>
-
-      {loading ? (
-        <div className="card p-5 text-sm">Loading…</div>
-      ) : tab === "meetings" ? (
-        <>
-          {/* Status filter pills */}
-          {meetings.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap">
+      <div className="space-y-[18px]">
+        <div className="flex items-center gap-5 border-b border-surface-border flex-wrap">
+          <TabBtn
+            active={tab === "meetings"}
+            count={meetings.length}
+            onClick={() => setTab("meetings")}
+          >
+            Meetings
+          </TabBtn>
+          <TabBtn
+            active={tab === "agendas"}
+            count={agendas.length}
+            onClick={() => setTab("agendas")}
+          >
+            Pre-meeting agendas
+          </TabBtn>
+          <TabBtn
+            active={tab === "notes"}
+            count={notes.length}
+            onClick={() => setTab("notes")}
+          >
+            Notes
+          </TabBtn>
+          <TabBtn
+            active={tab === "change_orders"}
+            count={changeOrders.length}
+            onClick={() => setTab("change_orders")}
+          >
+            Change orders
+          </TabBtn>
+          {/* Stage filters ride the tab row rather than taking a band of their
+              own — they only apply to the Meetings tab. */}
+          {tab === "meetings" && !loading && meetings.length > 0 && (
+            <div className="ml-auto flex items-center gap-1.5 pb-1.5 flex-wrap">
               <FilterPill
                 active={statusFilter === "all"}
                 onClick={() => setStatusFilter("all")}
               >
-                All ({meetings.length})
+                All {meetings.length}
               </FilterPill>
               <FilterPill
                 active={statusFilter === "draft"}
                 onClick={() => setStatusFilter("draft")}
               >
-                Draft ({stageCounts.draft})
+                Draft {stageCounts.draft}
               </FilterPill>
               <FilterPill
                 active={statusFilter === "final"}
                 onClick={() => setStatusFilter("final")}
               >
-                Final ({stageCounts.final})
+                Final {stageCounts.final}
               </FilterPill>
               <FilterPill
                 active={statusFilter === "sent"}
                 onClick={() => setStatusFilter("sent")}
               >
-                Sent ({stageCounts.sent})
+                Sent {stageCounts.sent}
               </FilterPill>
             </div>
           )}
+        </div>
 
-          {meetings.length === 0 ? (
+        {loading ? (
+          <div className="card p-5 text-sm">Loading…</div>
+        ) : tab === "meetings" ? (
+          meetings.length === 0 ? (
             <EmptyState
               title="No meetings yet"
               hint="Capture a meeting to start building this portfolio's history."
@@ -363,17 +394,15 @@ export default function History() {
               hint="Try a different status filter."
             />
           ) : (
-            <div className="space-y-6">
+            <div className="space-y-[18px]">
               {meetingsByMonth.map(([month, rows]) => (
                 <div key={month}>
-                  <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold mb-2">
-                    {month}
-                  </div>
-                  <div className="card divide-y divide-brand-lightgray/60">
+                  <MonthLabel>{month}</MonthLabel>
+                  <div className="card divide-y divide-surface-page overflow-hidden">
                     {rows.map((m) => (
                       <div
                         key={m.id}
-                        className="px-5 py-3 flex flex-col gap-2 md:grid md:grid-cols-[1fr_auto] md:gap-4 md:items-center"
+                        className="px-5 py-[13px] transition hover:bg-surface-rowhover flex flex-col gap-2 md:grid md:grid-cols-[1fr_auto_auto] md:gap-4 md:items-center"
                       >
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
@@ -391,11 +420,11 @@ export default function History() {
                               />
                             ) : (
                               <>
-                                <span className="text-sm font-medium text-brand-black truncate">
+                                <span className="text-sm font-semibold text-brand-black truncate">
                                   {m.title || "(no title)"}
                                 </span>
                                 <button
-                                  className="text-brand-gray hover:text-brand-black text-xs shrink-0"
+                                  className="text-brand-lightgray hover:text-brand-red text-xs shrink-0 transition"
                                   onClick={() => startRename(m)}
                                   title="Rename"
                                   aria-label="Rename meeting"
@@ -405,73 +434,39 @@ export default function History() {
                               </>
                             )}
                           </div>
-                          <div className="text-xs text-brand-gray mt-1 flex items-center gap-2 flex-wrap">
-                            <span>
-                              {format(
-                                parseISO(m.meeting_date),
-                                "EEE, MMM d, yyyy",
-                              )}
-                            </span>
-                            <StageBadge
-                              stage={(m.stage || "draft") as Stage}
-                              onChange={(s) => changeStage(m, s)}
-                            />
-                          </div>
-                          <UpdatedByLine user={m.updated_by} at={m.updated_at} />
+                          <MetaLine
+                            parts={[
+                              format(parseISO(m.meeting_date), "EEE, MMM d"),
+                              updatedByText(m.updated_by, m.updated_at),
+                            ]}
+                          />
                         </div>
-                        <div className="flex items-center gap-2 flex-wrap">
+                        <StageBadge
+                          stage={(m.stage || "draft") as Stage}
+                          onChange={(s) => changeStage(m, s)}
+                        />
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <button
-                            className="btn-ghost"
+                            className={ROW_BTN}
                             onClick={() => hydrateMeeting(m, false)}
                           >
                             Open
                           </button>
                           <button
-                            className="btn-ghost"
+                            className={ROW_BTN}
                             onClick={() => hydrateMeeting(m, true)}
                             title="Open a copy as a fresh draft — handy for recurring meetings"
                           >
                             Duplicate
                           </button>
-                          <a
-                            className="btn-ghost"
-                            href={meetingDocUrl(m.id, "pdf")}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            PDF
-                          </a>
-                          <a
-                            className="btn-ghost"
-                            href={meetingDocUrl(m.id, "docx")}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            DOCX
-                          </a>
-                          <a
-                            className="btn-ghost"
-                            href={meetingDocUrl(m.id, "xlsx")}
-                            target="_blank"
-                            rel="noreferrer"
-                            title="Action-log spreadsheet"
-                          >
-                            XLSX
-                          </a>
-                          <a
-                            className="btn-ghost"
-                            href={meetingDocUrl(m.id, "zip")}
-                            target="_blank"
-                            rel="noreferrer"
-                            title="All deliverables (PDF + DOCX + XLSX) zipped"
-                          >
-                            ZIP
-                          </a>
+                          <DownloadMenu meetingId={m.id} />
                           <button
-                            className="btn-danger"
+                            className={ROW_BTN_DANGER}
                             onClick={() => handleDeleteMeeting(m)}
+                            title="Delete"
+                            aria-label="Delete meeting"
                           >
-                            Delete
+                            🗑
                           </button>
                         </div>
                       </div>
@@ -480,218 +475,222 @@ export default function History() {
                 </div>
               ))}
             </div>
-          )}
-        </>
-      ) : tab === "agendas" ? (
-        agendas.length === 0 ? (
-          <EmptyState title="No saved agendas yet" />
-        ) : (
-          <div className="card divide-y divide-brand-lightgray/60">
-            {agendas.map((a) => (
-              <div
-                key={a.id}
-                className="px-5 py-3 grid grid-cols-[1fr_auto] gap-4 items-center"
-              >
-                <div>
-                  <div className="text-sm font-medium text-brand-black">
-                    {a.title || `Pre-meeting agenda — ${a.upcoming_date}`}
+          )
+        ) : tab === "agendas" ? (
+          agendas.length === 0 ? (
+            <EmptyState title="No saved agendas yet" />
+          ) : (
+            <div className="card divide-y divide-surface-page overflow-hidden">
+              {agendas.map((a) => (
+                <div
+                  key={a.id}
+                  className="px-5 py-[13px] transition hover:bg-surface-rowhover grid grid-cols-[1fr_auto] gap-4 items-center"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-brand-black truncate">
+                      {a.title || `Pre-meeting agenda — ${a.upcoming_date}`}
+                    </div>
+                    <MetaLine
+                      parts={[
+                        format(parseISO(a.upcoming_date), "EEE, MMM d"),
+                        `${a.meeting_duration_minutes || 30} min`,
+                        updatedByText(a.updated_by, a.updated_at),
+                      ]}
+                    />
                   </div>
-                  <div className="text-xs text-brand-gray">
-                    {format(parseISO(a.upcoming_date), "EEE, MMM d, yyyy")} ·{" "}
-                    {a.meeting_duration_minutes || 30} min
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      className={ROW_BTN}
+                      onClick={() => nav(`/next-agenda?agenda=${a.id}`)}
+                    >
+                      Open
+                    </button>
+                    <button
+                      className={ROW_BTN_DANGER}
+                      onClick={() => handleDeleteAgenda(a)}
+                      title="Delete"
+                      aria-label="Delete agenda"
+                    >
+                      🗑
+                    </button>
                   </div>
-                  <UpdatedByLine user={a.updated_by} at={a.updated_at} />
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    className="btn-ghost"
-                    onClick={() => nav(`/next-agenda?agenda=${a.id}`)}
-                  >
-                    Open
-                  </button>
-                  <button
-                    className="btn-danger"
-                    onClick={() => handleDeleteAgenda(a)}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )
-      ) : tab === "notes" ? (
-        // ---- Notes tab: read-only mirror of this portfolio's planner notes ----
-        <>
-          {notes.length > 0 && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <FilterPill
-                    active={noteFilter === "open"}
-                    onClick={() => setNoteFilter("open")}
-                  >
-                    Open ({noteCounts.open})
-                  </FilterPill>
-                  <FilterPill
-                    active={noteFilter === "closed"}
-                    onClick={() => setNoteFilter("closed")}
-                  >
-                    Closed ({noteCounts.closed})
-                  </FilterPill>
-                  <FilterPill
-                    active={noteFilter === "all"}
-                    onClick={() => setNoteFilter("all")}
-                  >
-                    All ({notes.length})
-                  </FilterPill>
-                </div>
-                <button
-                  className="btn-ghost text-sm"
-                  onClick={() => nav("/notes")}
-                  title="Open the Planner notes page to add or edit"
-                >
-                  Edit in Planner notes →
-                </button>
-              </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <select
-                  className="select text-sm w-44"
-                  value={noteArea}
-                  onChange={(e) => setNoteArea(e.target.value)}
-                  title="Project filter"
-                >
-                  <option value={NOTE_AREA_ALL}>All projects</option>
-                  {noteSubProjects.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                  <option value={NOTE_AREA_UNSPEC}>Unspecified</option>
-                </select>
-                <select
-                  className="select text-sm w-32"
-                  value={notePriority}
-                  onChange={(e) =>
-                    setNotePriority(e.target.value as NotePriorityFilter)
-                  }
-                  title="Priority filter"
-                >
-                  <option value="all">Any priority</option>
-                  <option value="High">High</option>
-                  <option value="Medium">Medium</option>
-                  <option value="Low">Low</option>
-                </select>
-                <select
-                  className="select text-sm w-48"
-                  value={noteSort}
-                  onChange={(e) => setNoteSort(e.target.value as NoteSort)}
-                  title="Sort"
-                >
-                  <option value="newest">Sort: Newest first</option>
-                  <option value="oldest">Sort: Oldest first</option>
-                  <option value="priority">Sort: Priority (High→Low)</option>
-                  <option value="followup">Sort: Follow-up (soonest)</option>
-                  <option value="topic">Sort: Topic (A–Z)</option>
-                </select>
-                <span className="text-xs text-brand-gray">
-                  {filteredNotes.length} shown
-                </span>
-              </div>
+              ))}
             </div>
-          )}
+          )
+        ) : tab === "notes" ? (
+          // ---- Notes tab: read-only mirror of this portfolio's planner notes ----
+          <>
+            {notes.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <FilterPill
+                      active={noteFilter === "open"}
+                      onClick={() => setNoteFilter("open")}
+                    >
+                      Open {noteCounts.open}
+                    </FilterPill>
+                    <FilterPill
+                      active={noteFilter === "closed"}
+                      onClick={() => setNoteFilter("closed")}
+                    >
+                      Closed {noteCounts.closed}
+                    </FilterPill>
+                    <FilterPill
+                      active={noteFilter === "all"}
+                      onClick={() => setNoteFilter("all")}
+                    >
+                      All {notes.length}
+                    </FilterPill>
+                  </div>
+                  <button
+                    className={ROW_BTN}
+                    onClick={() => nav("/notes")}
+                    title="Open the Planner notes page to add or edit"
+                  >
+                    Edit in Planner notes →
+                  </button>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <select
+                    className="select text-sm w-44"
+                    value={noteArea}
+                    onChange={(e) => setNoteArea(e.target.value)}
+                    title="Project filter"
+                  >
+                    <option value={NOTE_AREA_ALL}>All projects</option>
+                    {noteSubProjects.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                    <option value={NOTE_AREA_UNSPEC}>Unspecified</option>
+                  </select>
+                  <select
+                    className="select text-sm w-32"
+                    value={notePriority}
+                    onChange={(e) =>
+                      setNotePriority(e.target.value as NotePriorityFilter)
+                    }
+                    title="Priority filter"
+                  >
+                    <option value="all">Any priority</option>
+                    <option value="High">High</option>
+                    <option value="Medium">Medium</option>
+                    <option value="Low">Low</option>
+                  </select>
+                  <select
+                    className="select text-sm w-48"
+                    value={noteSort}
+                    onChange={(e) => setNoteSort(e.target.value as NoteSort)}
+                    title="Sort"
+                  >
+                    <option value="newest">Sort: Newest first</option>
+                    <option value="oldest">Sort: Oldest first</option>
+                    <option value="priority">Sort: Priority (High→Low)</option>
+                    <option value="followup">Sort: Follow-up (soonest)</option>
+                    <option value="topic">Sort: Topic (A–Z)</option>
+                  </select>
+                  <span className="text-xs text-brand-gray">
+                    {filteredNotes.length} shown
+                  </span>
+                </div>
+              </div>
+            )}
 
-          {notes.length === 0 ? (
+            {notes.length === 0 ? (
+              <EmptyState
+                title="No notes yet"
+                hint="Capture lightweight follow-ups on the Planner notes page."
+                action={
+                  <button
+                    className="btn-primary mt-2"
+                    onClick={() => nav("/notes")}
+                  >
+                    Open Planner notes
+                  </button>
+                }
+              />
+            ) : filteredNotes.length === 0 ? (
+              <EmptyState
+                title="No notes match these filters"
+                hint="Try a different status, project, or priority."
+              />
+            ) : (
+              <div className="card divide-y divide-surface-page overflow-hidden">
+                {filteredNotes.map((n) => (
+                  <NoteRow key={n.id} note={n} />
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          // ---- Change Orders tab: read-only mirror of this portfolio's COs ----
+          changeOrders.length === 0 ? (
             <EmptyState
-              title="No notes yet"
-              hint="Capture lightweight follow-ups on the Planner notes page."
+              title="No change orders yet"
+              hint="Create change orders on the Change Orders page."
               action={
                 <button
                   className="btn-primary mt-2"
-                  onClick={() => nav("/notes")}
+                  onClick={() => nav("/change-orders")}
                 >
-                  Open Planner notes
+                  Open Change Orders
                 </button>
               }
             />
-          ) : filteredNotes.length === 0 ? (
-            <EmptyState
-              title="No notes match these filters"
-              hint="Try a different status, project, or priority."
-            />
           ) : (
-            <div className="card divide-y divide-brand-lightgray/60">
-              {filteredNotes.map((n) => (
-                <NoteRow key={n.id} note={n} />
+            <div className="card divide-y divide-surface-page overflow-hidden">
+              {changeOrders.map((co) => (
+                <div
+                  key={co.id}
+                  className="px-5 py-[13px] transition hover:bg-surface-rowhover grid grid-cols-[1fr_auto] gap-4 items-center"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-brand-black flex items-center gap-2 flex-wrap">
+                      <span>
+                        CO-{co.co_number}
+                        <span className="text-brand-gray font-normal">
+                          {" "}
+                          · {co.co_version}
+                        </span>
+                      </span>
+                      <CoHistoryBadge status={co.status} />
+                      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-surface-mute text-brand-gray">
+                        {co.rate_type === "hourly" ? "Hourly" : "Fixed"}
+                      </span>
+                    </div>
+                    <div className="text-xs text-brand-gray mt-0.5">
+                      <b className="text-brand-black">{coMoney(co.total_amount)}</b>
+                      {co.requested_by ? ` · ${co.requested_by}` : ""}
+                      {co.status === "approved" && co.approved_by
+                        ? ` · approved by ${co.approved_by}`
+                        : ""}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {co.status === "approved" && (
+                      <button
+                        className={ROW_BTN}
+                        onClick={() => void downloadCoPdf(co)}
+                      >
+                        PDF
+                      </button>
+                    )}
+                    <button
+                      className={ROW_BTN}
+                      onClick={() => nav("/change-orders")}
+                    >
+                      Open
+                    </button>
+                  </div>
+                </div>
               ))}
             </div>
-          )}
-        </>
-      ) : (
-        // ---- Change Orders tab: read-only mirror of this portfolio's COs ----
-        changeOrders.length === 0 ? (
-          <EmptyState
-            title="No change orders yet"
-            hint="Create change orders on the Change Orders page."
-            action={
-              <button
-                className="btn-primary mt-2"
-                onClick={() => nav("/change-orders")}
-              >
-                Open Change Orders
-              </button>
-            }
-          />
-        ) : (
-          <div className="card divide-y divide-brand-lightgray/60">
-            {changeOrders.map((co) => (
-              <div
-                key={co.id}
-                className="px-5 py-3 grid grid-cols-[1fr_auto] gap-4 items-center"
-              >
-                <div className="min-w-0">
-                  <div className="text-sm font-medium text-brand-black flex items-center gap-2">
-                    <span>
-                      CO-{co.co_number}
-                      <span className="text-brand-gray font-normal">
-                        {" "}
-                        · {co.co_version}
-                      </span>
-                    </span>
-                    <CoHistoryBadge status={co.status} />
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-brand-nearwhite text-brand-gray">
-                      {co.rate_type === "hourly" ? "Hourly" : "Fixed"}
-                    </span>
-                  </div>
-                  <div className="text-xs text-brand-gray mt-0.5">
-                    <b className="text-brand-black">{coMoney(co.total_amount)}</b>
-                    {co.requested_by ? ` · ${co.requested_by}` : ""}
-                    {co.status === "approved" && co.approved_by
-                      ? ` · approved by ${co.approved_by}`
-                      : ""}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {co.status === "approved" && (
-                    <button
-                      className="btn-ghost"
-                      onClick={() => void downloadCoPdf(co)}
-                    >
-                      PDF
-                    </button>
-                  )}
-                  <button
-                    className="btn-ghost"
-                    onClick={() => nav("/change-orders")}
-                  >
-                    Open
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )
-      )}
+          )
+        )}
+      </div>
     </div>
   );
 }
@@ -714,22 +713,111 @@ async function downloadCoPdf(co: ChangeOrder) {
   URL.revokeObjectURL(url);
 }
 
-function CoHistoryBadge({ status }: { status: string }) {
-  const cfg: Record<string, { label: string; bg: string; text: string }> = {
-    draft: { label: "Draft", bg: "#e6e7e8", text: "#4d4d4f" },
-    pending: { label: "Pending", bg: "#f3eecf", text: "#7a7320" },
-    sent_back: { label: "Sent back", bg: "#fde2e2", text: "#ad1f2b" },
-    approved: { label: "Approved", bg: "#d6f0e0", text: "#278747" },
-  };
-  const c = cfg[status] || cfg.draft;
+/** "updated by Arun Ramadass, Jul 23 9:12 AM" — the redesign folds provenance
+ *  into each row's single meta line instead of a second UpdatedByLine row. */
+function updatedByText(user?: UserStub | null, at?: string | null) {
+  if (!user?.name) return null;
+  return `updated by ${user.name}${
+    at ? `, ${format(parseISO(at), "MMM d h:mm a")}` : ""
+  }`;
+}
+
+/** The one 12px line under a row title. Falsy parts drop out so callers can
+ *  pass optional fragments without guarding each one. */
+function MetaLine({ parts }: { parts: (string | null | undefined)[] }) {
+  const text = parts.filter(Boolean).join(" · ");
+  if (!text) return null;
+  return <div className="text-xs text-brand-gray mt-0.5">{text}</div>;
+}
+
+function MonthLabel({ children }: { children: React.ReactNode }) {
   return (
-    <span
-      className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
-      style={{ background: c.bg, color: c.text }}
-    >
-      {c.label}
+    <div className="text-[11px] uppercase tracking-[0.12em] text-brand-lightgray font-bold mt-1.5 mb-2.5">
+      {children}
+    </div>
+  );
+}
+
+/** All four deliverables behind one control — the row already carries Open,
+ *  Duplicate, the stage badge and delete. */
+function DownloadMenu({ meetingId }: { meetingId: number }) {
+  const [open, setOpen] = useState(false);
+  const items: {
+    kind: "pdf" | "docx" | "xlsx" | "zip";
+    label: string;
+    hint: string;
+  }[] = [
+    { kind: "pdf", label: "PDF", hint: "Meeting minutes" },
+    { kind: "docx", label: "DOCX", hint: "Editable minutes" },
+    { kind: "xlsx", label: "XLSX", hint: "Action log" },
+    { kind: "zip", label: "ZIP", hint: "All three, zipped" },
+  ];
+  return (
+    <span className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+        className={ROW_BTN}
+        title="Download deliverables"
+      >
+        ⬇ PDF · DOCX · XLSX <span className="opacity-60 ml-1">▾</span>
+      </button>
+      {open && (
+        <span className="absolute right-0 top-full mt-1 z-20 block min-w-[200px] rounded-[7px] border border-surface-border bg-surface-card py-1 shadow-page">
+          {items.map((it) => (
+            <a
+              key={it.kind}
+              className="block px-3 py-1.5 text-xs text-brand-black hover:bg-surface-rowhover"
+              href={meetingDocUrl(meetingId, it.kind)}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <span className="font-semibold">{it.label}</span>
+              <span className="text-brand-lightgray"> · {it.hint}</span>
+            </a>
+          ))}
+        </span>
+      )}
     </span>
   );
+}
+
+/** Badge tints, shared by every pill on this page so the four tabs read as one
+ *  surface. `blue` has no status token, so it is built from a translucent
+ *  brand-blue fill plus the text-weight blue: same pale-blue pill on light,
+ *  dark fill with a light label on dark. */
+type Tone = "gray" | "gold" | "green" | "blue" | "red";
+const TONE_CLS: Record<Tone, string> = {
+  gray: "bg-surface-border text-brand-gray border-brand-lightgray",
+  gold: "bg-status-pending-bg text-status-pending-text border-status-pending-border",
+  green:
+    "bg-status-completed-bg text-status-completed-text border-status-completed-border",
+  blue: "bg-brand-blue/15 text-brand-deepblue border-brand-blue",
+  red: "bg-status-open-bg text-status-open-text border-status-open-border",
+};
+const MINI_PILL =
+  "inline-flex items-center rounded-full border px-2.5 py-[3px] text-[11px] font-semibold whitespace-nowrap";
+
+function MiniPill({
+  tone,
+  children,
+}: {
+  tone: Tone;
+  children: React.ReactNode;
+}) {
+  return <span className={clsx(MINI_PILL, TONE_CLS[tone])}>{children}</span>;
+}
+
+function CoHistoryBadge({ status }: { status: string }) {
+  const cfg: Record<string, { label: string; tone: Tone }> = {
+    draft: { label: "Draft", tone: "gray" },
+    pending: { label: "Pending", tone: "gold" },
+    sent_back: { label: "Sent back", tone: "red" },
+    approved: { label: "Approved", tone: "green" },
+  };
+  const c = cfg[status] || cfg.draft;
+  return <MiniPill tone={c.tone}>{c.label}</MiniPill>;
 }
 
 /** Read-only row mirroring a single planner note. Editing happens on the
@@ -738,31 +826,25 @@ function NoteRow({ note }: { note: Note }) {
   const status = (note.status || "open") === "closed" ? "closed" : "open";
   const priority = note.priority || "Medium";
   return (
-    <div className="px-5 py-3 space-y-1.5">
+    <div className="px-5 py-[13px] transition hover:bg-surface-rowhover space-y-1.5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-sm font-medium text-brand-black">
+          <div className="text-sm font-semibold text-brand-black">
             {note.topic || "(untitled note)"}
           </div>
-          <div className="text-xs text-brand-gray mt-0.5 flex items-center gap-2 flex-wrap">
-            <span>
-              {note.note_date
-                ? format(parseISO(note.note_date), "EEE, MMM d, yyyy")
-                : "No date"}
-            </span>
-            {note.project_area && (
-              <span className="px-1.5 py-0.5 rounded bg-brand-nearwhite text-brand-gray">
-                {note.project_area}
-              </span>
-            )}
-            {note.source && <span>· {note.source}</span>}
-            {note.follow_up_date && (
-              <span>
-                · follow-up{" "}
-                {format(parseISO(note.follow_up_date), "MMM d, yyyy")}
-              </span>
-            )}
-          </div>
+          <MetaLine
+            parts={[
+              note.note_date
+                ? format(parseISO(note.note_date), "EEE, MMM d")
+                : "No date",
+              note.project_area || null,
+              note.source || null,
+              note.follow_up_date
+                ? `follow-up ${format(parseISO(note.follow_up_date), "MMM d, yyyy")}`
+                : null,
+              updatedByText(note.updated_by, note.updated_at),
+            ]}
+          />
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <PriorityBadge priority={priority} />
@@ -774,40 +856,24 @@ function NoteRow({ note }: { note: Note }) {
           {note.action_needed}
         </div>
       )}
-      <UpdatedByLine user={note.updated_by} at={note.updated_at} />
     </div>
   );
 }
 
 function PriorityBadge({ priority }: { priority: string }) {
-  const cfg: Record<string, { bg: string; text: string }> = {
-    High: { bg: "#fbe0e3", text: "#ad1f2b" },
-    Medium: { bg: "#f3eecf", text: "#7a7320" },
-    Low: { bg: "#e6e7e8", text: "#4d4d4f" },
+  const tones: Record<string, Tone> = {
+    High: "red",
+    Medium: "gold",
+    Low: "gray",
   };
-  const c = cfg[priority] || cfg.Medium;
-  return (
-    <span
-      className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
-      style={{ background: c.bg, color: c.text }}
-    >
-      {priority}
-    </span>
-  );
+  return <MiniPill tone={tones[priority] || "gold"}>{priority}</MiniPill>;
 }
 
 function NoteStatusBadge({ status }: { status: "open" | "closed" }) {
-  const c =
-    status === "closed"
-      ? { label: "Closed", bg: "#d6f0e0", text: "#278747" }
-      : { label: "Open", bg: "#dbeaf7", text: "#185fa5" };
-  return (
-    <span
-      className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
-      style={{ background: c.bg, color: c.text }}
-    >
-      {c.label}
-    </span>
+  return status === "closed" ? (
+    <MiniPill tone="green">Closed</MiniPill>
+  ) : (
+    <MiniPill tone="blue">Open</MiniPill>
   );
 }
 
@@ -823,10 +889,10 @@ function StageBadge({
   onChange: (s: Stage) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const cfg: Record<Stage, { label: string; bg: string; text: string }> = {
-    draft: { label: "Draft", bg: "#e6e7e8", text: "#4d4d4f" },
-    final: { label: "Final", bg: "#dbeaf7", text: "#185fa5" },
-    sent: { label: "Sent", bg: "#d6f0e0", text: "#278747" },
+  const cfg: Record<Stage, { label: string; tone: Tone }> = {
+    draft: { label: "Draft", tone: "gray" },
+    final: { label: "Final", tone: "blue" },
+    sent: { label: "Sent", tone: "green" },
   };
   const c = cfg[stage];
   return (
@@ -835,15 +901,14 @@ function StageBadge({
         type="button"
         onClick={() => setOpen((o) => !o)}
         onBlur={() => window.setTimeout(() => setOpen(false), 150)}
-        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded inline-flex items-center gap-1"
-        style={{ background: c.bg, color: c.text }}
+        className={clsx(MINI_PILL, TONE_CLS[c.tone], "gap-1")}
         title="Change status"
       >
         {c.label}
         <span className="opacity-60">▾</span>
       </button>
       {open && (
-        <span className="absolute left-0 top-full mt-1 z-20 bg-white border border-slate-200 rounded shadow-lg py-0.5 min-w-[90px] block">
+        <span className="absolute left-0 top-full mt-1 z-20 bg-surface-card border border-surface-border rounded-[7px] shadow-page py-1 min-w-[100px] block">
           {(Object.keys(cfg) as Stage[]).map((s) => (
             <button
               key={s}
@@ -854,7 +919,7 @@ function StageBadge({
                 setOpen(false);
               }}
               className={clsx(
-                "block w-full text-left px-2.5 py-1 text-xs hover:bg-brand-nearwhite/70",
+                "block w-full text-left px-3 py-1.5 text-xs hover:bg-surface-rowhover",
                 s === stage && "font-semibold",
               )}
             >
@@ -882,8 +947,8 @@ function FilterPill({
       className={clsx(
         "px-3 py-1 rounded-full text-xs font-semibold border transition",
         active
-          ? "bg-brand-red text-white border-brand-red"
-          : "bg-white text-brand-gray border-slate-200 hover:border-slate-300",
+          ? "bg-brand-black text-white border-brand-black"
+          : "bg-surface-card text-brand-gray border-surface-border hover:border-brand-red hover:text-brand-red",
       )}
     >
       {children}
@@ -893,23 +958,36 @@ function FilterPill({
 
 function TabBtn({
   active,
+  count,
   onClick,
   children,
 }: {
   active: boolean;
+  count: number;
   onClick: () => void;
   children: React.ReactNode;
 }) {
   return (
     <button
       onClick={onClick}
-      className={
+      className={clsx(
+        // -mb-px pulls the 2.5px underline flush with the row's own border.
+        "-mb-px flex items-center gap-1.5 border-b-[2.5px] px-0.5 py-[9px] text-sm transition",
         active
-          ? "px-1 py-2 -mb-px border-b-2 border-brand-red text-brand-red font-semibold text-sm"
-          : "px-1 py-2 -mb-px text-brand-gray font-medium text-sm hover:text-brand-black"
-      }
+          ? "border-brand-red text-brand-red font-semibold"
+          : "border-transparent text-brand-gray font-medium hover:text-brand-black",
+      )}
     >
       {children}
+      <span
+        className={
+          active
+            ? "rounded-full bg-status-open-bg px-[7px] py-px text-[11px] font-bold text-status-open-text"
+            : "text-[11px] text-brand-lightgray"
+        }
+      >
+        {count}
+      </span>
     </button>
   );
 }

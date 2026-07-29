@@ -84,17 +84,17 @@ const loadContacts = () =>
 const SOURCE_CHIP: Record<Source, { label: string; cls: string; title: string }> = {
   pm: {
     label: "PM",
-    cls: "text-emerald-700 bg-emerald-50 border-emerald-200",
+    cls: "text-status-completed-text bg-status-completed-bg border-status-completed-border",
     title: "PMO 360 team member — links the action to them",
   },
   contact: {
     label: "Contact",
-    cls: "text-slate-600 bg-slate-100 border-slate-200",
+    cls: "text-brand-gray bg-surface-mute border-surface-border",
     title: "From the roster / meeting attendees",
   },
   directory: {
     label: "Castillo",
-    cls: "text-sky-700 bg-sky-50 border-sky-200",
+    cls: "text-brand-deepblue bg-brand-blue/10 border-brand-blue/40",
     title: "From the Microsoft 365 directory",
   },
 };
@@ -262,7 +262,7 @@ export default function OwnerPicker({
           type="text"
           className={
             compact
-              ? "w-full px-2 py-1 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-red/30"
+              ? "w-full px-2 py-1 text-xs text-brand-black border border-surface-border rounded-md focus:outline-none focus:border-brand-red"
               : "input"
           }
           value={text}
@@ -288,7 +288,7 @@ export default function OwnerPicker({
         />
         {ownerUserId !== null && boundUser && (
           <span
-            className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5 pointer-events-none"
+            className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] text-status-completed-text bg-status-completed-bg border border-status-completed-border rounded px-1.5 py-0.5 pointer-events-none"
             title={`Linked to ${boundUser.email || boundUser.name}`}
           >
             ✓ PM
@@ -297,7 +297,7 @@ export default function OwnerPicker({
       </div>
 
       {open && (
-        <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-200 rounded shadow-lg z-30 max-h-72 overflow-y-auto">
+        <div className="absolute left-0 right-0 mt-1 bg-surface-card border border-surface-border rounded-[10px] shadow-lg z-30 max-h-72 overflow-y-auto">
           {loading && all.length === 0 ? (
             <div className="px-3 py-2 text-xs text-brand-gray italic">
               Loading people…
@@ -352,7 +352,7 @@ export default function OwnerPicker({
                     e.preventDefault();
                     handleClear();
                   }}
-                  className="block w-full text-left px-3 py-1.5 text-[11px] text-rose-700 hover:bg-rose-50 border-t border-slate-100"
+                  className="block w-full text-left px-3 py-1.5 text-[11px] text-brand-brightred hover:bg-status-open-bg border-t border-surface-hairline"
                 >
                   Clear PM link (keep as free-form)
                 </button>
@@ -368,7 +368,7 @@ export default function OwnerPicker({
                     void loadDirectory();
                   }}
                   disabled={dirLoading}
-                  className="block w-full text-left px-3 py-1.5 text-[11px] font-semibold text-sky-700 hover:bg-sky-50 border-t border-slate-100 disabled:opacity-60"
+                  className="block w-full text-left px-3 py-1.5 text-[11px] font-semibold text-brand-deepblue hover:bg-brand-blue/10 border-t border-surface-hairline disabled:opacity-60"
                 >
                   {dirLoading
                     ? "Loading Castillo directory…"
@@ -376,7 +376,7 @@ export default function OwnerPicker({
                 </button>
               )}
               {dirError && (
-                <div className="px-3 py-1.5 text-[11px] text-amber-700 border-t border-slate-100">
+                <div className="px-3 py-1.5 text-[11px] text-brand-deepgold border-t border-surface-hairline">
                   {dirError}
                 </div>
               )}

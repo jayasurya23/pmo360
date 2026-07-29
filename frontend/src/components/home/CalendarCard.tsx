@@ -20,6 +20,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import clsx from "clsx";
 import {
   format,
   parseISO,
@@ -291,29 +292,23 @@ export default function CalendarCard() {
   // Render
   // ============================================================
   return (
-    <div className="card p-4 border-l-4 border-l-[#185fa5] bg-gradient-to-r from-sky-50/40 to-white">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
-            Upcoming meetings
-          </div>
-          <div className="text-base font-semibold text-brand-black mt-1">
-            📅 {minimized ? "From Outlook" : "The week ahead from Outlook · Mon–Fri"}
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {minimized && phase === "loaded" && (
-            <span className="text-xs text-brand-gray">
-              {todayCount} today
-              {weekCount > todayCount ? ` · ${weekCount} this week` : ""}
-            </span>
-          )}
+    <div className="card overflow-hidden">
+      <div className="flex items-center gap-2.5 px-5 py-3.5 border-b border-surface-hairline">
+        <h2 className="section-title">Today's meetings</h2>
+        <span className="text-xs text-brand-gray truncate">
+          {minimized && phase === "loaded"
+            ? `${todayCount} today${
+                weekCount > todayCount ? ` · ${weekCount} this week` : ""
+              }`
+            : "from Outlook"}
+        </span>
+        <div className="ml-auto flex items-center gap-2 shrink-0">
           {phase !== "signed-out" && !minimized && (
             <button
               type="button"
               onClick={() => load()}
               disabled={phase === "loading"}
-              className="text-xs text-brand-gray hover:text-brand-black px-2 py-1 rounded hover:bg-brand-nearwhite/60 disabled:opacity-40"
+              className="text-xs font-semibold text-brand-gray hover:text-brand-red disabled:opacity-40"
               title="Refresh from Outlook"
             >
               {phase === "loading" ? "Loading…" : "↻ Refresh"}
@@ -322,7 +317,7 @@ export default function CalendarCard() {
           <button
             type="button"
             onClick={() => setMinimized((v) => !v)}
-            className="text-brand-gray hover:text-brand-black px-2 py-1 rounded hover:bg-brand-nearwhite/60 text-sm leading-none"
+            className="text-brand-gray hover:text-brand-red text-sm leading-none"
             title={minimized ? "Expand" : "Minimize"}
             aria-label={minimized ? "Expand upcoming meetings" : "Minimize upcoming meetings"}
             aria-expanded={!minimized}
@@ -333,7 +328,7 @@ export default function CalendarCard() {
       </div>
 
       {!minimized && (
-      <div className="mt-3 space-y-3">
+      <div className="px-5 py-3 space-y-3">
         {phase === "signed-out" && <SignedOutCta />}
         {phase === "needs-consent" && (
           <ConsentCta onConnect={() => load({ popupOk: true })} />
@@ -351,18 +346,18 @@ export default function CalendarCard() {
         )}
 
         {(phase === "loaded" || (phase === "loading" && rows.length > 0)) && (
-          <div className="space-y-4">
+          // Negative inset so the rows run edge-to-edge inside the card while
+          // the surrounding states keep the body padding.
+          <div className="-mx-5 space-y-3">
             {visibleGroups.map((g) => (
               <div key={g.key}>
-                <div className="text-[11px] uppercase tracking-wider text-brand-gray font-semibold mb-1">
-                  {g.label}
-                </div>
+                <div className="micro-label px-5 mb-1">{g.label}</div>
                 {g.rows.length === 0 ? (
-                  <div className="text-xs text-brand-gray/60 italic px-1 py-0.5">
+                  <div className="text-xs text-brand-lightgray italic px-5 py-0.5">
                     No meetings
                   </div>
                 ) : (
-                  <div className="card divide-y divide-brand-lightgray/60">
+                  <div>
                     {g.rows.map(({ event, match, isInternal }) => (
                       <EventRowItem
                         key={event.id}
@@ -396,7 +391,7 @@ export default function CalendarCard() {
               <button
                 type="button"
                 onClick={() => setExpandedWeek((v) => !v)}
-                className="w-full text-center text-xs font-medium text-[#185fa5] hover:text-[#0f4d8a] py-1.5 rounded hover:bg-sky-50/60"
+                className="w-full text-center text-xs font-semibold text-brand-gray hover:text-brand-red py-1.5"
               >
                 {expandedWeek
                   ? "▴ Show today only"
@@ -424,8 +419,8 @@ export default function CalendarCard() {
 
 function SignedOutCta() {
   return (
-    <div className="flex items-center justify-between gap-3 bg-sky-50 border border-sky-200 rounded px-3 py-2">
-      <div className="text-sm text-sky-900">
+    <div className="flex items-center justify-between gap-3 bg-brand-blue/10 border border-brand-blue/30 rounded-lg px-3 py-2">
+      <div className="text-sm text-brand-deepblue">
         Sign in with your Castillo account to see upcoming Outlook meetings
         and pre-fill agendas from them.
       </div>
@@ -436,8 +431,8 @@ function SignedOutCta() {
 
 function ConsentCta({ onConnect }: { onConnect: () => void }) {
   return (
-    <div className="flex items-center justify-between gap-3 bg-sky-50 border border-sky-200 rounded px-3 py-2">
-      <div className="text-sm text-sky-900">
+    <div className="flex items-center justify-between gap-3 bg-brand-blue/10 border border-brand-blue/30 rounded-lg px-3 py-2">
+      <div className="text-sm text-brand-deepblue">
         Connect your Outlook calendar so we can list your week ahead and
         link those meetings to portfolios.
       </div>
@@ -461,23 +456,21 @@ function ErrorBlock({
   onRetry: () => void;
 }) {
   return (
-    <div className="rounded border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900">
+    <div className="rounded-lg border border-status-open-border bg-status-open-bg px-3 py-2 text-sm text-status-open-text">
       <div className="font-semibold">{detail.message}</div>
       {detail.hint && (
-        <div className="mt-1 text-xs text-rose-800 leading-relaxed">
-          {detail.hint}
-        </div>
+        <div className="mt-1 text-xs leading-relaxed">{detail.hint}</div>
       )}
       <div className="mt-2 flex items-center gap-3">
         <button
           type="button"
           onClick={onRetry}
-          className="text-xs underline text-rose-900 hover:text-rose-700"
+          className="text-xs font-semibold underline hover:no-underline"
         >
           {detail.actionLabel || "Try again"}
         </button>
         {detail.azure && (
-          <span className="text-[11px] text-rose-800/80">
+          <span className="text-[11px] opacity-80">
             Azure portal → App registrations → API permissions / Expose an API
           </span>
         )}
@@ -490,15 +483,13 @@ function ErrorBlock({
 function SkeletonRow() {
   return (
     <div className="space-y-2">
-      <div className="h-3 w-24 bg-slate-200/70 rounded animate-pulse" />
-      <div className="card divide-y divide-brand-lightgray/60">
-        {[0, 1].map((i) => (
-          <div key={i} className="px-5 py-3 space-y-2">
-            <div className="h-4 w-3/4 bg-slate-200/70 rounded animate-pulse" />
-            <div className="h-3 w-1/2 bg-slate-100 rounded animate-pulse" />
-          </div>
-        ))}
-      </div>
+      <div className="h-3 w-24 bg-surface-mute rounded animate-pulse" />
+      {[0, 1].map((i) => (
+        <div key={i} className="py-2 space-y-2">
+          <div className="h-4 w-3/4 bg-surface-mute rounded animate-pulse" />
+          <div className="h-3 w-1/2 bg-surface-hairline rounded animate-pulse" />
+        </div>
+      ))}
     </div>
   );
 }
@@ -531,13 +522,8 @@ function EventRowItem({
 }) {
   const start = event.startUtc ? parseISO(event.startUtc) : null;
   const end = event.endUtc ? parseISO(event.endUtc) : null;
-  const timeText = event.isAllDay
-    ? "All day"
-    : start && end
-    ? `${format(start, "h:mm a")} – ${format(end, "h:mm a")}`
-    : start
-    ? format(start, "h:mm a")
-    : "";
+  const durationMin =
+    start && end ? Math.round((end.getTime() - start.getTime()) / 60000) : null;
 
   const matchedTo =
     match.project_id && match.project_name
@@ -546,47 +532,76 @@ function EventRowItem({
         }`
       : null;
 
+  // The rail carries the match state at a glance: red = bound to a portfolio,
+  // gold = still needs one, grey = internal sync we deliberately left alone.
+  const rail = matchedTo
+    ? "bg-brand-red"
+    : isInternal
+    ? "bg-brand-lightgray"
+    : "bg-brand-gold";
+
   return (
-    <div className="px-5 py-3">
-      <div className="grid grid-cols-[1fr_auto] gap-3 items-start">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <div className="text-sm font-medium text-brand-black truncate">
-              {event.subject || "(no subject)"}
-            </div>
+    <div className="px-5 py-3 border-b border-b-surface-page last:border-b-0 hover:bg-surface-rowhover transition">
+      <div className="flex items-center gap-4">
+        <div className="w-[70px] shrink-0 text-right">
+          {event.isAllDay || !start ? (
+            <div className="text-sm font-semibold text-brand-black">All day</div>
+          ) : (
+            <>
+              <div className="text-sm font-semibold tabular-nums text-brand-black">
+                {format(start, "h:mm")}
+                <span className="ml-0.5 text-[10px] font-semibold text-brand-gray">
+                  {format(start, "a")}
+                </span>
+              </div>
+              {durationMin !== null && (
+                <div className="text-[11px] text-brand-gray">
+                  {durationMin} min
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className={clsx("w-[3px] self-stretch rounded-sm", rail)} />
+
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-brand-black truncate">
+            {event.subject || "(no subject)"}
+          </div>
+          <div className="text-xs text-brand-gray mt-px truncate">
+            {matchedTo || (isInternal ? "Internal" : "No portfolio yet")}
+            {event.organizerName ? ` · ${event.organizerName}` : ""}
             {event.onlineProvider && (
-              <span
-                className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
-                style={{ background: "#e6effc", color: "#185fa5" }}
-                title={`Online meeting (${event.onlineProvider})`}
-              >
-                Online
-              </span>
+              <>
+                {" · "}
+                <span
+                  className="font-semibold text-brand-blue"
+                  title={`Online meeting (${event.onlineProvider})`}
+                >
+                  Online
+                </span>
+              </>
             )}
+          </div>
+
+          {/* Match status + manual override toggle */}
+          <div className="text-xs mt-1 flex items-center gap-2 flex-wrap">
             {event.isRecurring && (
               <span
-                className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600"
+                className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-surface-mute text-brand-gray"
                 title="Recurring meeting — linking/unlinking applies to the whole series"
               >
                 🔁 Recurring
               </span>
             )}
-          </div>
-          <div className="text-xs text-brand-gray mt-0.5 truncate">
-            {timeText}
-            {event.organizerName ? ` · Organised by ${event.organizerName}` : ""}
-          </div>
-
-          {/* Match status + manual override toggle */}
-          <div className="text-xs mt-1 flex items-center gap-2 flex-wrap">
             {matchedTo ? (
               <>
                 <MatchBadge match={match} />
-                <span className="text-brand-black">{matchedTo}</span>
                 <button
                   type="button"
                   onClick={onTogglePicker}
-                  className="text-[11px] underline text-brand-gray hover:text-brand-black"
+                  className="text-[11px] font-semibold text-brand-gray hover:text-brand-red"
                 >
                   {pickerOpen ? "Cancel" : "Change"}
                 </button>
@@ -594,7 +609,7 @@ function EventRowItem({
                   <button
                     type="button"
                     onClick={onUnlink}
-                    className="text-[11px] underline text-brand-gray hover:text-brand-black"
+                    className="text-[11px] font-semibold text-brand-gray hover:text-brand-red"
                     title={
                       event.isRecurring
                         ? "Remove the link from the whole recurring series — falls back to auto-match"
@@ -606,13 +621,13 @@ function EventRowItem({
                 )}
               </>
             ) : isInternal ? (
-              // Internal-only meeting: skip the "Unmatched" amber pill +
-              // "Pick a portfolio" prompt — almost always wrong to bind
-              // an internal sync to a client portfolio. PM can still click
-              // "Change" to override if this one really is portfolio-related.
+              // Internal-only meeting: skip the "Unmatched" pill + "Pick a
+              // portfolio" prompt — almost always wrong to bind an internal
+              // sync to a client portfolio. PM can still click "Link to
+              // portfolio" to override if this one really is portfolio-related.
               <>
                 <span
-                  className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600"
+                  className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-surface-mute text-brand-gray"
                   title="All attendees are on the Castillo domain — treated as an internal sync, not a client meeting."
                 >
                   🏢 Internal
@@ -620,20 +635,20 @@ function EventRowItem({
                 <button
                   type="button"
                   onClick={onTogglePicker}
-                  className="text-[11px] underline text-brand-gray hover:text-brand-black"
+                  className="text-[11px] font-semibold text-brand-gray hover:text-brand-red"
                 >
                   {pickerOpen ? "Cancel" : "Link to portfolio"}
                 </button>
               </>
             ) : (
               <>
-                <span className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800">
+                <span className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-status-pending-bg text-status-pending-text">
                   Unmatched
                 </span>
                 <button
                   type="button"
                   onClick={onTogglePicker}
-                  className="text-[11px] underline text-amber-900 hover:text-amber-700"
+                  className="text-[11px] font-semibold text-brand-deepgold hover:text-brand-red"
                 >
                   {pickerOpen ? "Cancel" : "Pick a portfolio"}
                 </button>
@@ -646,7 +661,7 @@ function EventRowItem({
           type="button"
           onClick={onBuildAgenda}
           disabled={!match.project_id}
-          className="btn-ghost text-xs whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+          className="btn-ghost text-xs px-3.5 py-1.5 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
           title={
             match.project_id
               ? "Pre-fill a pre-meeting agenda from this event"
@@ -660,7 +675,7 @@ function EventRowItem({
       {pickerOpen && (
         <>
           {event.isRecurring && (
-            <div className="mt-2 text-[11px] text-[#185fa5] bg-sky-50 border border-sky-200 rounded px-2 py-1">
+            <div className="mt-2 text-[11px] text-brand-deepblue bg-brand-blue/10 border border-brand-blue/30 rounded px-2 py-1">
               🔁 This is a recurring meeting — your choice links{" "}
               <strong>every occurrence</strong> in the series (and future ones).
             </div>
@@ -680,7 +695,7 @@ function MatchBadge({ match }: { match: CalendarMatchOut }) {
   if (match.is_manual) {
     return (
       <span
-        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800"
+        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-status-completed-bg text-status-completed-text"
         title="You manually linked this event to a portfolio."
       >
         ✓ Linked
@@ -690,7 +705,7 @@ function MatchBadge({ match }: { match: CalendarMatchOut }) {
   if (match.match_reason === "email") {
     return (
       <span
-        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-sky-100 text-sky-800"
+        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-brand-blue/15 text-brand-deepblue"
         title="Matched by an attendee email in the portfolio's roster."
       >
         Auto · email
@@ -700,7 +715,7 @@ function MatchBadge({ match }: { match: CalendarMatchOut }) {
   if (match.match_reason === "subject") {
     return (
       <span
-        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800"
+        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-status-pending-bg text-status-pending-text"
         title="Matched by the portfolio name appearing in the event subject. Lower confidence — review and pin manually if needed."
       >
         Auto · subject
@@ -739,14 +754,14 @@ function ManualPortfolioPicker({
   }, [portfolios, query, clientMap]);
 
   return (
-    <div className="mt-2 rounded border border-slate-200 bg-white p-2 space-y-2">
+    <div className="mt-2 rounded-lg border border-surface-border bg-surface-card p-2 space-y-2">
       <input
         type="text"
         autoFocus
         placeholder="Search portfolios…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        className="w-full px-2 py-1 text-xs border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-brand-red/30"
+        className="input px-2 py-1 text-xs"
       />
       <div className="max-h-48 overflow-y-auto">
         {portfolios.length === 0 ? (
@@ -763,7 +778,7 @@ function ManualPortfolioPicker({
               key={p.id}
               type="button"
               onClick={() => onPick(p.id)}
-              className="block w-full text-left px-2 py-1 rounded hover:bg-brand-nearwhite/60 text-xs"
+              className="block w-full text-left px-2 py-1 rounded hover:bg-surface-rowhover text-xs"
             >
               <span className="text-brand-gray">{clientName} / </span>
               <span className="font-medium text-brand-black">{p.name}</span>

@@ -177,7 +177,7 @@ export default function ScheduleItemPicker({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/40 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -195,7 +195,7 @@ export default function ScheduleItemPicker({
           </h3>
           <button
             type="button"
-            className="text-xs text-slate-400 hover:text-slate-600"
+            className="text-xs text-brand-lightgray hover:text-brand-gray"
             onClick={onClose}
             aria-label="Close"
           >
@@ -204,11 +204,11 @@ export default function ScheduleItemPicker({
         </div>
 
         {loading && (
-          <div className="text-sm text-slate-500 p-4">Loading schedule…</div>
+          <div className="text-sm text-brand-gray p-4">Loading schedule…</div>
         )}
 
         {!loading && error && (
-          <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+          <div className="text-sm text-status-open-text bg-status-open-bg border border-status-open-border rounded-[10px] px-3 py-2">
             {error}
           </div>
         )}
@@ -231,7 +231,7 @@ export default function ScheduleItemPicker({
         {!loading && !error && schedule && (
           <>
             <label
-              className="flex items-center gap-2 text-xs text-slate-600 select-none"
+              className="flex items-center gap-2 text-xs text-brand-gray select-none"
               title="Show only schedule items whose finish date is today or later"
             >
               <input
@@ -244,16 +244,16 @@ export default function ScheduleItemPicker({
             </label>
 
             {leafTasks.length > 0 && (
-              <div className="flex-1 overflow-y-auto -mx-1 px-1 border border-slate-200 rounded-lg">
+              <div className="flex-1 overflow-y-auto -mx-1 px-1 border border-surface-border rounded-[10px]">
                 {[...grouped.entries()].map(([discipline, phaseMap]) => (
                   <div key={discipline}>
-                    <div className="px-3 py-1.5 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-700 uppercase tracking-wide sticky top-0">
+                    <div className="px-3 py-1.5 bg-surface-rowhover border-b border-surface-border text-xs font-semibold text-brand-black uppercase tracking-wide sticky top-0">
                       {discipline}
                     </div>
                     {[...phaseMap.entries()].map(([phase, items]) => (
                       <div key={phase}>
                         {phase !== "—" && (
-                          <div className="px-3 py-1 text-[11px] font-medium text-slate-500 bg-white border-b border-slate-100">
+                          <div className="px-3 py-1 text-[11px] font-medium text-brand-gray bg-surface-card border-b border-surface-hairline">
                             {phase}
                           </div>
                         )}
@@ -266,12 +266,12 @@ export default function ScheduleItemPicker({
                               <li
                                 key={key}
                                 className={
-                                  "flex items-center gap-3 px-3 py-2 border-b border-slate-100 last:border-0 cursor-pointer transition " +
+                                  "flex items-center gap-3 px-3 py-2 border-b border-surface-hairline last:border-0 cursor-pointer transition " +
                                   (already
                                     ? "opacity-50 cursor-not-allowed"
                                     : isSelected
                                       ? "bg-brand-red/5"
-                                      : "hover:bg-slate-50")
+                                      : "hover:bg-surface-rowhover")
                                 }
                                 onClick={() => !already && toggle(key)}
                               >
@@ -283,10 +283,10 @@ export default function ScheduleItemPicker({
                                   className="h-4 w-4 accent-brand-red"
                                 />
                                 <div className="flex-1 min-w-0">
-                                  <div className="text-sm text-slate-900 truncate">
+                                  <div className="text-sm text-brand-black truncate">
                                     {item.task}
                                     {already && (
-                                      <span className="ml-2 text-xs text-slate-400">
+                                      <span className="ml-2 text-xs text-brand-lightgray">
                                         · already added
                                       </span>
                                     )}
@@ -297,7 +297,7 @@ export default function ScheduleItemPicker({
                                     </div>
                                   )}
                                 </div>
-                                <div className="text-xs text-slate-500 whitespace-nowrap shrink-0">
+                                <div className="text-xs text-brand-gray whitespace-nowrap shrink-0">
                                   {formatFinish(item.finish_date)}
                                 </div>
                               </li>
@@ -312,7 +312,7 @@ export default function ScheduleItemPicker({
             )}
 
             <div className="flex items-center justify-between pt-2 gap-2 flex-wrap">
-              <div className="text-xs text-slate-500">
+              <div className="text-xs text-brand-gray">
                 {selected.size > 0
                   ? `${selected.size} selected`
                   : `${totalPickable} item${totalPickable === 1 ? "" : "s"} available`}

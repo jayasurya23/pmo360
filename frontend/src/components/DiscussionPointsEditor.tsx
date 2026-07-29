@@ -225,9 +225,9 @@ export default function DiscussionPointsEditor({ points, setPoints }: Props) {
         <h3 className="section-title">Discussion Points ({totalCount})</h3>
       </div>
 
-      <p className="text-xs text-slate-500 -mt-1">
+      <p className="text-xs text-brand-gray -mt-1">
         One line per point. <b>Indent with 2 spaces</b> (or a tab) to make a
-        sub-point. Use <code className="bg-slate-100 px-1 rounded">Label: content</code> for a
+        sub-point. Use <code className="bg-surface-mute px-1 rounded">Label: content</code> for a
         bold lead-in. Bullet markers <code>-</code>, <code>*</code>, <code>o</code> at the start
         of a line are optional — they'll be stripped.
       </p>
@@ -266,12 +266,12 @@ export default function DiscussionPointsEditor({ points, setPoints }: Props) {
         label="🎛️ Advanced editor — per-item label & discipline tagging"
       >
         <div className="space-y-3 pt-2">
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-brand-gray">
             Use this when you need explicit discipline tags or the text editor
             isn't enough. Edits sync into the text editor above.
           </p>
           {points.length === 0 && (
-            <p className="text-sm text-slate-500">No points yet.</p>
+            <p className="text-sm text-brand-gray">No points yet.</p>
           )}
           {points.map((dp, idx) => (
             <AdvancedNode
@@ -309,7 +309,11 @@ interface AdvancedNodeProps {
 
 function AdvancedNode({ node, path, depth, tree, setTree }: AdvancedNodeProps) {
   const pathLabel = path.map((i) => i + 1).join(".");
-  const borderColor = depth === 0 ? "#ad1f2b" : "#c7bb2e";
+  // Read through the brand variables rather than literal hexes — the rail is
+  // interpolated into a `borderLeft` shorthand, so it can't be a token class,
+  // but this way it still follows the light/dark palette.
+  const borderColor =
+    depth === 0 ? "rgb(var(--brand-red))" : "rgb(var(--brand-gold))";
   return (
     <div
       style={{
@@ -319,7 +323,7 @@ function AdvancedNode({ node, path, depth, tree, setTree }: AdvancedNodeProps) {
       }}
       className="py-1.5"
     >
-      <div className="text-[11px] text-slate-500 mb-1">
+      <div className="text-[11px] text-brand-gray mb-1">
         {depth === 0 ? "●" : "○"}{" "}
         {(depth === 0 ? "Point" : "Sub-point") + " " + pathLabel}
       </div>
@@ -407,10 +411,10 @@ function IconBtn({
       className={clsx(
         "px-2 py-1 rounded-md text-xs font-semibold border transition",
         disabled
-          ? "border-slate-200 text-slate-300 cursor-not-allowed"
+          ? "border-surface-border text-brand-lightgray cursor-not-allowed"
           : variant === "danger"
-          ? "border-rose-300 text-rose-600 hover:bg-rose-50"
-          : "border-slate-200 text-slate-700 hover:bg-slate-50"
+          ? "border-surface-ghost text-brand-brightred hover:border-brand-brightred hover:bg-status-open-bg"
+          : "border-surface-border text-brand-gray hover:border-brand-red hover:text-brand-red hover:bg-surface-rowhover"
       )}
     >
       {label}
@@ -433,15 +437,15 @@ function Disclosure({
   children: React.ReactNode;
 }) {
   return (
-    <div className="border border-slate-200 rounded-lg overflow-hidden">
+    <div className="border border-surface-border rounded-[10px] overflow-hidden">
       <button
         type="button"
         onClick={onToggle}
-        className="w-full px-4 py-2 text-left text-sm font-medium text-slate-700 flex items-center justify-between hover:bg-slate-50"
+        className="w-full px-4 py-2 text-left text-sm font-medium text-brand-black flex items-center justify-between hover:bg-surface-rowhover"
       >
         <span>{label}</span>
         <svg
-          className={clsx("h-4 w-4 text-slate-400 transition", open && "rotate-180")}
+          className={clsx("h-4 w-4 text-brand-lightgray transition", open && "rotate-180")}
           viewBox="0 0 20 20"
           fill="currentColor"
         >
@@ -453,7 +457,7 @@ function Disclosure({
         </svg>
       </button>
       {open && (
-        <div className="px-4 py-3 border-t border-slate-200 bg-white">{children}</div>
+        <div className="px-4 py-3 border-t border-surface-border bg-surface-card">{children}</div>
       )}
     </div>
   );
@@ -473,7 +477,7 @@ function DiscussionPreview({ points }: { points: ParsedDiscussionPoint[] }) {
   walk(points, 0);
 
   if (!lines.length) {
-    return <p className="text-sm text-slate-500">Nothing to preview yet.</p>;
+    return <p className="text-sm text-brand-gray">Nothing to preview yet.</p>;
   }
 
   return (
@@ -484,7 +488,7 @@ function DiscussionPreview({ points }: { points: ParsedDiscussionPoint[] }) {
         return (
           <div
             key={i}
-            className="text-[13px] text-slate-800"
+            className="text-[13px] text-brand-black"
             style={{ lineHeight: 1.5 }}
           >
             <span style={{ whiteSpace: "pre" }}>{indent}</span>

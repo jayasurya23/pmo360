@@ -15,6 +15,20 @@
       type="font/woff2"
       crossorigin
     />
+    <!-- Apply the saved theme before first paint. React sets this class too,
+         but only after hydration — without this a dark-mode user gets a
+         white flash on every page load. Kept inline and tiny on purpose:
+         an external file would be a second round-trip before paint. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("theme");
+          if (t === "dark") document.documentElement.classList.add("dark");
+        } catch (e) {
+          /* private mode / storage disabled — light is a fine default */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

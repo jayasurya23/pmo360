@@ -1,137 +1,167 @@
 /**
- * RisksCard — "🚨 Open risks across portfolios" rollup on Home.
+ * RisksCard — the "Risk board" panel on Home.
  *
- * Pulls every portfolio's most-recent agenda, flattens their risks_json,
- * and surfaces them in a single sortable list. The motivation: PMs report
- * to leadership weekly on risks but there's no aggregated view today —
- * they have to open each portfolio's agenda one at a time.
+ * Flattens every portfolio's most-recent agenda risks into one list: a stacked
+ * severity bar for the shape of the week, then the most urgent rows. The
+ * motivation: PMs report to leadership weekly on risks but there's no
+ * aggregated view otherwise — they'd have to open each portfolio's agenda one
+ * at a time. Clicking a row deep-links to the agenda it came from.
  *
- * Scope follows the Mine/All toggle:
- *   - "Mine"  → risks from portfolios where the signed-in non-admin user is
- *               a member.
- *   - "All"   → every portfolio. Default for admins.
+ * The data is fetched once by Home (see useHomeData) and shared with the
+ * at-risk spotlight, which leads with the same risks.
  *
- * Likelihood drives the badge color (Critical=red, High=amber, Medium=blue,
- * Low=grey, blank=grey). Sorted server-side so the most-urgent items lead.
- *
- * Hidden entirely when:
- *   - user isn't signed in (the endpoint requires auth)
- *   - the fetch returns zero risks (no need to take up vertical space on
- *     calm portfolios)
+ * Hidden entirely when the fetch returns zero risks — no need to take up
+ * vertical space on calm portfolios.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 
 import { useApp } from "@/lib/state";
-import { useAuth } from "@/auth/useAuth";
-import { fetchOpenRisks, type DashboardRisk } from "@/lib/api";
+import type { DashboardRisk } from "@/lib/api";
 import { nameToSlug } from "@/lib/slugs";
+import { riskSeverity, SEVERITY_ORDER, type Severity } from "./useHomeData";
 
-const VISIBLE_LIMIT_DEFAULT = 5;
+/** The board leads with the two most urgent risks; the rest are one click away. */
+const VISIBLE_LIMIT_DEFAULT = 2;
 
-export default function RisksCard() {
-  const { isAuthenticated } = useAuth();
-  const { scope, me, clients } = useApp();
+const SEVERITY_META: Record<
+  Severity,
+  { label: string; bar: string; text: string }
+> = {
+  critical: { label: "Critical", bar: "bg-brand-red", text: "text-brand-red" },
+  high: {
+    label: "High",
+    bar: "bg-brand-brightred",
+    text: "text-brand-brightred",
+  },
+  medium: {
+    label: "Medium",
+    bar: "bg-brand-gold",
+    text: "text-brand-deepgold",
+  },
+  low: { label: "Low", bar: "bg-brand-lightgray", text: "text-brand-black" },
+};
+
+export default function RisksCard({
+  risks,
+  loading,
+}: {
+  risks: DashboardRisk[];
+  loading: boolean;
+}) {
+  const { clients } = useApp();
   const nav = useNavigate();
-
-  const [risks, setRisks] = useState<DashboardRisk[]>([]);
-  const [loading, setLoading] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
-  // We honour the Mine/All scope toggle when the user is signed in and not
-  // an admin. Admins + anonymous fall through to "all" regardless — same
-  // pattern the dashboard endpoints use.
-  const effectiveScope: "mine" | "all" =
-    scope === "mine" && me !== null && !me.is_admin ? "mine" : "all";
-
-  const load = useCallback(() => {
-    if (!isAuthenticated) {
-      setRisks([]);
-      return;
-    }
-    setLoading(true);
-    fetchOpenRisks(effectiveScope)
-      .then(setRisks)
-      .catch(() => setRisks([]))
-      .finally(() => setLoading(false));
-  }, [isAuthenticated, effectiveScope]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  // Hide entirely when there's nothing to show — keeps Home uncluttered
-  // for portfolios where the PM has actually addressed everything.
-  if (!isAuthenticated) return null;
   if (!loading && risks.length === 0) return null;
 
   const visible = showAll ? risks : risks.slice(0, VISIBLE_LIMIT_DEFAULT);
   const overflow = risks.length - visible.length;
+  const counts = SEVERITY_ORDER.map((s) => ({
+    severity: s,
+    count: risks.filter((r) => riskSeverity(r.likelihood) === s).length,
+  }));
+
+  const openAgenda = (r: DashboardRisk) => {
+    // Same deep-link pattern the Home agendas rollup uses.
+    const clientObj = r.client_name
+      ? clients.find((c) => c.name === r.client_name)
+      : null;
+    const params = new URLSearchParams();
+    if (clientObj) params.set("client", nameToSlug(clientObj.name));
+    params.set("portfolio", nameToSlug(r.project_name));
+    params.set("agenda", String(r.agenda_id));
+    nav(`/next-agenda?${params.toString()}`);
+  };
 
   return (
-    <section className="card p-5 border-l-4 border-l-rose-500">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div>
-          <div className="text-xs uppercase tracking-wider text-brand-gray font-semibold">
-            🚨 Open risks
-          </div>
-          <div className="text-base font-semibold text-brand-black mt-1">
-            Across {effectiveScope === "mine" ? "your" : "all"} portfolios
-          </div>
-        </div>
-        <div className="text-xs text-brand-gray tabular-nums">
-          {risks.length} total
-        </div>
+    <section className="card px-5 py-4">
+      <div className="flex items-center gap-2">
+        <h2 className="section-title">Risk board</h2>
+        <span className="text-xs text-brand-gray">latest agendas</span>
+        <button
+          type="button"
+          onClick={() => nav("/next-agenda")}
+          className="ml-auto text-xs font-semibold text-brand-red hover:underline"
+        >
+          Agendas →
+        </button>
       </div>
 
       {loading && risks.length === 0 ? (
-        <div className="text-sm text-brand-gray italic">Loading…</div>
+        <div className="mt-3 text-sm text-brand-gray italic">Loading…</div>
       ) : (
-        <div className="space-y-2">
-          {visible.map((r, i) => (
-            <RiskRow
-              key={`${r.agenda_id}-${i}-${r.description.slice(0, 20)}`}
-              risk={r}
-              onOpen={() => {
-                // Navigate to the source agenda — same deep-link pattern
-                // the Home agendas rollup uses.
-                const clientObj = r.client_name
-                  ? clients.find((c) => c.name === r.client_name)
-                  : null;
-                const params = new URLSearchParams();
-                if (clientObj) params.set("client", nameToSlug(clientObj.name));
-                params.set("portfolio", nameToSlug(r.project_name));
-                params.set("agenda", String(r.agenda_id));
-                nav(`/next-agenda?${params.toString()}`);
-              }}
-            />
-          ))}
-        </div>
-      )}
+        <>
+          <SeverityBar counts={counts} total={risks.length} />
 
-      {overflow > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowAll(true)}
-          className="mt-3 text-xs text-brand-gray hover:text-brand-black underline"
-        >
-          Show {overflow} more
-        </button>
-      )}
-      {showAll && risks.length > VISIBLE_LIMIT_DEFAULT && (
-        <button
-          type="button"
-          onClick={() => setShowAll(false)}
-          className="mt-3 text-xs text-brand-gray hover:text-brand-black underline ml-3"
-        >
-          Show less
-        </button>
+          <div className="mt-2 flex flex-wrap gap-x-3.5 gap-y-1 text-[11px] text-brand-gray">
+            {counts.map(({ severity, count }) => (
+              <span key={severity}>
+                <b className={SEVERITY_META[severity].text}>{count}</b>{" "}
+                {SEVERITY_META[severity].label.toLowerCase()}
+              </span>
+            ))}
+          </div>
+
+          <div className="mt-3">
+            {visible.map((r, i) => (
+              <RiskRow
+                key={`${r.agenda_id}-${i}-${r.description.slice(0, 20)}`}
+                risk={r}
+                onOpen={() => openAgenda(r)}
+              />
+            ))}
+          </div>
+
+          {overflow > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAll(true)}
+              className="mt-2.5 text-xs font-semibold text-brand-gray hover:text-brand-red"
+            >
+              Show {overflow} more
+            </button>
+          )}
+          {showAll && risks.length > VISIBLE_LIMIT_DEFAULT && (
+            <button
+              type="button"
+              onClick={() => setShowAll(false)}
+              className="mt-2.5 text-xs font-semibold text-brand-gray hover:text-brand-red"
+            >
+              Show less
+            </button>
+          )}
+        </>
       )}
     </section>
   );
 }
 
+/** Stacked proportional bar — one segment per severity that has risks. */
+function SeverityBar({
+  counts,
+  total,
+}: {
+  counts: { severity: Severity; count: number }[];
+  total: number;
+}) {
+  if (total === 0) return null;
+  return (
+    <div className="mt-3 flex h-2.5 rounded-[5px] overflow-hidden bg-surface-mute">
+      {counts
+        .filter((c) => c.count > 0)
+        .map((c) => (
+          <span
+            key={c.severity}
+            className={SEVERITY_META[c.severity].bar}
+            style={{ width: `${(c.count / total) * 100}%` }}
+            title={`${c.count} ${SEVERITY_META[c.severity].label.toLowerCase()}`}
+          />
+        ))}
+    </div>
+  );
+}
 
 function RiskRow({
   risk,
@@ -140,67 +170,32 @@ function RiskRow({
   risk: DashboardRisk;
   onOpen: () => void;
 }) {
+  const severity = riskSeverity(risk.likelihood);
+  const meta = [
+    risk.project_name,
+    risk.owner,
+    risk.impact ? `impact: ${risk.impact}` : null,
+    risk.mitigation ? `mitigation: ${risk.mitigation}` : null,
+    `agenda ${format(parseISO(risk.upcoming_date), "MMM d")}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
     <button
       type="button"
       onClick={onOpen}
-      className="w-full text-left card px-4 py-2.5 hover:border-brand-red transition flex items-start gap-3"
+      // The negative inset lets the hover tint bleed to the card's padding edge
+      // while the hairline still lines up with the text column.
+      className="block w-full text-left -mx-2 px-2 pt-2.5 pb-2 mt-2 first:mt-0 border-t border-surface-hairline hover:bg-surface-rowhover transition"
     >
-      <LikelihoodPill value={risk.likelihood} />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm text-brand-black">
-          {risk.description}
-        </div>
-        <div className="text-xs text-brand-gray mt-0.5 truncate">
-          {risk.client_name && (
-            <>
-              {risk.client_name}
-              <span className="px-1">/</span>
-            </>
-          )}
-          <span className="font-medium">{risk.project_name}</span>
-          {risk.owner && (
-            <>
-              <span className="px-1.5 text-brand-lightgray">·</span>
-              <span>{risk.owner}</span>
-            </>
-          )}
-          {risk.impact && (
-            <>
-              <span className="px-1.5 text-brand-lightgray">·</span>
-              <span>Impact: {risk.impact}</span>
-            </>
-          )}
-          <span className="px-1.5 text-brand-lightgray">·</span>
-          <span>Agenda {format(parseISO(risk.upcoming_date), "MMM d")}</span>
-        </div>
-        {risk.mitigation && (
-          <div className="text-[11px] text-brand-gray mt-1 italic truncate">
-            Mitigation: {risk.mitigation}
-          </div>
-        )}
+      <div className="text-[13px] leading-[1.5] text-brand-black">
+        <b className={SEVERITY_META[severity].text}>
+          {SEVERITY_META[severity].label}:
+        </b>{" "}
+        {risk.description}
       </div>
+      <div className="text-[11px] text-brand-gray mt-0.5 truncate">{meta}</div>
     </button>
-  );
-}
-
-
-function LikelihoodPill({ value }: { value: string | null }) {
-  const key = (value || "").toLowerCase();
-  const map: Record<string, { bg: string; text: string; label: string }> = {
-    critical: { bg: "#fce4e6", text: "#9b1c2a", label: "Critical" },
-    high: { bg: "#fde7c8", text: "#8a4a13", label: "High" },
-    medium: { bg: "#dbeaf7", text: "#1f4d7a", label: "Medium" },
-    low: { bg: "#e6e7e8", text: "#4d4d4f", label: "Low" },
-  };
-  const cfg = map[key] || { bg: "#e6e7e8", text: "#4d4d4f", label: value || "—" };
-  return (
-    <span
-      className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded shrink-0"
-      style={{ background: cfg.bg, color: cfg.text }}
-      title={value ? `Likelihood: ${cfg.label}` : "Likelihood not set"}
-    >
-      {cfg.label}
-    </span>
   );
 }

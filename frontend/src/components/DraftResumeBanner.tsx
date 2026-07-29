@@ -43,7 +43,7 @@ export default function DraftResumeBanner() {
   };
 
   return (
-    <div className="card p-4 border-l-4 border-l-brand-gold bg-gradient-to-r from-amber-50/60 to-white flex items-center justify-between gap-4 flex-wrap">
+    <div className="card p-4 border-l-4 border-l-brand-gold bg-gradient-to-r from-status-pending-bg/40 to-white flex items-center justify-between gap-4 flex-wrap">
       <div className="min-w-0">
         <div className="text-sm font-semibold text-brand-black">
           📝 You have a meeting draft in progress

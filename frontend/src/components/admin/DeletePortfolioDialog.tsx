@@ -120,30 +120,30 @@ export default function DeletePortfolioDialog({ open, onClose }: Props) {
       aria-labelledby="delete-portfolio-title"
     >
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => !submitting && onClose()}
       />
       <div className="relative w-full max-w-lg card p-5 space-y-4 shadow-xl">
         <h3
           id="delete-portfolio-title"
-          className="text-base font-semibold text-rose-700"
+          className="text-base font-semibold text-brand-red"
         >
           Delete portfolio
         </h3>
 
-        <div className="text-sm bg-rose-50 border border-rose-200 text-rose-800 rounded-md px-3 py-3">
+        <div className="text-sm bg-status-open-bg border border-status-open-border text-status-open-text rounded-md px-3 py-3">
           <div className="font-semibold mb-1">
             You are about to permanently delete:
           </div>
-          <div className="text-base font-bold text-rose-900">{expectedName}</div>
-          <div className="mt-2 text-xs text-rose-700">
+          <div className="text-base font-bold text-brand-red">{expectedName}</div>
+          <div className="mt-2 text-xs text-status-open-text">
             This action cannot be undone. All associated data will be removed.
           </div>
         </div>
 
-        <div className="text-sm text-slate-700">
+        <div className="text-sm text-brand-black">
           {loadingCounts ? (
-            <div className="text-slate-500">Counting related records…</div>
+            <div className="text-brand-gray">Counting related records…</div>
           ) : counts ? (
             <ul className="space-y-1">
               <li>
@@ -177,7 +177,7 @@ export default function DeletePortfolioDialog({ open, onClose }: Props) {
         </div>
 
         {error && (
-          <div className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
+          <div className="text-sm text-status-open-text bg-status-open-bg border border-status-open-border rounded-md px-3 py-2">
             {error}
           </div>
         )}

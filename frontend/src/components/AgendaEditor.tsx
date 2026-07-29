@@ -63,7 +63,7 @@ export default function AgendaEditor({ items, setItems }: Props) {
   return (
     <section className="space-y-3">
       <h3 className="section-title">Pre-Meeting Agenda ({items.length})</h3>
-      <p className="text-xs text-slate-500 -mt-1">
+      <p className="text-xs text-brand-gray -mt-1">
         Topics that were on the agenda going INTO this meeting (what you
         planned to talk about). One line per topic. Bullet markers
         (<code>-</code>, <code>*</code>, <code>o</code>) at the start of a
@@ -88,7 +88,7 @@ export default function AgendaEditor({ items, setItems }: Props) {
             {items.map((it, i) => (
               <div
                 key={i}
-                className="text-[13px] text-slate-800"
+                className="text-[13px] text-brand-black"
                 style={{ lineHeight: 1.5 }}
               >
                 ● <b>{it.text}</b>
@@ -116,15 +116,15 @@ export function PreviewDisclosure({
   children: React.ReactNode;
 }) {
   return (
-    <div className="border border-slate-200 rounded-lg overflow-hidden">
+    <div className="border border-surface-border rounded-[10px] overflow-hidden">
       <button
         type="button"
         onClick={onToggle}
-        className="w-full px-4 py-2 text-left text-sm font-medium text-slate-700 flex items-center justify-between hover:bg-slate-50"
+        className="w-full px-4 py-2 text-left text-sm font-medium text-brand-black flex items-center justify-between hover:bg-surface-rowhover"
       >
         <span>{label}</span>
         <svg
-          className={clsx("h-4 w-4 text-slate-400 transition", open && "rotate-180")}
+          className={clsx("h-4 w-4 text-brand-lightgray transition", open && "rotate-180")}
           viewBox="0 0 20 20"
           fill="currentColor"
         >
@@ -136,7 +136,7 @@ export function PreviewDisclosure({
         </svg>
       </button>
       {open && (
-        <div className="px-4 py-3 border-t border-slate-200 bg-white">
+        <div className="px-4 py-3 border-t border-surface-border bg-surface-card">
           {children}
         </div>
       )}

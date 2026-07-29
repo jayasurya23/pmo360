@@ -59,6 +59,9 @@ class UserPreferences(BaseModel):
     # token (we never send server-side on their behalf), so it only fires
     # when the PM is signed in and has consented to Mail.Send.
     auto_send_minutes_on_finalize: bool = False
+    # Portfolios the PM has starred. Rendered as quick-jump chips in the
+    # header's context row; order is the pin order, not id order.
+    pinned_project_ids: list[int] = []
 
 
 # ---------- Clients / Projects ----------

@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
@@ -15,6 +21,29 @@ import { useAuth } from "@/auth/useAuth";
 import { sendMail, blobToBase64 } from "@/lib/graph";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
+
+/** Filetype square + human label per generated deliverable. Colours come from
+ *  the redesign's filetype palette; anything the backend adds later falls
+ *  back to a neutral square.
+ *
+ *  Each square is a tint-fill + saturated-label pair. Both halves are tokens
+ *  (a translucent brand fill over the card, and a text-weight brand colour) so
+ *  the fill darkens and the label lightens together when the theme flips —
+ *  a literal pale fill would strand dark text on a dark card. */
+const DELIVERABLE_META: Record<string, { label: string; square: string }> = {
+  pdf: {
+    label: "Client minutes",
+    square: "bg-status-open-bg text-brand-red text-[11px]",
+  },
+  docx: {
+    label: "Editable Word copy",
+    square: "bg-brand-blue/15 text-brand-deepblue text-[10px]",
+  },
+  xlsx: {
+    label: "Action log",
+    square: "bg-brand-green/15 text-brand-green text-[10px]",
+  },
+};
 
 export default function Send() {
   const nav = useNavigate();
@@ -67,11 +96,18 @@ export default function Send() {
     }
   };
 
+  const meetingLabel = meeting
+    ? `${meeting.title?.trim() || currentProject.name} — ${format(
+        parseISO(meeting.meeting_date),
+        "MMM d",
+      )}`
+    : null;
+
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="max-w-doc mx-auto pb-10">
       <PageHeader
-        title="Send meeting minutes"
-        subtitle="Generate final, client-ready PDF + Word + Excel action log."
+        kicker={`Step 4 of 4${meetingLabel ? ` · ${meetingLabel}` : ""}`}
+        title="Finalize & send"
         actions={
           paths ? (
             <button
@@ -87,132 +123,138 @@ export default function Send() {
         }
       />
 
-      <section className="card p-6">
-        <h3 className="section-title mb-2">Finalize</h3>
-        <p className="text-sm text-brand-gray mb-4">
-          This will mark the meeting as <b>final</b>, regenerate all three
-          deliverables, and save them under the project folder in storage.
-        </p>
-        <button
-          className="btn-primary"
-          disabled={busy || !!paths}
-          onClick={handleFinalize}
-        >
-          {busy ? "Generating…" : paths ? "Generated" : "Generate final docs"}
-        </button>
-        {error && (
-          <div className="mt-3 text-sm text-brand-red">{error}</div>
-        )}
-      </section>
-
-      {paths && (
-        <section className="card p-6">
-          <h3 className="section-title mb-3">Downloads</h3>
-          <div className="space-y-2">
-            {Object.entries(paths).map(([kind, p]) => (
-              <div
-                key={kind}
-                className="flex items-center justify-between py-2 border-b border-brand-lightgray/60 last:border-0"
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.35fr] gap-[22px] items-start">
+        <div className="flex flex-col gap-5">
+          <section className="card px-5 py-[18px]">
+            <div className="flex items-center gap-2.5">
+              <h3 className="section-title">Finalize</h3>
+              {paths && <span className="pill-completed">✓ Generated</span>}
+            </div>
+            <p className="mt-2 text-sm text-brand-gray leading-relaxed">
+              {paths ? (
+                <>
+                  Marked <b>final</b> — all three deliverables were regenerated
+                  and saved to the project folder in storage.
+                </>
+              ) : (
+                <>
+                  This will mark the meeting as <b>final</b>, regenerate all
+                  three deliverables, and save them under the project folder in
+                  storage.
+                </>
+              )}
+            </p>
+            {/* Once generated the pill carries the state; the button would be
+                permanently disabled from here on. */}
+            {!paths && (
+              <button
+                className="btn-primary mt-4"
+                disabled={busy}
+                onClick={handleFinalize}
               >
-                <div>
-                  <div className="text-sm font-medium">{kind.toUpperCase()}</div>
-                  <div className="text-xs text-brand-gray break-all">{p}</div>
-                </div>
+                {busy ? "Generating…" : "Generate final docs"}
+              </button>
+            )}
+            {error && <div className="mt-3 text-sm text-brand-red">{error}</div>}
+          </section>
+
+          {paths && (
+            <section className="card overflow-hidden">
+              <div className="flex items-baseline gap-2 border-b border-surface-hairline px-5 py-3.5">
+                <h3 className="section-title">Deliverables</h3>
                 <a
-                  className="btn-ghost"
-                  href={meetingDocUrl(draftMeetingId!, kind as "pdf" | "docx" | "xlsx")}
+                  className="ml-auto text-xs font-semibold text-brand-red hover:text-brand-darkred"
+                  href={meetingDocUrl(draftMeetingId!, "zip")}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  Download
+                  ZIP (all) ⬇
                 </a>
               </div>
-            ))}
-          </div>
-          <div className="mt-4 text-xs text-brand-gray">
-            Or grab a fresh in-memory copy:{" "}
-            <a
-              className="text-brand-red font-semibold"
-              href={meetingDocUrl(draftMeetingId!, "pdf")}
-              target="_blank"
-              rel="noreferrer"
-            >
-              PDF
-            </a>{" "}
-            ·{" "}
-            <a
-              className="text-brand-red font-semibold"
-              href={meetingDocUrl(draftMeetingId!, "docx")}
-              target="_blank"
-              rel="noreferrer"
-            >
-              DOCX
-            </a>{" "}
-            ·{" "}
-            <a
-              className="text-brand-red font-semibold"
-              href={meetingDocUrl(draftMeetingId!, "xlsx")}
-              target="_blank"
-              rel="noreferrer"
-            >
-              XLSX
-            </a>{" "}
-            ·{" "}
-            <a
-              className="text-brand-red font-semibold"
-              href={meetingDocUrl(draftMeetingId!, "zip")}
-              target="_blank"
-              rel="noreferrer"
-            >
-              ZIP (all)
-            </a>
-          </div>
-        </section>
-      )}
+              {Object.entries(paths).map(([kind, p]) => {
+                const meta = DELIVERABLE_META[kind] ?? {
+                  label: kind.toUpperCase(),
+                  square: "bg-surface-mute text-brand-gray text-[10px]",
+                };
+                return (
+                  <div
+                    key={kind}
+                    className="flex items-center gap-3 px-5 py-[11px] border-b border-surface-page last:border-0"
+                  >
+                    <span
+                      className={clsx(
+                        "h-[38px] w-[38px] shrink-0 rounded-lg flex items-center justify-center font-bold",
+                        meta.square,
+                      )}
+                    >
+                      {kind.toUpperCase()}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-semibold text-brand-black">
+                        {meta.label}
+                      </div>
+                      <div className="truncate text-[11px] text-brand-gray" title={p}>
+                        {p}
+                      </div>
+                    </div>
+                    <a
+                      className="shrink-0 text-xs font-semibold text-brand-red hover:text-brand-darkred"
+                      href={meetingDocUrl(
+                        draftMeetingId!,
+                        kind as "pdf" | "docx" | "xlsx",
+                      )}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Download
+                    </a>
+                  </div>
+                );
+              })}
+            </section>
+          )}
 
-      {/* -------- Compose email (mailto: fallback) -------- */}
-      <ComposeEmailSection
-        meeting={meeting}
-        clientName={currentClient?.name || ""}
-        projectName={currentProject.name}
-        pdfPath={paths?.pdf || null}
-        meetingId={draftMeetingId}
-      />
-
-      {/* -------- Bridge to the next cycle -------- */}
-      {/* The pre-meeting agenda for next week is the natural next step once
-          minutes are out. Auto-draft carries forward this portfolio's open
-          actions, latest risks/decisions, and this meeting's recap so the
-          PM starts 80% done instead of from a blank page. */}
-      <section className="card p-6 border-l-4 border-l-[#185fa5] bg-gradient-to-r from-sky-50/40 to-white">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <h3 className="section-title mb-1">📅 Plan the next meeting</h3>
-            <p className="text-sm text-brand-gray max-w-xl">
+          {/* -------- Bridge to the next cycle -------- */}
+          {/* The pre-meeting agenda for next week is the natural next step once
+              minutes are out. Auto-draft carries forward this portfolio's open
+              actions, latest risks/decisions, and this meeting's recap so the
+              PM starts 80% done instead of from a blank page. */}
+          <section className="card border-t-[3px] border-t-brand-blue px-5 py-[18px]">
+            <h3 className="section-title">📅 Plan the next meeting</h3>
+            <p className="mt-2 mb-3 text-sm text-brand-gray leading-relaxed">
               Minutes are done. Start next week's pre-meeting agenda — we'll
-              auto-draft it from this portfolio's open actions, latest risks
-              and decisions, and this meeting's discussion recap. You review
-              and save.
+              auto-draft it from this portfolio's open actions, latest risks and
+              decisions, and this meeting's discussion recap. You review and
+              save.
             </p>
-          </div>
-          <button
-            className="btn-primary whitespace-nowrap"
-            onClick={() => nav("/next-agenda?autodraft=1")}
-          >
-            Plan next agenda →
-          </button>
+            <button
+              className="btn-primary"
+              onClick={() => nav("/next-agenda?autodraft=1")}
+            >
+              Plan next agenda →
+            </button>
+          </section>
         </div>
-      </section>
+
+        {/* -------- Compose email (Graph send + mailto: fallback) -------- */}
+        <ComposeEmailSection
+          meeting={meeting}
+          clientName={currentClient?.name || ""}
+          projectName={currentProject.name}
+          pdfPath={paths?.pdf || null}
+          meetingId={draftMeetingId}
+        />
+      </div>
     </div>
   );
 }
 
 
 /* ============================================================
- * Compose email — mailto: fallback until Microsoft Graph email
- * lands in Phase 6. Pre-fills Subject + Body from the meeting,
- * opens the user's default mail client. They attach the PDF
- * themselves — mailto: cannot carry attachments (RFC 6068).
+ * Compose email — one-click Microsoft Graph send with a mailto:
+ * fallback. Pre-fills Subject + Body from the meeting; the mailto
+ * path can't carry attachments (RFC 6068) so the PDF downloads in
+ * a side tab for the PM to attach by hand.
  * ============================================================ */
 function ComposeEmailSection({
   meeting,
@@ -459,198 +501,179 @@ function ComposeEmailSection({
     subject.trim().length > 0 && composedTo.trim().length > 0;
 
   return (
-    <section className="card p-6 space-y-3">
-      <h3 className="section-title mb-1">Compose email</h3>
-      {userPrefs?.auto_send_minutes_on_finalize && !sendOk && (
-        <div className="text-xs rounded border border-sky-200 bg-sky-50 px-3 py-2 text-sky-900">
-          ⚡ Auto-send is on — once you finalize above, the minutes will be
-          emailed to all attendees with an address on file. Turn this off in
-          Settings → Automation.
-        </div>
-      )}
-      <p className="text-sm text-brand-gray">
-        Tick the attendees you want to send to (only those with an email on
-        file are checkable — add missing emails on the Capture page). Use the
-        Additional fields for external recipients. Send via Microsoft Graph or
-        open in Outlook as a fallback.
-      </p>
+    <section className="card overflow-hidden">
+      <div className="flex items-center gap-2 border-b border-surface-hairline px-5 py-3.5">
+        <h3 className="section-title">Compose email</h3>
+        <span className="text-xs text-brand-gray">PDF attaches automatically</span>
+        <button
+          type="button"
+          className="ml-auto text-xs font-semibold text-brand-red hover:text-brand-darkred disabled:opacity-50"
+          onClick={replyAllAttendees}
+          disabled={!attendees.some((a) => a.email)}
+          title="Check every attendee who has an email on file"
+        >
+          ✉ Reply-all attendees
+        </button>
+      </div>
 
-      {/* Recipient picker — pulled from this meeting's attendees */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <div className="text-xs font-semibold text-brand-gray uppercase tracking-wider">
-            Meeting attendees
-          </div>
-          <button
-            type="button"
-            className="text-xs underline underline-offset-2 text-brand-red hover:text-brand-darkred"
-            onClick={replyAllAttendees}
-            disabled={!attendees.some((a) => a.email)}
-            title="Check every attendee who has an email on file"
-          >
-            ✉ Reply All to attendees
-          </button>
-        </div>
-        {attendees.length === 0 ? (
-          <div className="text-xs italic text-brand-gray">
-            (No attendees on this meeting yet.)
-          </div>
-        ) : (
-          <div className="card divide-y divide-brand-lightgray/60 max-h-64 overflow-y-auto">
-            {attendees.map((a) => {
-              const hasEmail = !!a.email;
-              const inTo = toIds.has(a.id);
-              const inCc = ccIds.has(a.id);
-              return (
-                <div
-                  key={a.id}
-                  className={clsx(
-                    "px-3 py-2 grid grid-cols-[auto_auto_1fr] gap-3 items-center text-sm",
-                    !hasEmail && "opacity-60"
-                  )}
-                  title={!hasEmail ? "No email on file" : undefined}
-                >
-                  <label className="flex items-center gap-1 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={inTo}
-                      disabled={!hasEmail}
-                      onChange={() => toggleTo(a.id)}
-                    />
-                    To
-                  </label>
-                  <label className="flex items-center gap-1 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={inCc}
-                      disabled={!hasEmail}
-                      onChange={() => toggleCc(a.id)}
-                    />
-                    Cc
-                  </label>
-                  <div className="text-sm">
-                    <span className="font-medium text-brand-black">
-                      {a.full_name}
-                    </span>
-                    <span className="text-brand-gray">
-                      {" "}
-                      ({a.initials})
-                      {a.organization ? ` — ${a.organization}` : ""}
-                    </span>
-                    {hasEmail ? (
-                      <span className="text-xs text-brand-gray">
-                        {" · "}
-                        {a.email}
-                      </span>
-                    ) : (
-                      <span className="text-[11px] italic text-brand-gray ml-1">
-                        (no email on file)
-                      </span>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+      <div className="px-5 py-4 flex flex-col gap-3">
+        {userPrefs?.auto_send_minutes_on_finalize && !sendOk && (
+          <div className="text-xs rounded-lg border border-brand-blue/30 bg-brand-blue/10 px-3 py-2 text-brand-deepblue">
+            ⚡ Auto-send is on — once you finalize, the minutes will be emailed
+            to all attendees with an address on file. Turn this off in Settings
+            → Automation.
           </div>
         )}
-      </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-[140px_1fr] gap-x-3 gap-y-2 items-center pt-2">
-        <label className="text-xs font-semibold text-brand-gray sm:text-right">
-          Additional To
-        </label>
-        <input
-          className="input"
-          placeholder="extra@example.com, other@example.com"
-          value={toExtra}
-          onChange={(e) => {
-            setToExtra(e.target.value);
-            setEdited(true);
-          }}
-        />
-
-        <label className="text-xs font-semibold text-brand-gray sm:text-right">
-          Additional Cc
-        </label>
-        <input
-          className="input"
-          placeholder="carol@example.com"
-          value={ccExtra}
-          onChange={(e) => {
-            setCcExtra(e.target.value);
-            setEdited(true);
-          }}
-        />
-
-        <label className="text-xs font-semibold text-brand-gray sm:text-right">
-          Subject
-        </label>
-        <input
-          className="input"
-          value={subject}
-          onChange={(e) => {
-            setSubject(e.target.value);
-            setEdited(true);
-          }}
-        />
-
-        <label className="text-xs font-semibold text-brand-gray sm:text-right pt-1">
-          Body
-        </label>
-        <textarea
-          className="textarea font-sans"
-          rows={9}
-          value={body}
-          onChange={(e) => {
-            setBody(e.target.value);
-            setEdited(true);
-          }}
-        />
-      </div>
-
-      {/* Tiny preview of the actual to/cc that will go out */}
-      {(composedTo || composedCc) && (
-        <div className="text-[11px] text-brand-gray">
-          <div>
-            <b>To:</b> {composedTo || <span className="italic">(none)</span>}
+        {/* Recipient picker — pulled from this meeting's attendees */}
+        <div>
+          <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.08em] text-brand-gray">
+            Recipients from this meeting
           </div>
-          {composedCc && (
-            <div>
-              <b>Cc:</b> {composedCc}
+          {attendees.length === 0 ? (
+            <div className="text-xs italic text-brand-gray">
+              (No attendees on this meeting yet.)
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto">
+              {attendees.map((a) => {
+                const hasEmail = !!a.email;
+                return (
+                  <div
+                    key={a.id}
+                    className={clsx(
+                      "grid grid-cols-[auto_auto_1fr] gap-3 items-center rounded-lg border border-surface-hairline px-2.5 py-[7px] text-[13px]",
+                      !hasEmail && "opacity-[0.55]",
+                    )}
+                    title={!hasEmail ? "No email on file" : undefined}
+                  >
+                    <label className="flex items-center gap-1.5 text-xs text-brand-gray">
+                      <input
+                        type="checkbox"
+                        className="accent-brand-red"
+                        checked={toIds.has(a.id)}
+                        disabled={!hasEmail}
+                        onChange={() => toggleTo(a.id)}
+                      />
+                      To
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs text-brand-gray">
+                      <input
+                        type="checkbox"
+                        className="accent-brand-red"
+                        checked={ccIds.has(a.id)}
+                        disabled={!hasEmail}
+                        onChange={() => toggleCc(a.id)}
+                      />
+                      Cc
+                    </label>
+                    <div className="min-w-0 truncate">
+                      <span className="font-semibold text-brand-black">
+                        {a.full_name}
+                      </span>
+                      <span className="text-brand-gray">
+                        {" · "}
+                        {a.initials}
+                        {a.organization ? ` · ${a.organization}` : ""}
+                        {hasEmail
+                          ? ` · ${a.email}`
+                          : " · no email on file — add it on Capture"}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
-      )}
 
-      {sendError && (
-        <div className="text-sm text-brand-red bg-rose-50 border border-rose-200 rounded px-3 py-2">
-          {sendError}
-        </div>
-      )}
-      {sendOk && (
-        <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-3 py-2">
-          ✓ Sent. Check your Sent Items folder in Outlook.
-        </div>
-      )}
+        <div className="grid grid-cols-[96px_1fr] gap-x-3 gap-y-2 items-center">
+          <FieldLabel>Extra to</FieldLabel>
+          <input
+            className="input"
+            placeholder="extra@example.com, other@example.com"
+            value={toExtra}
+            onChange={(e) => {
+              setToExtra(e.target.value);
+              setEdited(true);
+            }}
+          />
 
-      <div className="flex items-center justify-between pt-2 gap-2 flex-wrap">
-        <button
-          type="button"
-          className="text-xs text-brand-gray underline underline-offset-2 hover:text-brand-red"
-          onClick={handleResetDefaults}
-          disabled={!edited}
-        >
-          Reset to defaults
-        </button>
-        <div className="flex items-center gap-2">
+          <FieldLabel>Extra cc</FieldLabel>
+          <input
+            className="input"
+            placeholder="carol@example.com"
+            value={ccExtra}
+            onChange={(e) => {
+              setCcExtra(e.target.value);
+              setEdited(true);
+            }}
+          />
+
+          <FieldLabel>Subject</FieldLabel>
+          <input
+            className="input"
+            value={subject}
+            onChange={(e) => {
+              setSubject(e.target.value);
+              setEdited(true);
+            }}
+          />
+
+          <FieldLabel alignTop>Body</FieldLabel>
+          <textarea
+            className="textarea font-sans"
+            rows={8}
+            value={body}
+            onChange={(e) => {
+              setBody(e.target.value);
+              setEdited(true);
+            }}
+          />
+        </div>
+
+        {/* Tiny preview of the actual to/cc that will go out */}
+        {(composedTo || composedCc) && (
+          <div className="text-[11px] text-brand-gray">
+            <b>To:</b> {composedTo || <span className="italic">(none)</span>}
+            {composedCc && (
+              <>
+                {" · "}
+                <b>Cc:</b> {composedCc}
+              </>
+            )}
+          </div>
+        )}
+
+        {sendError && (
+          <div className="text-sm rounded-lg border border-status-open-border/40 bg-status-open-bg px-3 py-2 text-status-open-text">
+            {sendError}
+          </div>
+        )}
+        {sendOk && (
+          <div className="text-sm rounded-lg border border-status-completed-border/50 bg-status-completed-bg px-3 py-2 text-status-completed-text">
+            ✓ Sent. Check your Sent Items folder in Outlook.
+          </div>
+        )}
+
+        <div className="flex items-center gap-2.5 flex-wrap border-t border-surface-hairline pt-3">
+          <button
+            type="button"
+            className="text-xs text-brand-gray underline underline-offset-2 hover:text-brand-red disabled:opacity-50"
+            onClick={handleResetDefaults}
+            disabled={!edited}
+          >
+            Reset to defaults
+          </button>
+          <div className="flex-1" />
           <button
             type="button"
             className="btn-ghost"
             onClick={handleOpenMail}
             disabled={!ready}
-            title="Opens your default mail client with subject + body pre-filled; PDF downloads in a separate tab to attach manually."
+            title="Opens your default mail client (mailto:) with subject + body pre-filled; PDF downloads in a separate tab to attach manually."
           >
-            ✉ Open in Outlook (mailto)
+            ✉ Open in Outlook
           </button>
           <button
             type="button"
@@ -666,14 +689,35 @@ function ComposeEmailSection({
             {sending ? "Sending…" : "🚀 Send via Graph"}
           </button>
         </div>
+
+        {!isAuthenticated && (
+          <p className="text-xs text-brand-gray">
+            One-click send requires sign-in. Use <b>Sign in</b> in the top right,
+            then come back. The mailto fallback works without signing in.
+          </p>
+        )}
       </div>
-      {!isAuthenticated && (
-        <p className="text-xs text-brand-gray">
-          One-click send requires sign-in. Use <b>Sign in</b> in the top right,
-          then come back. The mailto fallback works without signing in.
-        </p>
-      )}
     </section>
+  );
+}
+
+/** Right-aligned label for the 96px compose grid. */
+function FieldLabel({
+  children,
+  alignTop,
+}: {
+  children: ReactNode;
+  alignTop?: boolean;
+}) {
+  return (
+    <label
+      className={clsx(
+        "text-right text-[11px] font-bold uppercase tracking-[0.08em] text-brand-gray",
+        alignTop && "self-start pt-2",
+      )}
+    >
+      {children}
+    </label>
   );
 }
 

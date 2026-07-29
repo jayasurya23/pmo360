@@ -110,17 +110,17 @@ export function SaveTemplateModal({
       aria-labelledby="save-template-title"
     >
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => !saving && onClose()}
       />
       <div className="relative w-full max-w-md card p-5 space-y-3 shadow-xl">
         <h3
           id="save-template-title"
-          className="text-base font-semibold text-slate-900"
+          className="text-base font-semibold text-brand-black"
         >
           Save as recurring template
         </h3>
-        <p className="text-sm text-slate-600">
+        <p className="text-sm text-brand-gray">
           Captures the current attendees, agenda topics, deliverables, and
           a default 60-minute duration. Next week, clone it from Capture
           and only edit what changed.
@@ -141,13 +141,13 @@ export function SaveTemplateModal({
             }}
           />
         </div>
-        <div className="text-[11px] text-slate-500 leading-relaxed">
+        <div className="text-[11px] text-brand-gray leading-relaxed">
           <b>{attendees.length}</b> attendees ·{" "}
           <b>{agendaTopics.length}</b> agenda topics ·{" "}
           <b>{deliverables.length}</b> deliverables will be saved.
         </div>
         {error && (
-          <div className="text-sm text-rose-600">{error}</div>
+          <div className="text-sm text-brand-brightred">{error}</div>
         )}
         <div className="flex justify-end gap-2 pt-1">
           <button
@@ -263,20 +263,20 @@ export function ManageTemplatesModal({
       aria-labelledby="manage-templates-title"
     >
       <div
-        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-brand-black/40 backdrop-blur-sm"
         onClick={() => busyId === null && editingId === null && onClose()}
       />
       <div className="relative w-full max-w-lg card p-5 space-y-3 shadow-xl">
         <div className="flex items-center justify-between">
           <h3
             id="manage-templates-title"
-            className="text-base font-semibold text-slate-900"
+            className="text-base font-semibold text-brand-black"
           >
             Manage templates
           </h3>
           <button
             type="button"
-            className="text-slate-400 hover:text-slate-700 text-lg leading-none"
+            className="text-brand-lightgray hover:text-brand-black text-lg leading-none"
             onClick={onClose}
             aria-label="Close"
           >
@@ -284,11 +284,11 @@ export function ManageTemplatesModal({
           </button>
         </div>
         {templates.length === 0 ? (
-          <p className="text-sm text-slate-500 italic">
+          <p className="text-sm text-brand-gray italic">
             No templates yet — save one from the Review page after capturing a meeting.
           </p>
         ) : (
-          <ul className="divide-y divide-slate-200 max-h-[60vh] overflow-y-auto">
+          <ul className="divide-y divide-surface-hairline max-h-[60vh] overflow-y-auto">
             {templates.map((t) => {
               const isEditing = editingId === t.id;
               const isBusy = busyId === t.id;
@@ -321,10 +321,10 @@ export function ManageTemplatesModal({
                     />
                   ) : (
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-slate-900 truncate">
+                      <div className="text-sm font-medium text-brand-black truncate">
                         {t.name}
                       </div>
-                      <div className="text-[11px] text-slate-500">
+                      <div className="text-[11px] text-brand-gray">
                         {counts}
                       </div>
                     </div>
@@ -382,7 +382,7 @@ export function ManageTemplatesModal({
           </ul>
         )}
         {error && (
-          <div className="text-sm text-rose-600">{error}</div>
+          <div className="text-sm text-brand-brightred">{error}</div>
         )}
         <div className="flex justify-end pt-2">
           <button

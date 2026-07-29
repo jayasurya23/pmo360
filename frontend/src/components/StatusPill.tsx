@@ -60,14 +60,14 @@ export function StatusSelect({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       className={clsx(
-        "w-full rounded-lg border px-3 py-2 text-sm font-semibold",
-        "focus:outline-none focus:ring-2 focus:ring-brand-red/30",
+        "w-full rounded-md border px-3 py-2 text-sm font-semibold",
+        "focus:outline-none focus:border-brand-red",
         statusColorClasses(value),
         className
       )}
     >
       {STATUS_OPTIONS.map((o) => (
-        <option key={o} value={o} className="bg-white text-slate-900">
+        <option key={o} value={o} className="bg-surface-card text-brand-black">
           {o.replace(/^./, (c) => c.toUpperCase())}
         </option>
       ))}

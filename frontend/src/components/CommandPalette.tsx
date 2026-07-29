@@ -154,16 +154,20 @@ export default function CommandPalette() {
 
   if (!open) return null;
 
+  // The backdrop scrim stays true black in both themes: a scrim's job is to
+  // darken what's behind it, and `brand-black` inverts to near-WHITE in dark,
+  // which would wash the page out instead of dimming it. Dark goes a step
+  // heavier because a 40% veil barely registers over an already-dark page.
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-start justify-center pt-24 px-4 bg-slate-900/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-start justify-center pt-24 px-4 bg-black/40 dark:bg-black/60 backdrop-blur-sm"
       onMouseDown={(e) => {
         // Click on backdrop closes; clicks bubbling from the card don't.
         if (e.target === e.currentTarget) setOpen(false);
       }}
     >
-      <div className="w-full max-w-xl bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden">
-        <div className="border-b border-slate-100 flex items-center px-4">
+      <div className="w-full max-w-xl bg-surface-card rounded-[10px] shadow-2xl border border-surface-border overflow-hidden">
+        <div className="border-b border-surface-hairline flex items-center px-4">
           <SearchIcon />
           <input
             ref={inputRef}
@@ -171,9 +175,9 @@ export default function CommandPalette() {
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onInputKey}
             placeholder="Search clients, portfolios, meetings, agendas, actions…"
-            className="flex-1 py-3 px-3 text-sm bg-transparent outline-none placeholder:text-slate-400"
+            className="flex-1 py-3 px-3 text-sm text-brand-black bg-transparent outline-none placeholder:text-brand-lightgray"
           />
-          <kbd className="text-[10px] font-mono text-slate-400 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
+          <kbd className="text-[10px] font-mono text-brand-gray bg-surface-mute border border-surface-border rounded px-1.5 py-0.5">
             esc
           </kbd>
         </div>
@@ -208,17 +212,17 @@ function ResultsList({
 }) {
   if (!query) {
     return (
-      <div className="px-5 py-6 text-xs text-slate-500">
+      <div className="px-5 py-6 text-xs text-brand-gray">
         Type to search across clients, portfolios, meetings, agendas, actions.
       </div>
     );
   }
   if (loading && results.length === 0) {
-    return <div className="px-5 py-6 text-xs text-slate-400">Searching…</div>;
+    return <div className="px-5 py-6 text-xs text-brand-lightgray">Searching…</div>;
   }
   if (results.length === 0) {
     return (
-      <div className="px-5 py-6 text-xs text-slate-500">
+      <div className="px-5 py-6 text-xs text-brand-gray">
         No matches for <span className="font-semibold">{query}</span>.
       </div>
     );
@@ -233,16 +237,16 @@ function ResultsList({
             onClick={() => onActivate(r)}
             className={clsx(
               "w-full flex items-start gap-3 px-4 py-2.5 text-left transition",
-              i === active ? "bg-slate-100" : "hover:bg-slate-50",
+              i === active ? "bg-surface-mute" : "hover:bg-surface-rowhover",
             )}
           >
             <KindBadge kind={r.kind} />
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-semibold text-slate-900 truncate">
+              <div className="text-sm font-semibold text-brand-black truncate">
                 {r.label}
               </div>
               {r.subtitle && (
-                <div className="text-xs text-slate-500 truncate">
+                <div className="text-xs text-brand-gray truncate">
                   {r.subtitle}
                 </div>
               )}
@@ -254,21 +258,58 @@ function ResultsList({
   );
 }
 
-const KIND_STYLE: Record<SearchResult["kind"], { bg: string; label: string }> =
-  {
-    client: { bg: "#1aa6c9", label: "Client" },
-    portfolio: { bg: "#1aa6c9", label: "Portfolio" },
-    meeting: { bg: "#278747", label: "Meeting" },
-    agenda: { bg: "#c7bb2e", label: "Agenda" },
-    action: { bg: "#ad1f2b", label: "Action" },
-  };
+/**
+ * Kind badges, in the same tint-plus-deep-text language as the status pills.
+ *
+ * These used to be solid brand fills carrying white text, which only works
+ * while the fill is dark. It isn't in dark mode: blue and gold both lighten to
+ * hold their own against a near-black surface, and white text on top of them
+ * lands around 2:1. So each badge is now a low-alpha wash of its hue under the
+ * readable "-on"/"deep" step of the same hue — the pairing the token layer
+ * already guarantees is legible on whichever surface is current.
+ *
+ * Values are read through the CSS variables rather than the Tailwind classes
+ * because they're looked up from a data map, so they can't be class names.
+ */
+const KIND_STYLE: Record<
+  SearchResult["kind"],
+  { bg: string; fg: string; label: string }
+> = {
+  client: {
+    bg: "rgb(var(--brand-blue) / 0.16)",
+    fg: "rgb(var(--brand-deepblue))",
+    label: "Client",
+  },
+  portfolio: {
+    bg: "rgb(var(--brand-blue) / 0.16)",
+    fg: "rgb(var(--brand-deepblue))",
+    label: "Portfolio",
+  },
+  meeting: {
+    bg: "rgb(var(--brand-green) / 0.16)",
+    fg: "rgb(var(--brand-green-on))",
+    label: "Meeting",
+  },
+  // Gold needs a heavier wash than the rest: it's the palest hue in the brand,
+  // so 16% barely separates from the card.
+  agenda: {
+    bg: "rgb(var(--brand-gold) / 0.22)",
+    fg: "rgb(var(--brand-deepgold))",
+    label: "Agenda",
+  },
+  action: {
+    bg: "rgb(var(--brand-red) / 0.16)",
+    fg: "rgb(var(--brand-red-on))",
+    label: "Action",
+  },
+};
 
 function KindBadge({ kind }: { kind: SearchResult["kind"] }) {
-  const { bg, label } = KIND_STYLE[kind];
+  const { bg, fg, label } = KIND_STYLE[kind];
   return (
     <span
-      className="shrink-0 mt-0.5 text-[10px] font-bold text-white uppercase tracking-wider rounded px-1.5 py-0.5"
-      style={{ backgroundColor: bg }}
+      className="shrink-0 mt-0.5 text-[10px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5"
+      style={{ backgroundColor: bg, color: fg }}
     >
       {label}
     </span>
@@ -278,7 +319,7 @@ function KindBadge({ kind }: { kind: SearchResult["kind"] }) {
 function SearchIcon() {
   return (
     <svg
-      className="h-4 w-4 text-slate-400 shrink-0"
+      className="h-4 w-4 text-brand-lightgray shrink-0"
       viewBox="0 0 20 20"
       fill="currentColor"
       aria-hidden

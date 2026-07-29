@@ -52,11 +52,16 @@ export default function PdfPagePreview({ url, scale = 1.6 }: Props) {
           canvas.style.width = "100%";
           canvas.style.height = "auto";
           canvas.style.maxWidth = "880px";
-          canvas.className = "rounded-md shadow-lg bg-white";
+          // `surface-paper`, not `surface-card`: this is a sheet of paper, and
+          // paper doesn't have a dark mode. The token is white in both themes
+          // for exactly this. It matters even though pdf.js paints an opaque
+          // page — the canvas is visible while the render is still in flight,
+          // and any page that renders with transparency shows through.
+          canvas.className = "rounded-[10px] shadow-page bg-surface-paper";
           wrapper.appendChild(canvas);
 
           const caption = document.createElement("div");
-          caption.className = "text-xs text-slate-300 mt-2 mb-6";
+          caption.className = "text-xs text-brand-gray mt-2 mb-6";
           caption.textContent = `Page ${i} of ${doc.numPages}`;
           wrapper.appendChild(caption);
 
@@ -83,23 +88,25 @@ export default function PdfPagePreview({ url, scale = 1.6 }: Props) {
   }, [url, scale]);
 
   return (
-    <div
-      className="rounded-lg p-4 md:p-6 overflow-x-auto"
-      style={{ background: "#4d4d4f" }}
-    >
+    // The mat around the pages is chrome, so it themes normally — light grey
+    // in light mode, near-black in dark. Only the sheets inside stay
+    // paper-white, which is what gives the pages an edge to read against in
+    // either theme. The captions and status text sit on the mat, not the
+    // paper, so they can use the normal text tokens.
+    <div className="rounded-[10px] border border-surface-border bg-surface-mute p-4 md:p-6 overflow-x-auto">
       {status === "loading" && (
-        <div className="text-center text-slate-200 text-sm py-8">
+        <div className="text-center text-brand-gray text-sm py-8">
           Rendering PDF…
         </div>
       )}
       {status === "error" && (
-        <div className="text-center text-rose-200 text-sm py-8">
+        <div className="text-center text-brand-brightred text-sm py-8">
           Failed to render PDF: {error}
         </div>
       )}
       <div ref={containerRef} className="space-y-0" />
       {status === "ready" && (
-        <div className="text-center text-slate-300 text-xs">
+        <div className="text-center text-brand-gray text-xs">
           {pageCount} {pageCount === 1 ? "page" : "pages"} rendered
         </div>
       )}

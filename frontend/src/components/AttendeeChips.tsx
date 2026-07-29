@@ -51,7 +51,7 @@ export default function AttendeeChips({ available, selected, onToggle }: Props) 
                     "px-3 py-1.5 rounded-full text-xs border transition",
                     active
                       ? "bg-brand-red text-white border-brand-red"
-                      : "bg-white text-brand-black border-brand-lightgray hover:border-brand-red"
+                      : "bg-surface-card text-brand-black border-brand-lightgray hover:border-brand-red"
                   )}
                 >
                   <span className="mr-1">{active ? "✓" : "+"}</span>
