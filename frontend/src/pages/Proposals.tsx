@@ -2044,14 +2044,16 @@ export default function Proposals() {
       }`;
 
   return (
-    /* Every card on an open board shares one width: the wrapper sizes to
-       max-content, which the (wide) Schedule table drives, so Project
-       Information / Schedule drivers / the summary panels stretch to the same
-       right edge instead of stopping at the page gutter. Gated to lg+ so a phone
-       still reads cards at viewport width, and only while a board is open — the
-       empty state's long PageHeader subtitle would otherwise blow the page out
-       sideways. */
-    <div className={clsx("space-y-4", board && !boardLoading && "lg:w-max lg:min-w-full")}>
+    /* Cards stay at the page content width; only the Schedule table is allowed
+       to exceed it (see its `w-max min-w-full` below).
+       We briefly sized this wrapper to max-content so every card's right edge
+       lined up with the Schedule table's. Don't: max-content resolves to the
+       TABLE's intrinsic width, so the whole page — header, panels, dialogs —
+       inflates to it and scrolls sideways at every viewport. Flush right edges
+       and a non-scrolling page are mutually exclusive while the table is
+       intrinsically wider than the viewport; the fix belongs in the table's own
+       column widths, not out here. */
+    <div className="space-y-4">
       <PageHeader
         kicker={headerKicker}
         title={board ? board.proposal.title || "Untitled proposal" : "Proposals"}
