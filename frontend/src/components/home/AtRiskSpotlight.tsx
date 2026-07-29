@@ -29,23 +29,30 @@ const SOON_DUE_DAYS = 7;
 /** A week past due is a different kind of problem than a day past due. */
 const CRITICAL_OVERDUE_DAYS = 7;
 
+/* Tints come from the status-* tokens rather than literal washes: those tokens
+ * invert with the theme (light tint + dark ink on light, dark tint + light ink
+ * on dark), which a near-white wash like #fdf6f6 cannot do. Medium has no
+ * status equivalent, so it rides brand-blue at low alpha — same effect, still
+ * driven by the themed token. Badges stay solid brand fills: they read as
+ * badges on either surface. */
 const TILE_STYLES: Record<
   TileSeverity,
   { label: string; box: string; badge: string }
 > = {
   critical: {
     label: "Critical",
-    box: "border-[#f0d3d6] bg-[#fdf6f6]",
+    box: "border-status-open-border/30 bg-status-open-bg",
     badge: "bg-brand-red text-white",
   },
   high: {
     label: "High",
-    box: "border-[#ecdfc2] bg-[#fdfaf2]",
+    box: "border-status-pending-border/30 bg-status-pending-bg",
+    // Gold is a light hue in BOTH themes, so its ink stays dark in both.
     badge: "bg-brand-gold text-[#3d3800]",
   },
   medium: {
     label: "Medium",
-    box: "border-[#cfe6ee] bg-[#f4fafc]",
+    box: "border-brand-blue/30 bg-brand-blue/10",
     badge: "bg-brand-blue text-white",
   },
 };

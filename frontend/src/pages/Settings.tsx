@@ -153,7 +153,7 @@ export default function Settings() {
       />
 
       {!isAuthenticated && (
-        <div className="card p-4 border-l-[3px] border-l-brand-gold bg-[#fdfaf2] text-sm text-status-pending-text">
+        <div className="card p-4 border-l-[3px] border-l-brand-gold bg-brand-gold/10 text-sm text-status-pending-text">
           You're not signed in, so any changes here can't be saved. Use{" "}
           <button
             type="button"
@@ -221,7 +221,7 @@ export default function Settings() {
                       "px-[18px] py-1.5 text-sm font-semibold transition",
                       active
                         ? "bg-brand-red text-white"
-                        : "bg-white text-brand-gray hover:bg-surface-page",
+                        : "bg-surface-card text-brand-gray hover:bg-surface-page",
                     )}
                     aria-pressed={active}
                   >

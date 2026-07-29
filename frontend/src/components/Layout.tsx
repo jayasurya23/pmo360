@@ -72,8 +72,11 @@ const DOC_WIDTH_PATHS = [
   "/change-orders",
 ];
 
-/** localStorage key for the light/dark preference. The `dark` class is
- *  applied to <html>; no dark styles are authored yet (see ThemeToggle). */
+/** localStorage key for the light/dark preference. It drives the `dark` class
+ *  on <html>, which re-themes the whole palette via the CSS variables in
+ *  styles/index.css. Both the key and the class name are load-bearing: the
+ *  inline script in index.html reads them before first paint to avoid a white
+ *  flash, so renaming either here alone reintroduces that flash. */
 const THEME_LS_KEY = "theme";
 
 /** `pinned_project_ids` is on the backend UserPreferences schema but not yet
@@ -195,7 +198,7 @@ function TopNav({ admin }: { admin: AdminActions }) {
   return (
     <header
       ref={headerRef}
-      className="sticky top-0 z-40 bg-white border-b border-surface-border"
+      className="sticky top-0 z-40 bg-surface-card border-b border-surface-border"
     >
       <div className="px-9 h-[58px] flex items-center gap-[26px]">
         <NavLink
@@ -203,10 +206,15 @@ function TopNav({ admin }: { admin: AdminActions }) {
           className="shrink-0"
           aria-label="PMO 360 — Lead dashboard"
         >
+          {/* "PMO" is solid black in the artwork and there is no white variant
+              of this mark, so on the dark header it would simply vanish.
+              brightness(0) flattens every opaque pixel to black and invert()
+              lifts it to white — a flat white knockout, the same compromise
+              the Castillo white wordmark already makes. */}
           <img
             src="/assets/logo/pmo360_logo.png"
             alt="PMO 360"
-            className="h-[30px] block"
+            className="h-[30px] block dark:brightness-0 dark:invert"
             onError={(e) => (e.currentTarget.style.display = "none")}
           />
         </NavLink>
@@ -321,7 +329,7 @@ function ScopeButton({
         "px-2.5 py-1.5 font-semibold transition",
         active
           ? "bg-brand-red text-white"
-          : "bg-white text-brand-gray hover:bg-surface-page"
+          : "bg-surface-card text-brand-gray hover:bg-surface-page"
       )}
     >
       {label}
@@ -372,6 +380,7 @@ interface AdminActions {
  *  of the two secondary groups the current route calls for. */
 function ContextRow({ admin }: { admin: AdminActions }) {
   const location = useLocation();
+  const dark = useIsDark();
   const { clients, projects, selectedClientId, selectedProjectId, selectedSubProject } =
     useApp();
   const client = clients.find((c) => c.id === selectedClientId);
@@ -410,9 +419,17 @@ function ContextRow({ admin }: { admin: AdminActions }) {
           {project.scope}
         </span>
       )}
+      {/* Castillo_logo.png is the brand's all-white knockout of the wordmark —
+          the sanctioned asset for a dark surface, where the colour version's
+          brown "Engineering" and tagline go muddy. Same folder and same mount
+          as the colour file, so the onError fallback still covers both. */}
       {client && (
         <img
-          src="/assets/logo/Castillo_logo_color.png"
+          src={
+            dark
+              ? "/assets/logo/Castillo_logo.png"
+              : "/assets/logo/Castillo_logo_color.png"
+          }
           alt="Castillo"
           className="h-[22px] hidden md:block shrink-0"
           onError={(e) => (e.currentTarget.style.display = "none")}
@@ -479,7 +496,7 @@ function ContextAdminGear({
         aria-label="Manage clients and portfolios"
         title="Manage clients and portfolios"
         className={clsx(
-          "h-7 w-7 inline-flex items-center justify-center rounded-md border border-surface-border bg-white text-brand-gray hover:border-brand-red hover:text-brand-red transition",
+          "h-7 w-7 inline-flex items-center justify-center rounded-md border border-surface-border bg-surface-card text-brand-gray hover:border-brand-red hover:text-brand-red transition",
           open && "border-brand-red text-brand-red"
         )}
       >
@@ -499,7 +516,7 @@ function ContextAdminGear({
       </button>
 
       {open && (
-        <div className="absolute left-0 mt-2 w-56 bg-white border border-surface-border rounded-[10px] shadow-lg z-50 py-1.5">
+        <div className="absolute left-0 mt-2 w-56 bg-surface-card border border-surface-border rounded-[10px] shadow-lg z-50 py-1.5">
           <GearItem onClick={() => fire(onNewClient)} icon="+">
             New client
           </GearItem>
@@ -757,7 +774,7 @@ function HeaderSelect({
       value={value}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className="max-w-[12rem] truncate rounded-md border border-surface-border bg-white px-2.5 py-[5px] text-[13px] text-brand-black hover:border-brand-lightgray focus:outline-none focus:border-brand-red disabled:bg-surface-mute disabled:text-brand-lightgray transition"
+      className="max-w-[12rem] truncate rounded-md border border-surface-border bg-surface-card px-2.5 py-[5px] text-[13px] text-brand-black hover:border-brand-lightgray focus:outline-none focus:border-brand-red disabled:bg-surface-mute disabled:text-brand-lightgray transition"
     >
       <option value="">{placeholder}</option>
       {options.map((o) => (
@@ -878,7 +895,7 @@ function PinnedPortfolios() {
           }
           onClick={() => void savePins(nextPins)}
           className={clsx(
-            "h-7 w-7 shrink-0 inline-flex items-center justify-center rounded-md border border-surface-border bg-white text-sm leading-none transition hover:border-brand-red",
+            "h-7 w-7 shrink-0 inline-flex items-center justify-center rounded-md border border-surface-border bg-surface-card text-sm leading-none transition hover:border-brand-red",
             currentIsPinned ? "text-brand-gold" : "text-brand-lightgray",
           )}
         >
@@ -896,7 +913,7 @@ function PinnedPortfolios() {
               type="button"
               onClick={() => jumpTo(p)}
               title={`Switch to ${p.name}`}
-              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap px-[11px] py-1 rounded-full border border-surface-border bg-white text-xs text-brand-black hover:border-brand-red hover:text-brand-red transition"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap px-[11px] py-1 rounded-full border border-surface-border bg-surface-card text-xs text-brand-black hover:border-brand-red hover:text-brand-red transition"
             >
               <span className="text-brand-gold" aria-hidden="true">
                 ★
@@ -928,7 +945,7 @@ function CommandSearch() {
       className="hidden md:flex items-center gap-2.5 text-xs text-brand-gray px-3.5 py-[7px] rounded-md border border-surface-border bg-surface-page hover:border-brand-red hover:text-brand-red transition"
     >
       <span>Search</span>
-      <kbd className="px-1.5 py-px bg-white border border-surface-border rounded text-[10px]">
+      <kbd className="px-1.5 py-px bg-surface-card border border-surface-border rounded text-[10px]">
         ⌘K
       </kbd>
     </button>
@@ -937,7 +954,7 @@ function CommandSearch() {
 
 /** Shared shape for the two 34px icon buttons in the header cluster. */
 const ICON_BUTTON =
-  "h-[34px] w-[34px] shrink-0 inline-flex items-center justify-center rounded-lg border border-surface-border bg-white text-brand-gray hover:border-brand-red hover:text-brand-red transition";
+  "h-[34px] w-[34px] shrink-0 inline-flex items-center justify-center rounded-lg border border-surface-border bg-surface-card text-brand-gray hover:border-brand-red hover:text-brand-red transition";
 
 /**
  * Notifications bell.
@@ -1003,18 +1020,52 @@ function NotificationsBell() {
     >
       <span aria-hidden="true">🔔</span>
       {count > 0 && (
-        <span className="absolute top-[5px] right-[6px] h-2 w-2 rounded-full bg-brand-brightred border-[1.5px] border-white" />
+        // The ring is a cut-out of the header behind it, not a white ring —
+        // it has to follow the header surface in both themes.
+        <span className="absolute top-[5px] right-[6px] h-2 w-2 rounded-full bg-brand-brightred border-[1.5px] border-surface-card" />
       )}
     </button>
   );
 }
 
 /**
+ * Live read of the active theme, for the handful of places that have to branch
+ * on it in JS rather than in CSS (the logo swaps — a PNG can't re-colour
+ * itself).
+ *
+ * The `dark` class on <html> is the single source of truth: the inline script
+ * in index.html applies it before first paint and ThemeToggle flips it
+ * afterwards. Observing the class rather than reading localStorage means this
+ * stays correct no matter who wrote it, and needs no context plumbing.
+ */
+function useIsDark(): boolean {
+  const [dark, setDark] = useState(() =>
+    document.documentElement.classList.contains("dark"),
+  );
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => setDark(root.classList.contains("dark"));
+    sync();
+    const obs = new MutationObserver(sync);
+    obs.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => obs.disconnect();
+  }, []);
+
+  return dark;
+}
+
+/**
  * Light/dark toggle.
  *
- * Placeholder for now: it flips a `dark` class on <html> and remembers the
- * choice, but no dark variants are authored yet, so the app stays light
- * either way. Wiring the styles is a follow-up.
+ * Flips the `dark` class on <html> and remembers the choice. That one class is
+ * the whole mechanism: every colour in tailwind.config.js resolves through a
+ * CSS variable, and `.dark` in styles/index.css redefines the palette, so the
+ * app re-themes without a `dark:` variant on every element.
+ *
+ * The storage key and the class name are shared with the inline script in
+ * index.html, which applies the saved theme before first paint so dark-mode
+ * users don't get a white flash on load. Change one, change both.
  */
 function ThemeToggle() {
   const [dark, setDark] = useState(
@@ -1031,11 +1082,15 @@ function ThemeToggle() {
       type="button"
       onClick={() => setDark((d) => !d)}
       aria-pressed={dark}
-      aria-label="Toggle dark mode"
-      title="Dark mode"
+      aria-label="Dark mode"
+      title={
+        dark ? "Dark mode on — switch to light" : "Dark mode off — switch to dark"
+      }
       className={clsx(ICON_BUTTON, "text-sm")}
     >
-      <span aria-hidden="true">◐</span>
+      {/* The glyph reports the theme you are in, not the one you'd switch to —
+          `aria-pressed` says the same thing to a screen reader. */}
+      <span aria-hidden="true">{dark ? "☾" : "☀"}</span>
     </button>
   );
 }
@@ -1127,9 +1182,12 @@ function UserMenu() {
   );
 }
 
+/** Gold "heads up, this isn't prod" chip. Borrows the pending status tint
+ *  rather than its own pair of gold washes — same warning hue, and it inverts
+ *  to dark-fill/light-text in dark mode for free. */
 function LocalDevBadge() {
   return (
-    <span className="hidden xl:inline rounded-full bg-[#fdfaf2] border border-[#ecdfc2] text-brand-deepgold text-[11px] font-semibold px-2 py-0.5">
+    <span className="hidden xl:inline rounded-full bg-status-pending-bg border border-status-pending-border text-status-pending-text text-[11px] font-semibold px-2 py-0.5">
       Local dev
     </span>
   );
@@ -1201,7 +1259,12 @@ function MeetingStepper({ currentPath }: { currentPath: string }) {
           "inline-flex shrink-0 items-center gap-1.5 px-[11px] py-1 rounded-full text-xs font-semibold whitespace-nowrap border transition",
           onNextCycle
             ? "bg-brand-red border-brand-red text-white"
-            : "text-brand-deepblue bg-[#eaf6fa] border-[#cfe6ee]",
+            : // There's no status-* token in blue, so the tint is mixed from
+              // brand-blue with an opacity modifier rather than baked as two
+              // pale hexes. That's what makes it flip: the same recipe lands a
+              // near-white chip in light and a deep teal wash in dark, under
+              // deepblue text that has itself lightened to suit.
+              "text-brand-deepblue bg-brand-blue/10 border-brand-blue/25",
         )}
         title="Plan the next coordination meeting's agenda"
       >
@@ -1228,7 +1291,7 @@ function firstNameOf(value: string): string {
 
 function Footer() {
   return (
-    <footer className="border-t border-surface-border bg-white px-9 py-3.5 mt-auto flex justify-between text-xs text-brand-gray">
+    <footer className="border-t border-surface-border bg-surface-card px-9 py-3.5 mt-auto flex justify-between text-xs text-brand-gray">
       <span>Castillo Engineering · Project Management Office</span>
       <span className="hidden md:inline">© {new Date().getFullYear()}</span>
     </footer>

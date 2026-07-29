@@ -325,7 +325,16 @@ function Pill({ n, tone }: { n: number; tone: "danger" | "warn" }) {
 }
 
 /* Avatar tints cycle through the brand accents so adjacent PM rows stay
-   distinguishable; the seed keeps a person's color stable across renders. */
+   distinguishable; the seed keeps a person's color stable across renders.
+ *
+ * These stay LITERAL rather than resolving through the brand tokens, and that
+ * is deliberate. The disc is its own surface carrying white initials, so it
+ * needs a colour that is dark in BOTH themes — but every brand token lightens
+ * under `.dark` (correct for text/icons on a dark page, wrong for a fill that
+ * white ink sits on). Tokenizing would take white-on-fill contrast from
+ * 8.4:1 to 2.45:1 on the grey entry and 8.2:1 to 3.5:1 on the brown. Held at
+ * the canonical light values, all five keep legible white initials and still
+ * separate from the dark card. Same reasoning as a solid brand-red button. */
 const AVATAR_COLORS = ["#ad1f2b", "#5e4b40", "#1aa6c9", "#278747", "#4d4d4f"];
 
 function Avatar({ name, seed }: { name: string; seed: number }) {

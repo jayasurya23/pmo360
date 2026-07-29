@@ -61,7 +61,7 @@ function BulkButton({
       {...rest}
       className={clsx(
         "inline-flex items-center whitespace-nowrap rounded-[7px] border border-surface-ghost",
-        "bg-white px-[13px] py-1.5 text-xs font-semibold text-brand-black transition",
+        "bg-surface-card px-[13px] py-1.5 text-xs font-semibold text-brand-black transition",
         "disabled:cursor-not-allowed disabled:opacity-50",
         tone === "green" && "hover:border-brand-green hover:text-brand-green",
         tone === "alert" &&
@@ -347,7 +347,7 @@ export default function Actions() {
                 className={
                   !scopeToProject
                     ? "bg-brand-red px-3.5 py-[7px] font-semibold text-white"
-                    : "bg-white px-3.5 py-[7px] text-brand-gray transition hover:bg-surface-page"
+                    : "bg-surface-card px-3.5 py-[7px] text-brand-gray transition hover:bg-surface-page"
                 }
               >
                 All portfolios
@@ -363,7 +363,7 @@ export default function Actions() {
                 className={
                   scopeToProject
                     ? "bg-brand-red px-3.5 py-[7px] font-semibold text-white"
-                    : "bg-white px-3.5 py-[7px] text-brand-gray transition hover:bg-surface-page"
+                    : "bg-surface-card px-3.5 py-[7px] text-brand-gray transition hover:bg-surface-page"
                 }
               >
                 {currentProject ? "This portfolio" : "Selected portfolio"}
@@ -431,7 +431,7 @@ export default function Actions() {
       />
 
       {selectedIds.size > 0 && (
-        <div className="sticky top-2 z-20 flex flex-wrap items-center gap-2 rounded-[10px] border border-surface-border border-l-[3px] border-l-brand-red bg-white px-4 py-2.5">
+        <div className="sticky top-2 z-20 flex flex-wrap items-center gap-2 rounded-[10px] border border-surface-border border-l-[3px] border-l-brand-red bg-surface-card px-4 py-2.5">
           <span className="mr-1 text-[13px] font-bold text-brand-black">
             {selectedIds.size} selected
           </span>

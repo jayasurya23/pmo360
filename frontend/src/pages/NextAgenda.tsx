@@ -938,8 +938,8 @@ function ChipButton({
         active
           ? "border-brand-red bg-brand-red text-white"
           : danger
-            ? "border-brand-red bg-white text-brand-red hover:bg-status-open-bg"
-            : "border-surface-border bg-white text-brand-gray hover:border-brand-red hover:text-brand-red"
+            ? "border-brand-red bg-surface-card text-brand-red hover:bg-status-open-bg"
+            : "border-surface-border bg-surface-card text-brand-gray hover:border-brand-red hover:text-brand-red"
       )}
     >
       {children}
@@ -978,6 +978,12 @@ function RemoveButton({ onClick, label }: { onClick: () => void; label: string }
 // Discipline accent colours from the redesign. Civil's blue is the darker
 // #185fa5 used for the discipline tag in the generated documents, not the
 // brand's lighter UI blue.
+//
+// That literal stays: it is a solid saturated fill carrying a white letter, so
+// it reads on both themes, and it deliberately matches the Civil tag printed
+// in the PDF/DOCX (which have no dark mode). Neither theme-aware blue token
+// substitutes — `brand-blue`/`brand-deepblue` lighten in dark mode, which would
+// strand the white letter on a pale fill.
 const DISCIPLINE_BADGE: Record<string, string> = {
   civil: "bg-[#185fa5]",
   electrical: "bg-brand-red",
@@ -1162,7 +1168,10 @@ function likelihoodTint(value: string): string {
     case "high":
       return "border-status-pending-border bg-status-pending-bg text-status-pending-text";
     case "medium":
-      return "border-[#cfe6ee] bg-[#f4fafc] text-brand-deepblue";
+      // No blue status token exists; a translucent brand-blue fill under the
+      // text-weight blue gives the same pale-blue read on light and inverts to
+      // a dark-blue fill with a light label on dark.
+      return "border-brand-blue/30 bg-brand-blue/10 text-brand-deepblue";
     case "low":
       return "border-surface-border bg-surface-mute text-brand-gray";
     default:

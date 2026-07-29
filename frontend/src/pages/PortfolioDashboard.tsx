@@ -298,7 +298,10 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
       aria-label="Action burndown for the last 8 weeks"
     >
       {/* Y-axis gridlines + labels. The zero line is a gridline like any
-          other — the redesign drops the heavier baseline rule. */}
+          other — the redesign drops the heavier baseline rule.
+          Paint comes from Tailwind fill-/stroke- token utilities rather than
+          SVG presentation attributes, so the chart re-themes with everything
+          else instead of staying light-mode on a dark card. */}
       {yTicks.map((t) => (
         <g key={t}>
           <line
@@ -306,7 +309,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
             x2={padLeft + innerW}
             y1={padTop + yScale(t)}
             y2={padTop + yScale(t)}
-            stroke="#f0efee"
+            className="stroke-surface-hairline"
             strokeWidth={1}
           />
           <text
@@ -314,7 +317,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
             y={padTop + yScale(t) + 4}
             textAnchor="end"
             fontSize={10}
-            fill="#bcbec0"
+            className="fill-brand-lightgray"
           >
             {t}
           </text>
@@ -340,7 +343,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
                 y={yOpen}
                 width={barW}
                 height={openH}
-                fill="#ad1f2b"
+                className="fill-brand-red"
                 rx={3}
               >
                 <title>
@@ -355,7 +358,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
                 y={yDone}
                 width={barW}
                 height={doneH}
-                fill="#278747"
+                className="fill-brand-green"
                 rx={3}
               >
                 <title>
@@ -370,7 +373,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
                 y={yDone - 6}
                 textAnchor="middle"
                 fontSize={10}
-                fill="#333132"
+                className="fill-brand-black"
                 fontWeight={600}
               >
                 {total}
@@ -382,7 +385,7 @@ function BurndownChart({ points }: { points: BurndownPoint[] }) {
               y={padTop + innerH + 16}
               textAnchor="middle"
               fontSize={10}
-              fill="#4d4d4f"
+              className="fill-brand-gray"
             >
               {wkLabel}
             </text>
@@ -411,17 +414,19 @@ function Legend() {
 /* ============================================================
    Risk board — stacked severity bar + counts
    ============================================================ */
+/* `bar` is a token class, not a literal — only the segment WIDTH is computed,
+   so the fill can ride Tailwind and re-theme with the rest of the app. */
 const RISK_ORDER: Array<{
   key: string;
   label: string;
   bar: string;
   countClass: string;
 }> = [
-  { key: "Critical", label: "critical", bar: "#ad1f2b", countClass: "text-brand-red" },
-  { key: "High", label: "high", bar: "#e12a3f", countClass: "text-brand-brightred" },
-  { key: "Medium", label: "medium", bar: "#c7bb2e", countClass: "text-brand-deepgold" },
+  { key: "Critical", label: "critical", bar: "bg-brand-red", countClass: "text-brand-red" },
+  { key: "High", label: "high", bar: "bg-brand-brightred", countClass: "text-brand-brightred" },
+  { key: "Medium", label: "medium", bar: "bg-brand-gold", countClass: "text-brand-deepgold" },
   // Low keeps the inherited muted text — it should not compete for attention.
-  { key: "Low", label: "low", bar: "#bcbec0", countClass: "" },
+  { key: "Low", label: "low", bar: "bg-brand-lightgray", countClass: "" },
 ];
 
 function RiskBoardCard({ risks }: { risks: Record<string, number> }) {
@@ -445,10 +450,8 @@ function RiskBoardCard({ risks }: { risks: Record<string, number> }) {
               seg.count === 0 ? null : (
                 <span
                   key={seg.key}
-                  style={{
-                    background: seg.bar,
-                    width: `${(seg.count / total) * 100}%`,
-                  }}
+                  className={seg.bar}
+                  style={{ width: `${(seg.count / total) * 100}%` }}
                   title={`${seg.label}: ${seg.count}`}
                 />
               ),
@@ -475,7 +478,7 @@ const STAGE_BADGE: Record<string, { label: string; className: string }> = {
     label: "Sent",
     className: "bg-status-completed-bg text-status-completed-text",
   },
-  final: { label: "Final", className: "bg-[#d9f0f7] text-brand-deepblue" },
+  final: { label: "Final", className: "bg-brand-blue/15 text-brand-deepblue" },
   draft: { label: "Draft", className: "bg-surface-border text-brand-gray" },
 };
 

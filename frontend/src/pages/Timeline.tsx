@@ -57,26 +57,47 @@ const ZOOMS: Record<string, number> = { Compact: 84, Comfortable: 116, Wide: 156
 // Utilization heat painted behind the bars. The grid tints are near-transparent
 // so a bar sitting on top stays legible; the legend swatches are the same hues
 // at a higher alpha because 10px chips need the extra contrast to register.
-const HEAT_LOADED = "rgba(39,135,71,0.07)";
-const HEAT_OVER = "rgba(173,31,43,0.08)";
-const HEAT_BLOCKED = "#eceae9";
-const HEAT_LOADED_CHIP = "rgba(39,135,71,0.12)";
-const HEAT_OVER_CHIP = "rgba(173,31,43,0.12)";
+//
+// These are Tailwind token classes rather than colour strings for two reasons:
+// the hue follows the theme, and a 7% wash that reads on white is invisible on
+// the near-black board — so dark gets a stronger step via `dark:`.
+const HEAT_LOADED_CLS = "bg-brand-green/[0.07] dark:bg-brand-green/[0.16]";
+const HEAT_OVER_CLS = "bg-brand-red/[0.08] dark:bg-brand-red/[0.18]";
+const HEAT_BLOCKED_CLS = "bg-surface-mute";
+const HEAT_LOADED_CHIP_CLS = "bg-brand-green/[0.12] dark:bg-brand-green/40";
+const HEAT_OVER_CHIP_CLS = "bg-brand-red/[0.12] dark:bg-brand-red/40";
+// Same blocked tint as an inline colour string, for the Workload load bars.
+const HEAT_BLOCKED = "rgb(var(--surface-mute))";
 
+// Bar fills. The four solid status colours are deliberately theme-independent:
+// a saturated fill carrying white text reads correctly on white and on the dark
+// board alike, and pinning them keeps the board legend matching the PDFs.
 const STATUSES = [
   { value: "in_progress", label: "In Progress", bg: "#ad1f2b", fg: "#ffffff" },
   { value: "ahead", label: "Ahead of Schedule", bg: "#1aa6c9", fg: "#ffffff" },
   { value: "on_hold", label: "On Hold", bg: "#c7bb2e", fg: "#3d3800" },
   { value: "delayed", label: "Delayed", bg: "#e12a3f", fg: "#ffffff" },
   // Not-contracted work reads as a placeholder rather than a commitment:
-  // pale fill + dashed outline instead of a solid status colour.
-  { value: "not_contracted", label: "Not Contracted", bg: "#e6e7e8", fg: "#4d4d4f", dashed: true },
+  // pale fill + dashed outline instead of a solid status colour. "Pale" is a
+  // relationship to the board, not a fixed hue — it has to follow the theme or
+  // it turns into the brightest thing on a dark screen.
+  {
+    value: "not_contracted",
+    label: "Not Contracted",
+    bg: "rgb(var(--surface-mute))",
+    fg: "rgb(var(--brand-gray))",
+    dashed: true,
+  },
   { value: "complete", label: "Complete", bg: "#278747", fg: "#ffffff" },
 ] as const;
 const STATUS_MAP: Record<string, { label: string; bg: string; fg: string; dashed?: boolean }> =
   Object.fromEntries(STATUSES.map((s) => [s.value, s]));
 
 const DISCIPLINES = ["Electrical", "Civil", "Structural", "Water", "Vendors", "General", "Other"];
+// Categorical identity colours — always a solid chip carrying white text, so
+// they read on either theme and are intentionally NOT themed: these hues are
+// the discipline key shared with the generated documents, and the light-theme
+// token steps (which brighten in dark) would drop white text below contrast.
 const DISC_TAG: Record<string, { short: string; color: string }> = {
   Electrical: { short: "E", color: "#ad1f2b" },
   Civil: { short: "C", color: "#185fa5" },
@@ -145,10 +166,12 @@ function msKey(ms: ProposalTimelineMilestone): string {
   return `${ms.discipline}|${ms.milestone}|${ms.start_date}|${ms.end_date}`;
 }
 /** Faint vertical line every work-day (weekW/5 px) so the 5-day grid + the
- *  day-snapping of drags is legible. Tinted off the brand near-black so it
- *  sits under the #f0efee week hairlines rather than reading cool/blue. */
+ *  day-snapping of drags is legible. Tinted off the brand text colour so it
+ *  sits under the surface-hairline week rules rather than reading cool/blue —
+ *  and so it inverts with the theme (dark ink on paper, light ink on the dark
+ *  board) instead of vanishing. */
 const dayGridBg = (weekW: number) =>
-  `repeating-linear-gradient(to right, rgba(51,49,50,0.055) 0px, rgba(51,49,50,0.055) 1px, transparent 1px, transparent ${weekW / 5}px)`;
+  `repeating-linear-gradient(to right, rgb(var(--brand-black) / 0.055) 0px, rgb(var(--brand-black) / 0.055) 1px, transparent 1px, transparent ${weekW / 5}px)`;
 function workdaysOverlap(aStart: string, aEnd: string, weekMonday: string): number {
   const ws = parseISO(weekMonday);
   const we = addDays(ws, 4); // Friday
@@ -1001,7 +1024,7 @@ export default function Timeline() {
       {loading && <div className="text-sm text-brand-gray">Loading timeline…</div>}
       {error && <div className="text-sm text-brand-red">{error}</div>}
       {conflict && (
-        <div className="flex items-center gap-2 rounded-[10px] border border-[#ecdfc2] bg-[#fdfaf2] px-3 py-2 text-sm text-brand-deepgold">
+        <div className="flex items-center gap-2 rounded-[10px] border border-brand-gold/30 bg-brand-gold/10 px-3 py-2 text-sm text-brand-deepgold">
           <span>⚠️ {conflict}</span>
           <button className="ml-auto font-semibold hover:underline" onClick={() => setConflict(null)}>dismiss</button>
         </div>
@@ -1022,9 +1045,9 @@ export default function Timeline() {
                 <div className="card p-0 overflow-x-auto" ref={scrollRef}>
                   <div style={{ width: gridWidth, minWidth: gridWidth, position: "relative" }}>
                     {/* header */}
-                    <div className="flex sticky top-0 z-20 bg-white border-b border-surface-border">
+                    <div className="flex sticky top-0 z-20 bg-surface-card border-b border-surface-border">
                       <div
-                        className="shrink-0 px-3.5 py-2.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-brand-gray sticky left-0 bg-white z-10 border-r border-surface-border"
+                        className="shrink-0 px-3.5 py-2.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-brand-gray sticky left-0 bg-surface-card z-10 border-r border-surface-border"
                         style={{ width: LABEL_W }}
                       >
                         {view === "engineer" ? "Engineer" : "Project"}
@@ -1103,7 +1126,7 @@ export default function Timeline() {
             <button
               onClick={() => setShowNewProject(true)}
               title="Open New project panel"
-              className="shrink-0 self-start sticky top-4 card flex flex-col items-center gap-2 py-3 text-brand-red hover:bg-[#fdf6f6] transition"
+              className="shrink-0 self-start sticky top-4 card flex flex-col items-center gap-2 py-3 text-brand-red hover:bg-brand-red/5 transition"
               style={{ width: 38 }}
             >
               <span className="text-lg leading-none">＋</span>
@@ -1173,7 +1196,7 @@ function Segmented({ options, value, onChange }: { options: [string, string][]; 
           onClick={() => onChange(v)}
           className={clsx(
             "px-3 py-1 rounded-full transition",
-            value === v ? "bg-white text-brand-red shadow-sm" : "text-brand-gray hover:text-brand-black",
+            value === v ? "bg-surface-card text-brand-red shadow-sm" : "text-brand-gray hover:text-brand-black",
           )}
         >
           {label}
@@ -1195,7 +1218,7 @@ function ToolbarPill({
       disabled={disabled}
       title={title}
       className={clsx(
-        "rounded-full border bg-white px-3 py-1 font-semibold transition",
+        "rounded-full border bg-surface-card px-3 py-1 font-semibold transition",
         disabled
           ? "border-surface-border text-brand-lightgray"
           : active
@@ -1222,7 +1245,7 @@ function FilterMenu({ label, options, labels, selected, onChange }: { label: str
         {label}{selected.size ? ` (${selected.size})` : ""} ▾
       </ToolbarPill>
       {open && (
-        <div className="absolute z-30 mt-1 w-44 bg-white border border-surface-border rounded-[10px] shadow-lg p-2 space-y-1">
+        <div className="absolute z-30 mt-1 w-44 bg-surface-card border border-surface-border rounded-[10px] shadow-lg p-2 space-y-1">
           {options.map((o) => (
             <label key={o} className="flex items-center gap-2 text-xs px-1 py-0.5 hover:bg-surface-rowhover rounded">
               <input
@@ -1285,7 +1308,7 @@ function LegendMenu() {
     <div ref={ref} className="relative">
       <ToolbarPill onClick={() => setOpen((o) => !o)}>Legend</ToolbarPill>
       {open && (
-        <div className="absolute left-0 z-30 mt-1 w-60 bg-white border border-surface-border rounded-[10px] shadow-lg p-3 space-y-2">
+        <div className="absolute left-0 z-30 mt-1 w-60 bg-surface-card border border-surface-border rounded-[10px] shadow-lg p-3 space-y-2">
           <div className="micro-label">Status</div>
           <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
             {STATUSES.map((s) => (
@@ -1298,13 +1321,13 @@ function LegendMenu() {
           <div className="border-t border-surface-hairline pt-2 micro-label">Cell utilization</div>
           <div className="flex flex-col gap-1.5 text-[11px] text-brand-black">
             <span className="inline-flex items-center gap-1.5">
-              <Swatch color={HEAT_LOADED_CHIP} /> ≤ 100% (has capacity)
+              <Swatch cls={HEAT_LOADED_CHIP_CLS} /> ≤ 100% (has capacity)
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <Swatch color={HEAT_OVER_CHIP} /> &gt; 100% over-allocated
+              <Swatch cls={HEAT_OVER_CHIP_CLS} /> &gt; 100% over-allocated
             </span>
             <span className="inline-flex items-center gap-1.5">
-              <Swatch color={HEAT_BLOCKED} /> time off / not started
+              <Swatch cls={HEAT_BLOCKED_CLS} /> time off / not started
             </span>
           </div>
         </div>
@@ -1313,12 +1336,14 @@ function LegendMenu() {
   );
 }
 
-/** 10px colour chip used by both legends. */
-function Swatch({ color, dashed }: { color: string; dashed?: boolean }) {
+/** 10px colour chip used by both legends. `color` carries a status fill (which
+ *  can be a literal or a token-backed rgb(var(...))); `cls` is for the cell
+ *  tints, which need a `dark:` step to stay visible at chip size. */
+function Swatch({ color, dashed, cls }: { color?: string; dashed?: boolean; cls?: string }) {
   return (
     <span
-      className="inline-block h-2.5 w-2.5 rounded-[3px] shrink-0"
-      style={{ background: color, border: dashed ? "1px dashed #bcbec0" : undefined }}
+      className={clsx("inline-block h-2.5 w-2.5 rounded-[3px] shrink-0", cls)}
+      style={{ background: color, border: dashed ? "1px dashed rgb(var(--brand-lightgray))" : undefined }}
     />
   );
 }
@@ -1342,13 +1367,13 @@ function BoardLegend() {
       <span className="h-3.5 w-px bg-surface-border" aria-hidden />
       <span className="micro-label">Cells</span>
       <span className="inline-flex items-center gap-1.5">
-        <Swatch color={HEAT_LOADED_CHIP} /> ≤ 100% loaded
+        <Swatch cls={HEAT_LOADED_CHIP_CLS} /> ≤ 100% loaded
       </span>
       <span className="inline-flex items-center gap-1.5">
-        <Swatch color={HEAT_OVER_CHIP} /> Over-allocated
+        <Swatch cls={HEAT_OVER_CHIP_CLS} /> Over-allocated
       </span>
       <span className="inline-flex items-center gap-1.5">
-        <Swatch color={HEAT_BLOCKED} /> Time off / not started
+        <Swatch cls={HEAT_BLOCKED_CLS} /> Time off / not started
       </span>
     </div>
   );
@@ -1399,7 +1424,7 @@ function Bar({ a, ctx, top = (ROW_H - BAR_H) / 2, height = BAR_H }: { a: Timelin
         color: st.fg,
         // Dashed (not-contracted) bars lose 2px to the border, so the text
         // baseline has to come in by the same amount to stay centred.
-        border: st.dashed ? "1px dashed #bcbec0" : undefined,
+        border: st.dashed ? "1px dashed rgb(var(--brand-lightgray))" : undefined,
         lineHeight: `${height - (st.dashed ? 2 : 0)}px`,
       }}
     >
@@ -1435,8 +1460,12 @@ function LabelCell({ children, indent, highlight, height = ROW_H }: { children: 
   return (
     <div
       className={clsx(
-        "shrink-0 px-3.5 sticky left-0 z-[1] border-r border-surface-border flex items-center text-[13.5px]",
-        highlight ? "bg-[#fdf6f6]" : "bg-white",
+        // The label column is sticky, so bars scroll underneath it — its fill
+        // has to stay opaque. The drop-target tint is therefore a flat gradient
+        // painted ON TOP of the opaque card colour rather than a translucent
+        // background-color that the bars would show through.
+        "shrink-0 px-3.5 sticky left-0 z-[1] border-r border-surface-border flex items-center text-[13.5px] bg-surface-card",
+        highlight && "bg-gradient-to-r from-brand-red/[0.06] to-brand-red/[0.06]",
       )}
       style={{ width: LABEL_W, height, paddingLeft: 14 + (indent || 0) * 14 }}
     >
@@ -1528,7 +1557,7 @@ function EngineerView({
                   data-res-row={r.id}
                   className={clsx(
                     "flex items-stretch border-b border-surface-hairline",
-                    isHover && "bg-[#fdf6f6]",
+                    isHover && "bg-brand-red/5",
                   )}
                 >
                   <LabelCell highlight={isHover} height={rowH}>
@@ -1560,13 +1589,11 @@ function EngineerView({
                       return (
                         <div
                           key={w}
-                          className="absolute top-0 border-r border-surface-hairline"
-                          style={{
-                            left: i * weekW,
-                            width: weekW,
-                            height: rowH,
-                            background: over ? HEAT_OVER : blocked ? HEAT_BLOCKED : v > 0 ? HEAT_LOADED : "transparent",
-                          }}
+                          className={clsx(
+                            "absolute top-0 border-r border-surface-hairline",
+                            over ? HEAT_OVER_CLS : blocked ? HEAT_BLOCKED_CLS : v > 0 ? HEAT_LOADED_CLS : "",
+                          )}
+                          style={{ left: i * weekW, width: weekW, height: rowH }}
                           title={
                             blocked
                               ? `${Math.round((1 - a) * 100)}% time off${v > 0 ? `, ${Math.round(v * 100)}% load` : ""}`
@@ -1596,9 +1623,11 @@ function EngineerView({
                             left: sP * dwpx + 1,
                             width: (eP - sP) * dwpx - 2,
                             height: rowH,
+                            // Opaque two-tone hatch: the mute/page pair reads as
+                            // "greyed out" against the card in either theme.
                             background:
-                              "repeating-linear-gradient(45deg,#eceae9,#eceae9 6px,#f5f4f3 6px,#f5f4f3 12px)",
-                            border: "1px solid #d8d6d5",
+                              "repeating-linear-gradient(45deg,rgb(var(--surface-mute)),rgb(var(--surface-mute)) 6px,rgb(var(--surface-page)) 6px,rgb(var(--surface-page)) 12px)",
+                            border: "1px solid rgb(var(--surface-ghost))",
                             borderRadius: 6,
                           }}
                         >
@@ -1619,8 +1648,13 @@ function EngineerView({
                             left: 1,
                             width: endPos * dwpx - 2,
                             height: rowH,
-                            background: "repeating-linear-gradient(45deg,#f3efe9,#f3efe9 6px,#faf8f5 6px,#faf8f5 12px)",
-                            border: "1px dashed #d8cfc4",
+                            // Warm "not started yet" hatch, tinted off brand
+                            // brown so it follows the theme; the flat card
+                            // colour is the final layer, keeping it opaque over
+                            // the utilization heat underneath.
+                            background:
+                              "repeating-linear-gradient(45deg,rgb(var(--brand-brown) / 0.14),rgb(var(--brand-brown) / 0.14) 6px,rgb(var(--brand-brown) / 0.05) 6px,rgb(var(--brand-brown) / 0.05) 12px), rgb(var(--surface-card))",
+                            border: "1px dashed rgb(var(--brand-brown) / 0.35)",
                             borderRadius: 6,
                           }}
                         >
@@ -1643,7 +1677,7 @@ function EngineerView({
           const { placed, lanes } = packLanes(unassigned, weeks);
           const rowH = lanes * LANE_H;
           return (
-            <div data-res-row="0" className={clsx(hoverRes === 0 && "bg-[#fdf6f6]")}>
+            <div data-res-row="0" className={clsx(hoverRes === 0 && "bg-brand-red/5")}>
               <div className="flex bg-surface-page border-b border-surface-border">
                 <div className="px-3.5 py-1.5 text-[11px] font-bold uppercase tracking-[0.1em] text-brand-black" style={{ width: LABEL_W }}>
                   Unassigned
@@ -1741,8 +1775,16 @@ function ProjectView({
                   className="text-[10px] rounded-[3px] px-1 py-0.5 font-semibold border-0 cursor-pointer"
                   style={{ background: st.bg, color: st.fg }}
                 >
+                  {/* The <select> itself carries the status fill, so each option
+                      has to reclaim the normal popup surface/text colours. */}
                   {STATUSES.map((s) => (
-                    <option key={s.value} value={s.value} style={{ background: "#fff", color: "#333132" }}>{s.label}</option>
+                    <option
+                      key={s.value}
+                      value={s.value}
+                      style={{ background: "rgb(var(--surface-card))", color: "rgb(var(--brand-black))" }}
+                    >
+                      {s.label}
+                    </option>
                   ))}
                 </select>
                 {edit?.id === p.id && edit.field === "client" ? (
@@ -2032,7 +2074,7 @@ function ResourceManagerDialog({ onClose, onChanged }: { onClose: () => void; on
                 <span className={clsx("flex-1 truncate", !r.active && "text-brand-gray line-through")}>
                   <DiscTag d={r.discipline} />
                   {r.name}{r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
-                  {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded-[3px] bg-[#f3efe9] text-brand-brown">placeholder</span>}
+                  {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded-[3px] bg-brand-brown/10 text-brand-brown">placeholder</span>}
                 </span>
                 <select className="rounded-md border border-surface-border text-xs px-1 py-0.5 focus:outline-none focus:border-brand-red" value={r.discipline} onChange={(e) => void setDisc(r, e.target.value)}>{DISCIPLINES.map((d) => <option key={d}>{d}</option>)}</select>
                 <button className="text-xs text-brand-gray hover:text-brand-red" onClick={() => void toggleActive(r)}>{r.active ? "Hide" : "Show"}</button>
@@ -2094,7 +2136,7 @@ function ContextMenu({
   const top = Math.min(menu.y, (typeof window !== "undefined" ? window.innerHeight : 800) - 380);
 
   return (
-    <div ref={ref} className="fixed z-[60] w-56 bg-white border border-surface-border rounded-[10px] shadow-xl py-1 text-sm" style={{ left, top }}>
+    <div ref={ref} className="fixed z-[60] w-56 bg-surface-card border border-surface-border rounded-[10px] shadow-xl py-1 text-sm" style={{ left, top }}>
       {a ? (
         <>
           <div className="px-3 py-1 text-[11px] text-brand-gray truncate">{a.project_name || a.label || "Assignment"}</div>
@@ -2279,9 +2321,20 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
   const teamNowAvg = nPeople ? teamNow / nPeople : 0;
 
   const pct = (v: number) => `${Math.round(v * 100)}%`;
-  // green = room · gold = near capacity · red = over · near-black = OOO/PTO/not-started
+  // green = room · gold = near capacity · red = over · brand ink = OOO/PTO/not-started.
+  // These are bare bars with no text on them, so they read straight off the
+  // tokens — and the OOO bar has to invert (dark ink on paper, light ink on the
+  // dark board) or it disappears into the card.
   const loadColor = (v: number, blocked: boolean, over: boolean) =>
-    over ? "#e12a3f" : blocked ? "#333132" : v >= 0.85 ? "#c7bb2e" : v > 0 ? "#278747" : HEAT_BLOCKED;
+    over
+      ? "rgb(var(--brand-brightred))"
+      : blocked
+        ? "rgb(var(--brand-black))"
+        : v >= 0.85
+          ? "rgb(var(--brand-gold))"
+          : v > 0
+            ? "rgb(var(--brand-green))"
+            : HEAT_BLOCKED;
 
   return (
     <div className="card p-0 overflow-x-auto">
@@ -2338,7 +2391,7 @@ function WorkloadView({ board, load }: { board: TimelineBoard; load: Record<stri
                         <span className="text-brand-gray mr-1 inline-block w-3">{isOpen ? "▾" : "▸"}</span>
                         <span className="font-semibold">{r.name}</span>
                         {r.title && <span className="text-brand-gray text-xs"> · {r.title}</span>}
-                        {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded-[3px] bg-[#f3efe9] text-brand-brown">placeholder</span>}
+                        {r.is_placeholder && <span className="ml-1 text-[10px] px-1 rounded-[3px] bg-brand-brown/10 text-brand-brown">placeholder</span>}
                       </td>
                       <td className="text-right px-2 py-2 text-brand-gray">{m.projects || "—"}</td>
                       <td className={clsx("text-right px-2 py-2 font-medium", m.now > 1.0001 ? "text-brand-red" : m.now > 0 ? "" : "text-brand-gray")}>{pct(m.now)}</td>

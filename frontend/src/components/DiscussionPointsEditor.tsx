@@ -309,7 +309,11 @@ interface AdvancedNodeProps {
 
 function AdvancedNode({ node, path, depth, tree, setTree }: AdvancedNodeProps) {
   const pathLabel = path.map((i) => i + 1).join(".");
-  const borderColor = depth === 0 ? "#ad1f2b" : "#c7bb2e";
+  // Read through the brand variables rather than literal hexes — the rail is
+  // interpolated into a `borderLeft` shorthand, so it can't be a token class,
+  // but this way it still follows the light/dark palette.
+  const borderColor =
+    depth === 0 ? "rgb(var(--brand-red))" : "rgb(var(--brand-gold))";
   return (
     <div
       style={{
@@ -453,7 +457,7 @@ function Disclosure({
         </svg>
       </button>
       {open && (
-        <div className="px-4 py-3 border-t border-surface-border bg-white">{children}</div>
+        <div className="px-4 py-3 border-t border-surface-border bg-surface-card">{children}</div>
       )}
     </div>
   );

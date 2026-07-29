@@ -1,31 +1,50 @@
 /**
  * LoginPage — the branded sign-in gate. Shown by <AuthGate> whenever MSAL is
  * configured and the visitor is not signed in, so the app can't be used
- * anonymously. Castillo red → white solar-field background, PMO 360 logo, and a
- * single "Sign in with Microsoft" button.
+ * anonymously. Castillo red washing down a solar-field background into the app
+ * surface, PMO 360 logo, and a single "Sign in with Microsoft" button.
  */
 import { useState } from "react";
 import { useAuth } from "@/auth/useAuth";
 import pmoLogo from "@/assets/brand/pmo360_logo.png";
 import castilloWhite from "@/assets/brand/castillo_white.png";
 
-// Castillo red fading over a faint aerial solar-panel texture, fading to white —
-// recreated with layered CSS gradients so it scales cleanly to any viewport.
+/**
+ * Castillo red washing down over a faint aerial solar-panel texture, recreated
+ * with layered CSS gradients so it scales cleanly to any viewport.
+ *
+ * This screen renders before the app shell, but the pre-paint script in
+ * index.html has already put `.dark` on <html> by then, so it themes like
+ * everything else. Every colour is read through its token variable rather
+ * than baked, which means:
+ *   - the red stays. It's the brand moment, and it carries white text
+ *     identically on both themes; `--brand-red` is the fill step, tuned for
+ *     exactly that.
+ *   - what the red fades INTO follows the app background — white in light,
+ *     near-black in dark — instead of dumping a full-screen white slab under
+ *     a dark-mode user at 7am.
+ * The panel texture is the one thing left neutral: those layers are
+ * multiply-blended shading, not colour, so plain black shadow lines are the
+ * physically-honest thing to draw on either base.
+ */
 const BG: React.CSSProperties = {
-  backgroundColor: "#f4f5f7",
+  backgroundColor: "rgb(var(--surface-page))",
   backgroundImage: [
-    // red wash: solid at top, transparent through the middle, white at the base
-    "linear-gradient(157deg, #a01a27 0%, rgba(168,26,40,0.96) 20%, rgba(178,42,55,0.55) 42%, rgba(226,178,183,0.18) 62%, rgba(255,255,255,0.72) 82%, #ffffff 100%)",
+    // red wash: solid at top, thinning through the middle, page colour at base
+    "linear-gradient(157deg, rgb(var(--brand-red)) 0%, rgb(var(--brand-red) / 0.96) 20%, rgb(var(--brand-red) / 0.55) 42%, rgb(var(--brand-red) / 0.18) 62%, rgb(var(--surface-page) / 0.72) 82%, rgb(var(--surface-page)) 100%)",
     // panel rows — thin diagonal lines at the aerial angle
-    "repeating-linear-gradient(123deg, rgba(15,23,42,0.16) 0 1.5px, transparent 1.5px 15px)",
+    "repeating-linear-gradient(123deg, rgba(0,0,0,0.16) 0 1.5px, transparent 1.5px 15px)",
     // cross seams between panel blocks
-    "repeating-linear-gradient(33deg, rgba(15,23,42,0.10) 0 1.5px, transparent 1.5px 92px)",
+    "repeating-linear-gradient(33deg, rgba(0,0,0,0.10) 0 1.5px, transparent 1.5px 92px)",
     // soft base tint under the panels
-    "linear-gradient(157deg, #cfd6de 0%, #eef1f4 70%, #ffffff 100%)",
+    "linear-gradient(157deg, rgb(var(--surface-ghost)) 0%, rgb(var(--surface-mute)) 70%, rgb(var(--surface-page)) 100%)",
   ].join(", "),
   backgroundBlendMode: "normal, multiply, multiply, normal",
 };
 
+/** Microsoft's four-square mark. These hexes are Microsoft's own brand colours
+ *  and are fixed by their identity guidelines — they are not ours to theme,
+ *  and they sit on a solid red button that looks the same either way. */
 function MicrosoftMark() {
   return (
     <svg width="18" height="18" viewBox="0 0 21 21" aria-hidden="true">
@@ -56,7 +75,9 @@ export default function LoginPage({ busy = false }: { busy?: boolean }) {
 
   return (
     <div className="relative min-h-screen w-full overflow-hidden" style={BG}>
-      {/* Castillo wordmark, top-left, on the red field */}
+      {/* Castillo wordmark, top-left. Always the white knockout — it sits on
+          the solid red band at the top of the gradient in both themes, so it
+          needs no variant. */}
       <img
         src={castilloWhite}
         alt="Castillo Engineering"
@@ -64,13 +85,17 @@ export default function LoginPage({ busy = false }: { busy?: boolean }) {
         draggable={false}
       />
 
-      {/* Sign-in card */}
+      {/* Sign-in card. `surface-card` is white in light — pixel-identical to
+          what this was — and the raised near-black in dark, so the card reads
+          as a lifted panel on the red field either way. */}
       <div className="relative z-10 flex min-h-screen items-center justify-center px-4 py-16">
-        <div className="w-full max-w-[430px] rounded-2xl border border-white/60 bg-white/[0.96] p-9 text-center shadow-[0_24px_60px_rgba(51,49,50,0.35)] backdrop-blur-sm sm:p-11">
+        <div className="w-full max-w-[430px] rounded-2xl border border-surface-border bg-surface-card/[0.96] p-9 text-center shadow-[0_24px_60px_rgba(0,0,0,0.35)] backdrop-blur-sm sm:p-11">
+          {/* Same knockout treatment as the header: "PMO" is black artwork
+              with no white variant, so it would disappear on the dark card. */}
           <img
             src={pmoLogo}
             alt="PMO 360"
-            className="mx-auto h-14 w-auto select-none sm:h-[60px]"
+            className="mx-auto h-14 w-auto select-none dark:brightness-0 dark:invert sm:h-[60px]"
             draggable={false}
           />
           <p className="mt-4 text-sm text-brand-gray">

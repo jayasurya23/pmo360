@@ -62,14 +62,15 @@ export default function Preview() {
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-[22px] items-start">
-        {/* The paper. PdfPagePreview brings its own viewer chrome (a dark
-            backdrop sized for the old layout); here the pages ARE the page,
-            so the wrapper neutralises that backdrop and supplies the
-            document-paper border + shadow instead. */}
-        <div
-          ref={paperRef}
-          className="card shadow-page overflow-hidden [&>div]:!bg-white"
-        >
+        {/* The paper. PdfPagePreview's own viewer chrome used to be forced flat
+            white here, because a mat sized for the old layout read as a stray
+            backdrop. It no longer needs overriding: the mat is `surface-mute`,
+            which themes with everything else, while the sheets inside are
+            `surface-paper` — white in both themes, because a rendered PDF page
+            is a document, not a UI surface. Letting the mat theme is also what
+            keeps the "Page 1 of N" captions legible; pinned white, they'd be
+            light grey on white the moment dark mode came on. */}
+        <div ref={paperRef} className="card shadow-page overflow-hidden">
           <PdfPagePreview url={pdfUrl} scale={1.6} />
         </div>
 
@@ -117,7 +118,13 @@ export default function Preview() {
                     }
                     aria-label={`Jump to page ${i + 1}`}
                     className={clsx(
-                      "w-14 aspect-[8.5/11] rounded bg-white flex items-end justify-center pb-[3px] text-[10px] transition",
+                      // `surface-card`, not `surface-paper` — these are page
+                      // *buttons*, not pages. They carry a number in
+                      // `brand-red`, which is tuned to read on a UI surface;
+                      // pinning them white would leave the active one light
+                      // pink on white in dark mode. Identical in light, where
+                      // card is white anyway.
+                      "w-14 aspect-[8.5/11] rounded bg-surface-card flex items-end justify-center pb-[3px] text-[10px] transition",
                       activePage === i + 1
                         ? "border-2 border-brand-red text-brand-red font-bold"
                         : "border border-surface-border text-brand-lightgray hover:border-brand-red",

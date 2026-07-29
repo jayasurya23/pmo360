@@ -24,7 +24,12 @@ import clsx from "clsx";
 
 /** Filetype square + human label per generated deliverable. Colours come from
  *  the redesign's filetype palette; anything the backend adds later falls
- *  back to a neutral square. */
+ *  back to a neutral square.
+ *
+ *  Each square is a tint-fill + saturated-label pair. Both halves are tokens
+ *  (a translucent brand fill over the card, and a text-weight brand colour) so
+ *  the fill darkens and the label lightens together when the theme flips —
+ *  a literal pale fill would strand dark text on a dark card. */
 const DELIVERABLE_META: Record<string, { label: string; square: string }> = {
   pdf: {
     label: "Client minutes",
@@ -32,11 +37,11 @@ const DELIVERABLE_META: Record<string, { label: string; square: string }> = {
   },
   docx: {
     label: "Editable Word copy",
-    square: "bg-[#e6effc] text-[#185fa5] text-[10px]",
+    square: "bg-brand-blue/15 text-brand-deepblue text-[10px]",
   },
   xlsx: {
     label: "Action log",
-    square: "bg-[#e4f3e7] text-brand-green text-[10px]",
+    square: "bg-brand-green/15 text-brand-green text-[10px]",
   },
 };
 
@@ -513,7 +518,7 @@ function ComposeEmailSection({
 
       <div className="px-5 py-4 flex flex-col gap-3">
         {userPrefs?.auto_send_minutes_on_finalize && !sendOk && (
-          <div className="text-xs rounded-lg border border-[#cfe6ee] bg-[#eaf6fa] px-3 py-2 text-brand-deepblue">
+          <div className="text-xs rounded-lg border border-brand-blue/30 bg-brand-blue/10 px-3 py-2 text-brand-deepblue">
             ⚡ Auto-send is on — once you finalize, the minutes will be emailed
             to all attendees with an address on file. Turn this off in Settings
             → Automation.

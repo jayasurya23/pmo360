@@ -2424,7 +2424,7 @@ export default function Proposals() {
             {/* Toolbar pins below the app header while scrolling the rows. The
                 header height is read from --app-header-h (set by Layout) so this
                 keeps working if the shell's header grows; 4rem is today's value. */}
-            <div className="sticky top-[var(--app-header-h,4rem)] z-20 flex items-center gap-2.5 px-4 py-3 border-b border-surface-hairline bg-white rounded-t-[10px]">
+            <div className="sticky top-[var(--app-header-h,4rem)] z-20 flex items-center gap-2.5 px-4 py-3 border-b border-surface-hairline bg-surface-card rounded-t-[10px]">
               <h3 className="section-title">Schedule</h3>
               {dirty && <UnsavedPill />}
               <span className="hidden xl:inline text-[11px] text-brand-lightgray">
@@ -2433,7 +2433,7 @@ export default function Proposals() {
               <div className="flex-1" />
               {/* Controls stay pinned to the right edge even when the table is
                   wider than the viewport and scrolled horizontally. */}
-              <div className="sticky right-4 flex items-center gap-2 bg-white pl-3">
+              <div className="sticky right-4 flex items-center gap-2 bg-surface-card pl-3">
                 <AddMenu onAdd={(type) => addTyped(type, selectedKey)} onSeed={seedStandardStructure} />
                 <button
                   className="btn-ghost text-xs py-1"
@@ -2828,7 +2828,7 @@ function LogoUploader({
         {label}
       </div>
       <div className="flex items-center gap-3">
-        <div className="flex h-16 w-28 shrink-0 items-center justify-center rounded-md border border-surface-border bg-white p-1">
+        <div className="flex h-16 w-28 shrink-0 items-center justify-center rounded-md border border-surface-border bg-surface-card p-1">
           {preview ? (
             <img
               src={preview}
@@ -2974,6 +2974,11 @@ function SummaryRow({
 // ---------------- disciplines card ----------------
 // Letter badges match the discipline tags used across the deliverables:
 // Electrical red, Civil blue, Structural brown.
+//
+// Civil's #185fa5 stays a literal (same call as NextAgenda's discipline
+// badges): it is a solid saturated fill under a white letter, so it reads on
+// both themes, and it is the exact blue printed on the PDF/DOCX discipline tag.
+// Both blue tokens lighten in dark mode, which would strand the white letter.
 const DISCIPLINE_BADGES: Record<string, { letter: string; cls: string }> = {
   "Electrical Engineering": { letter: "E", cls: "bg-brand-red" },
   "Civil Engineering": { letter: "C", cls: "bg-[#185fa5]" },
@@ -3246,15 +3251,20 @@ function Row({
   const disabled = !node.enabled;
   const isSection = milestone && node.indent_level === 0;
   const base = disabled
-    ? clsx("bg-surface-mute text-[#8a8887]", milestone && "font-bold")
+    ? clsx("bg-surface-mute text-brand-gray", milestone && "font-bold")
     : isSection
       ? "bg-surface-page font-bold"
-      : "bg-white";
+      : "bg-surface-card";
   // Dynamic interaction-highlight tags, which override the base fill. Same
   // signals as the desktop tree — selecting a row tints its predecessor green
   // and its successors red, a task whose predecessor is missing/disabled tints
   // gold, drag states gold/blue — restated in the brand palette so they sit with
   // the rest of the table instead of the old Bootstrap-era tints.
+  //
+  // The two tints with no status token (drag target blue, predecessor green)
+  // are translucent brand fills rather than pale literals: over the light card
+  // they land on the same pale wash as before, and over the dark card they
+  // become a dark tint instead of a white-hot band.
   const selNode = selectedKey
     ? allNodes.find((o) => o.key === selectedKey)?.node
     : undefined;
@@ -3272,9 +3282,9 @@ function Row({
   const rowFill = isDragging
     ? "bg-surface-mute"                   // dragging_item
     : isOver
-      ? "bg-[#eaf6fa]"                    // drag_target
+      ? "bg-brand-blue/15"                // drag_target
       : isPredOfSel
-        ? "bg-[#e4f3e7]"                  // predecessor_highlight
+        ? "bg-brand-green/15"             // predecessor_highlight
         : isSuccOfSel
           ? "bg-status-open-bg"           // successor_highlight
           : missingDep
@@ -3304,7 +3314,7 @@ function Row({
     "rounded-[5px] border border-transparent bg-transparent px-1 py-0.5 text-[12.5px] transition hover:border-surface-border focus:border-brand-red focus:outline-none disabled:hover:border-transparent";
   const cellNum = clsx(cellBase, "w-11 text-center tabular-nums");
   const cellSelect =
-    "rounded-[5px] border border-surface-border bg-white px-1.5 py-[3px] text-[11.5px] text-brand-gray transition focus:border-brand-red focus:outline-none";
+    "rounded-[5px] border border-surface-border bg-surface-card px-1.5 py-[3px] text-[11.5px] text-brand-gray transition focus:border-brand-red focus:outline-none";
 
   // Feature 1: only non-milestone (task/leaf) rows carry an editable cost,
   // predecessor, duration + lag. Milestones / sections show read-only roll-ups.
@@ -3395,7 +3405,7 @@ function Row({
             onChange={(e) => onUpdate(rowKey, { name: e.target.value })}
           />
           {disabled && (
-            <span className="shrink-0 rounded-full border border-surface-ghost bg-white px-[7px] py-px text-[10.5px] font-semibold text-brand-gray">
+            <span className="shrink-0 rounded-full border border-surface-ghost bg-surface-card px-[7px] py-px text-[10.5px] font-semibold text-brand-gray">
               not contracted
             </span>
           )}
@@ -3492,10 +3502,12 @@ function Row({
                 key={o.key}
                 value={o.node.id!}
                 // Section headings + milestones in Castillo red (bold) so they
-                // stand out from leaf tasks and are easier to pick.
+                // stand out from leaf tasks and are easier to pick. Read via
+                // the variable: `color-scheme: dark` paints the native option
+                // popup dark, where the light-theme red is unreadable.
                 style={
                   o.node.is_milestone
-                    ? { color: "#ad1f2b", fontWeight: 600 }
+                    ? { color: "rgb(var(--brand-red))", fontWeight: 600 }
                     : undefined
                 }
               >
@@ -3643,7 +3655,7 @@ function AddMenu({
         + Add ▾
       </button>
       {open && (
-        <div className="absolute right-0 z-20 mt-1 w-40 rounded-[10px] border border-surface-border bg-white shadow-page py-1 text-sm">
+        <div className="absolute right-0 z-20 mt-1 w-40 rounded-[10px] border border-surface-border bg-surface-card shadow-page py-1 text-sm">
           <button
             type="button"
             className="block w-full text-left px-3 py-1.5 text-brand-black hover:bg-surface-rowhover"
@@ -3807,9 +3819,9 @@ const Field = ({ label, children }: { label: string; children: ReactNode }) => (
 // Context-rail controls (proposal + version pickers and their pill buttons),
 // sized to the compact rail rather than the standard form controls.
 const railSelectCls =
-  "rounded-md border border-surface-border bg-white px-2.5 py-[5px] text-[13px] text-brand-black transition focus:border-brand-red focus:outline-none";
+  "rounded-md border border-surface-border bg-surface-card px-2.5 py-[5px] text-[13px] text-brand-black transition focus:border-brand-red focus:outline-none";
 const railPillCls =
-  "rounded-full border border-surface-border bg-white px-3 py-[5px] text-xs font-semibold text-brand-gray transition hover:border-brand-red hover:text-brand-red";
+  "rounded-full border border-surface-border bg-surface-card px-3 py-[5px] text-xs font-semibold text-brand-gray transition hover:border-brand-red hover:text-brand-red";
 
 /** Gold "unsaved edits" flag — shown wherever the working tree has drifted from
  *  the saved version (Project Information header + the Schedule toolbar). */
@@ -3888,7 +3900,7 @@ function ExportMenu({
         ⬇ Excel · ZIP · PDF ▾
       </button>
       {open && (
-        <div className="absolute right-0 z-30 mt-1 w-48 rounded-[10px] border border-surface-border bg-white py-1 text-sm shadow-page">
+        <div className="absolute right-0 z-30 mt-1 w-48 rounded-[10px] border border-surface-border bg-surface-card py-1 text-sm shadow-page">
           {item("⬇ Save Excel", onExcel)}
           {item("🗜 ZIP bundle", onZip)}
           {item("📄 PDF…", onPdf)}
@@ -4007,7 +4019,7 @@ function UploadDialog({
           }}
           className={clsx(
             "rounded-lg border-2 border-dashed p-6 text-center transition",
-            dragOver ? "border-brand-red bg-[#fdf6f6]" : "border-surface-ghost",
+            dragOver ? "border-brand-red bg-brand-red/5" : "border-surface-ghost",
           )}
         >
           {file ? (

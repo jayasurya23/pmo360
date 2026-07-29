@@ -1076,7 +1076,7 @@ function PdfTable({
         </thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} className="bg-white even:bg-surface-page">
+            <tr key={i} className="bg-surface-card even:bg-surface-page">
               {row.map((cell, j) => (
                 <td
                   key={j}
@@ -1114,7 +1114,7 @@ function PdfActionTable({ items }: { items: ParsedActionItem[] }) {
         </thead>
         <tbody>
           {items.map((a, i) => (
-            <tr key={i} className="bg-white even:bg-surface-page">
+            <tr key={i} className="bg-surface-card even:bg-surface-page">
               <td className="px-3 py-1.5 align-top text-center border-b border-surface-border text-brand-gray w-10">
                 {i + 1}
               </td>

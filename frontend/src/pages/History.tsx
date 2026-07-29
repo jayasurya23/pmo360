@@ -39,10 +39,10 @@ const NOTE_AREA_UNSPEC = "__unspecified__";
 /** Row-level ghost button — the `.btn-ghost` hover language at the smaller
  *  size these dense list rows call for (12px text, 7px radius). */
 const ROW_BTN =
-  "inline-flex items-center whitespace-nowrap rounded-[7px] border border-surface-ghost bg-white px-[13px] py-1.5 text-xs font-semibold text-brand-black transition hover:border-brand-red hover:text-brand-red";
+  "inline-flex items-center whitespace-nowrap rounded-[7px] border border-surface-ghost bg-surface-card px-[13px] py-1.5 text-xs font-semibold text-brand-black transition hover:border-brand-red hover:text-brand-red";
 /** Destructive sibling of ROW_BTN — muted until hover, then bright red. */
 const ROW_BTN_DANGER =
-  "inline-flex items-center whitespace-nowrap rounded-[7px] border border-surface-mute bg-white px-2.5 py-1.5 text-xs font-semibold text-brand-lightgray transition hover:border-brand-brightred hover:text-brand-brightred";
+  "inline-flex items-center whitespace-nowrap rounded-[7px] border border-surface-mute bg-surface-card px-2.5 py-1.5 text-xs font-semibold text-brand-lightgray transition hover:border-brand-brightred hover:text-brand-brightred";
 
 export default function History() {
   const {
@@ -764,7 +764,7 @@ function DownloadMenu({ meetingId }: { meetingId: number }) {
         ⬇ PDF · DOCX · XLSX <span className="opacity-60 ml-1">▾</span>
       </button>
       {open && (
-        <span className="absolute right-0 top-full mt-1 z-20 block min-w-[200px] rounded-[7px] border border-surface-border bg-white py-1 shadow-page">
+        <span className="absolute right-0 top-full mt-1 z-20 block min-w-[200px] rounded-[7px] border border-surface-border bg-surface-card py-1 shadow-page">
           {items.map((it) => (
             <a
               key={it.kind}
@@ -784,14 +784,16 @@ function DownloadMenu({ meetingId }: { meetingId: number }) {
 }
 
 /** Badge tints, shared by every pill on this page so the four tabs read as one
- *  surface. `blue` has no token — the pale fill only appears here. */
+ *  surface. `blue` has no status token, so it is built from a translucent
+ *  brand-blue fill plus the text-weight blue: same pale-blue pill on light,
+ *  dark fill with a light label on dark. */
 type Tone = "gray" | "gold" | "green" | "blue" | "red";
 const TONE_CLS: Record<Tone, string> = {
   gray: "bg-surface-border text-brand-gray border-brand-lightgray",
   gold: "bg-status-pending-bg text-status-pending-text border-status-pending-border",
   green:
     "bg-status-completed-bg text-status-completed-text border-status-completed-border",
-  blue: "bg-[#d9f0f7] text-brand-deepblue border-brand-blue",
+  blue: "bg-brand-blue/15 text-brand-deepblue border-brand-blue",
   red: "bg-status-open-bg text-status-open-text border-status-open-border",
 };
 const MINI_PILL =
@@ -906,7 +908,7 @@ function StageBadge({
         <span className="opacity-60">▾</span>
       </button>
       {open && (
-        <span className="absolute left-0 top-full mt-1 z-20 bg-white border border-surface-border rounded-[7px] shadow-page py-1 min-w-[100px] block">
+        <span className="absolute left-0 top-full mt-1 z-20 bg-surface-card border border-surface-border rounded-[7px] shadow-page py-1 min-w-[100px] block">
           {(Object.keys(cfg) as Stage[]).map((s) => (
             <button
               key={s}
@@ -946,7 +948,7 @@ function FilterPill({
         "px-3 py-1 rounded-full text-xs font-semibold border transition",
         active
           ? "bg-brand-black text-white border-brand-black"
-          : "bg-white text-brand-gray border-surface-border hover:border-brand-red hover:text-brand-red",
+          : "bg-surface-card text-brand-gray border-surface-border hover:border-brand-red hover:text-brand-red",
       )}
     >
       {children}

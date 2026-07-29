@@ -157,14 +157,14 @@ export default function PlannerCard() {
 
       <div className="px-5 py-3 space-y-3">
         {phase === "signed-out" && (
-          <div className="text-sm text-brand-deepblue bg-[#f4fafc] border border-[#cfe6ee] rounded-lg px-3 py-2">
+          <div className="text-sm text-brand-deepblue bg-brand-blue/10 border border-brand-blue/30 rounded-lg px-3 py-2">
             Sign in with your Castillo account to see the Microsoft Planner
             tasks assigned to you.
           </div>
         )}
 
         {phase === "needs-consent" && (
-          <div className="flex items-center justify-between gap-3 bg-[#f4fafc] border border-[#cfe6ee] rounded-lg px-3 py-2">
+          <div className="flex items-center justify-between gap-3 bg-brand-blue/10 border border-brand-blue/30 rounded-lg px-3 py-2">
             <div className="text-sm text-brand-deepblue">
               Connect Microsoft Planner so we can list the tasks assigned to you
               and let you tick them off here.
@@ -307,7 +307,7 @@ function TaskRow({
         disabled={busy}
         title="Mark complete"
         aria-label={`Mark "${task.title}" complete`}
-        className="h-[22px] w-[22px] shrink-0 rounded-full border-2 border-brand-lightgray text-[10px] leading-none text-brand-green flex items-center justify-center hover:border-brand-green hover:bg-[#f0f9f2] disabled:opacity-50 transition"
+        className="h-[22px] w-[22px] shrink-0 rounded-full border-2 border-brand-lightgray text-[10px] leading-none text-brand-green flex items-center justify-center hover:border-brand-green hover:bg-brand-green/10 disabled:opacity-50 transition"
       >
         {busy ? "…" : ""}
       </button>

@@ -34,6 +34,12 @@ interface SelectedAttendee {
 
 // 6 brand-tinted avatar fills for the "in this meeting" list, assigned per
 // company in first-seen order (Castillo is always red).
+//
+// These stay literal on purpose: they are categorical identity fills, not UI
+// chrome. Each is a saturated mid-tone carrying white initials, which reads on
+// both the light and the dark card, and an org keeping the same colour in both
+// themes is the point of the palette. Castillo is the exception below — it is
+// the brand red, so it tracks the brand token instead.
 const ORG_PALETTE = [
   "#c7bb2e", // gold
   "#1aa6c9", // blue
@@ -45,7 +51,13 @@ const ORG_PALETTE = [
 const CASTILLO_ORG = "Castillo Engineering";
 
 function colorForOrg(org: string, orgOrder: string[]): string {
-  if (org === CASTILLO_ORG) return "#ad1f2b";
+  // Castillo's own avatar reads through the brand token so it matches the
+  // brand-red chrome beside it in whichever theme is active.
+  if (org === CASTILLO_ORG) return "rgb(var(--brand-red))";
+  // Unaffiliated people get a neutral mid-dark disc. Deliberately NOT
+  // --brand-gray: that token lightens to near-white in dark mode, which would
+  // strand the white initials on a pale fill. #4d4d4f carries white text on
+  // both themes and stays visible against either card.
   if (org === "Other" || !org) return "#4d4d4f";
   const idx = Math.max(0, orgOrder.indexOf(org)) % ORG_PALETTE.length;
   return ORG_PALETTE[idx];
@@ -572,7 +584,7 @@ export default function Capture() {
       <div className="space-y-[22px]">
         {/* Currently editing banner */}
         {draftMeetingId && (
-          <div className="card flex flex-wrap items-center justify-between gap-3 border-[#cfe6ee] bg-[#eaf6fa] p-4">
+          <div className="card flex flex-wrap items-center justify-between gap-3 border-brand-blue/30 bg-brand-blue/10 p-4">
             <div className="text-sm text-brand-deepblue">
               📂 Editing <b>meeting #{draftMeetingId}</b>. Saving on Review will
               update this meeting in place.
@@ -677,7 +689,7 @@ export default function Capture() {
                   className={clsx(
                     "block cursor-pointer rounded-lg border-[1.5px] border-dashed border-surface-ghost",
                     "px-4 py-[18px] text-center text-[13px] text-brand-gray transition",
-                    "hover:border-brand-red hover:bg-[#fdf6f6] hover:text-brand-red"
+                    "hover:border-brand-red hover:bg-brand-red/5 hover:text-brand-red"
                   )}
                 >
                   <input
@@ -699,7 +711,7 @@ export default function Capture() {
               </div>
 
               {/* Gold footer strip — what the AI does, and how much it'll chew on. */}
-              <div className="flex flex-wrap items-center gap-2.5 border-t border-surface-hairline bg-[#fdfaf2] px-5 py-3">
+              <div className="flex flex-wrap items-center gap-2.5 border-t border-surface-hairline bg-brand-gold/10 px-5 py-3">
                 <span className="text-xs font-semibold text-brand-deepgold">
                   ✨ AI assist · {settings?.openai.model || "gpt-4o-mini"}
                 </span>
@@ -1179,7 +1191,7 @@ function Chip({
         "group relative inline-flex max-w-full items-center rounded-full border text-[12.5px] transition",
         active
           ? "border-brand-red bg-brand-red text-white"
-          : "border-surface-ghost bg-white text-brand-black hover:border-brand-red hover:text-brand-red"
+          : "border-surface-ghost bg-surface-card text-brand-black hover:border-brand-red hover:text-brand-red"
       )}
     >
       <button
@@ -1208,7 +1220,7 @@ function Chip({
             "absolute inset-y-px right-px flex items-center gap-1.5 rounded-full pl-2.5 pr-3",
             "opacity-0 transition-opacity pointer-events-none",
             "group-hover:opacity-100 group-hover:pointer-events-auto",
-            active ? "bg-brand-red" : "bg-white"
+            active ? "bg-brand-red" : "bg-surface-card"
           )}
         >
           {showEmailAction && (
@@ -1254,7 +1266,7 @@ function Chip({
 
       {editingEmail && (
         <div
-          className="absolute top-full left-0 z-10 mt-1 flex min-w-[240px] items-center gap-1 rounded-lg border border-surface-border bg-white p-2 shadow-page"
+          className="absolute top-full left-0 z-10 mt-1 flex min-w-[240px] items-center gap-1 rounded-lg border border-surface-border bg-surface-card p-2 shadow-page"
           onClick={(e) => e.stopPropagation()}
         >
           <input

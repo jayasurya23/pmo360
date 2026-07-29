@@ -255,8 +255,8 @@ function ScheduleTable({ items }: { items: any[] }) {
                 it.indent_level === 0
                   ? "bg-brand-nearwhite font-semibold"
                   : it.indent_level === 1
-                  ? "bg-white font-medium"
-                  : "bg-white"
+                  ? "bg-surface-card font-medium"
+                  : "bg-surface-card"
               }
             >
               <td

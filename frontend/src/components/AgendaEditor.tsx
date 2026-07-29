@@ -136,7 +136,7 @@ export function PreviewDisclosure({
         </svg>
       </button>
       {open && (
-        <div className="px-4 py-3 border-t border-surface-border bg-white">
+        <div className="px-4 py-3 border-t border-surface-border bg-surface-card">
           {children}
         </div>
       )}

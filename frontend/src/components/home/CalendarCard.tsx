@@ -419,7 +419,7 @@ export default function CalendarCard() {
 
 function SignedOutCta() {
   return (
-    <div className="flex items-center justify-between gap-3 bg-[#f4fafc] border border-[#cfe6ee] rounded-lg px-3 py-2">
+    <div className="flex items-center justify-between gap-3 bg-brand-blue/10 border border-brand-blue/30 rounded-lg px-3 py-2">
       <div className="text-sm text-brand-deepblue">
         Sign in with your Castillo account to see upcoming Outlook meetings
         and pre-fill agendas from them.
@@ -431,7 +431,7 @@ function SignedOutCta() {
 
 function ConsentCta({ onConnect }: { onConnect: () => void }) {
   return (
-    <div className="flex items-center justify-between gap-3 bg-[#f4fafc] border border-[#cfe6ee] rounded-lg px-3 py-2">
+    <div className="flex items-center justify-between gap-3 bg-brand-blue/10 border border-brand-blue/30 rounded-lg px-3 py-2">
       <div className="text-sm text-brand-deepblue">
         Connect your Outlook calendar so we can list your week ahead and
         link those meetings to portfolios.
@@ -675,7 +675,7 @@ function EventRowItem({
       {pickerOpen && (
         <>
           {event.isRecurring && (
-            <div className="mt-2 text-[11px] text-brand-deepblue bg-[#f4fafc] border border-[#cfe6ee] rounded px-2 py-1">
+            <div className="mt-2 text-[11px] text-brand-deepblue bg-brand-blue/10 border border-brand-blue/30 rounded px-2 py-1">
               🔁 This is a recurring meeting — your choice links{" "}
               <strong>every occurrence</strong> in the series (and future ones).
             </div>
@@ -705,7 +705,7 @@ function MatchBadge({ match }: { match: CalendarMatchOut }) {
   if (match.match_reason === "email") {
     return (
       <span
-        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-[#d9f0f7] text-brand-deepblue"
+        className="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded bg-brand-blue/15 text-brand-deepblue"
         title="Matched by an attendee email in the portfolio's roster."
       >
         Auto · email
@@ -754,7 +754,7 @@ function ManualPortfolioPicker({
   }, [portfolios, query, clientMap]);
 
   return (
-    <div className="mt-2 rounded-lg border border-surface-border bg-white p-2 space-y-2">
+    <div className="mt-2 rounded-lg border border-surface-border bg-surface-card p-2 space-y-2">
       <input
         type="text"
         autoFocus

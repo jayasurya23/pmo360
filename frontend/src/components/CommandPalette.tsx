@@ -154,15 +154,19 @@ export default function CommandPalette() {
 
   if (!open) return null;
 
+  // The backdrop scrim stays true black in both themes: a scrim's job is to
+  // darken what's behind it, and `brand-black` inverts to near-WHITE in dark,
+  // which would wash the page out instead of dimming it. Dark goes a step
+  // heavier because a 40% veil barely registers over an already-dark page.
   return createPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-start justify-center pt-24 px-4 bg-brand-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-start justify-center pt-24 px-4 bg-black/40 dark:bg-black/60 backdrop-blur-sm"
       onMouseDown={(e) => {
         // Click on backdrop closes; clicks bubbling from the card don't.
         if (e.target === e.currentTarget) setOpen(false);
       }}
     >
-      <div className="w-full max-w-xl bg-white rounded-[10px] shadow-2xl border border-surface-border overflow-hidden">
+      <div className="w-full max-w-xl bg-surface-card rounded-[10px] shadow-2xl border border-surface-border overflow-hidden">
         <div className="border-b border-surface-hairline flex items-center px-4">
           <SearchIcon />
           <input
@@ -254,24 +258,58 @@ function ResultsList({
   );
 }
 
-const KIND_STYLE: Record<SearchResult["kind"], { bg: string; label: string }> =
-  {
-    client: { bg: "#1aa6c9", label: "Client" },
-    portfolio: { bg: "#1aa6c9", label: "Portfolio" },
-    meeting: { bg: "#278747", label: "Meeting" },
-    // brand-deepgold, not brand-gold: the badge carries white text, and the
-    // base gold is too light to hold it (the rest of the app only uses gold
-    // as a tint behind deepgold text).
-    agenda: { bg: "#8a8021", label: "Agenda" },
-    action: { bg: "#ad1f2b", label: "Action" },
-  };
+/**
+ * Kind badges, in the same tint-plus-deep-text language as the status pills.
+ *
+ * These used to be solid brand fills carrying white text, which only works
+ * while the fill is dark. It isn't in dark mode: blue and gold both lighten to
+ * hold their own against a near-black surface, and white text on top of them
+ * lands around 2:1. So each badge is now a low-alpha wash of its hue under the
+ * readable "-on"/"deep" step of the same hue — the pairing the token layer
+ * already guarantees is legible on whichever surface is current.
+ *
+ * Values are read through the CSS variables rather than the Tailwind classes
+ * because they're looked up from a data map, so they can't be class names.
+ */
+const KIND_STYLE: Record<
+  SearchResult["kind"],
+  { bg: string; fg: string; label: string }
+> = {
+  client: {
+    bg: "rgb(var(--brand-blue) / 0.16)",
+    fg: "rgb(var(--brand-deepblue))",
+    label: "Client",
+  },
+  portfolio: {
+    bg: "rgb(var(--brand-blue) / 0.16)",
+    fg: "rgb(var(--brand-deepblue))",
+    label: "Portfolio",
+  },
+  meeting: {
+    bg: "rgb(var(--brand-green) / 0.16)",
+    fg: "rgb(var(--brand-green-on))",
+    label: "Meeting",
+  },
+  // Gold needs a heavier wash than the rest: it's the palest hue in the brand,
+  // so 16% barely separates from the card.
+  agenda: {
+    bg: "rgb(var(--brand-gold) / 0.22)",
+    fg: "rgb(var(--brand-deepgold))",
+    label: "Agenda",
+  },
+  action: {
+    bg: "rgb(var(--brand-red) / 0.16)",
+    fg: "rgb(var(--brand-red-on))",
+    label: "Action",
+  },
+};
 
 function KindBadge({ kind }: { kind: SearchResult["kind"] }) {
-  const { bg, label } = KIND_STYLE[kind];
+  const { bg, fg, label } = KIND_STYLE[kind];
   return (
     <span
-      className="shrink-0 mt-0.5 text-[10px] font-bold text-white uppercase tracking-wider rounded px-1.5 py-0.5"
-      style={{ backgroundColor: bg }}
+      className="shrink-0 mt-0.5 text-[10px] font-bold uppercase tracking-wider rounded px-1.5 py-0.5"
+      style={{ backgroundColor: bg, color: fg }}
     >
       {label}
     </span>

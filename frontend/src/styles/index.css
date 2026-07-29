@@ -211,11 +211,11 @@ input[type="number"] {
   /* Ghost buttons and links share one hover language across the app: the
      border and the text both go brand red. */
   .btn-ghost {
-    @apply btn border border-surface-ghost bg-white text-brand-gray
+    @apply btn border border-surface-ghost bg-surface-card text-brand-gray
       hover:border-brand-red hover:text-brand-red;
   }
   .btn-danger {
-    @apply btn bg-white border border-surface-ghost text-brand-gray
+    @apply btn bg-surface-card border border-surface-ghost text-brand-gray
       hover:border-brand-brightred hover:text-brand-brightred;
   }
 
@@ -223,7 +223,7 @@ input[type="number"] {
   .input,
   .select,
   .textarea {
-    @apply w-full rounded-md border border-surface-border bg-white px-3 py-2 text-sm
+    @apply w-full rounded-md border border-surface-border bg-surface-card px-3 py-2 text-sm
       text-brand-black placeholder:text-brand-lightgray
       focus:outline-none focus:border-brand-red;
   }
@@ -232,7 +232,7 @@ input[type="number"] {
   .input:focus,
   .select:focus,
   .textarea:focus {
-    outline: 2px solid rgba(173, 31, 43, 0.15);
+    outline: 2px solid rgb(var(--brand-red) / 0.25);
     outline-offset: 0;
   }
   .textarea {
@@ -260,10 +260,10 @@ input[type="number"] {
   /* Cards are flat — a hairline border, no shadow. Depth is reserved for
      things that are literally paper (the Preview/Send document page). */
   .card {
-    @apply bg-white rounded-[10px] border border-surface-border;
+    @apply bg-surface-card rounded-[10px] border border-surface-border;
   }
   .surface {
-    @apply bg-white rounded-[10px] border border-surface-border;
+    @apply bg-surface-card rounded-[10px] border border-surface-border;
   }
   .section-title {
     @apply text-brand-black font-bold text-[15px] flex items-center gap-2;

@@ -67,7 +67,7 @@ export function StatusSelect({
       )}
     >
       {STATUS_OPTIONS.map((o) => (
-        <option key={o} value={o} className="bg-white text-brand-black">
+        <option key={o} value={o} className="bg-surface-card text-brand-black">
           {o.replace(/^./, (c) => c.toUpperCase())}
         </option>
       ))}

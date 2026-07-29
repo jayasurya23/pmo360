@@ -519,7 +519,7 @@ function BriefingCard({
       key: "meetings",
       count: briefing.new_meetings_touched,
       label: "meetings touched",
-      className: "bg-[#d9f0f7] text-brand-deepblue",
+      className: "bg-brand-blue/15 text-brand-deepblue",
     },
     {
       key: "agendas",

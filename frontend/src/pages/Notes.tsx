@@ -326,7 +326,7 @@ function FilterPill({
         "rounded-full border px-3 py-1 text-xs font-semibold transition",
         active
           ? "border-brand-black bg-brand-black text-white"
-          : "border-surface-border bg-white text-brand-gray hover:border-brand-red hover:text-brand-red",
+          : "border-surface-border bg-surface-card text-brand-gray hover:border-brand-red hover:text-brand-red",
       )}
     >
       {label} <span className="tabular-nums">{count}</span>
