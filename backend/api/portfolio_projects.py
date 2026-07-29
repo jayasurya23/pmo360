@@ -106,8 +106,13 @@ def delete_portfolio_project(
     pp = _get(db, ppid)
     # Null dangling proposal pointers first (mirrors the portfolio-delete handler
     # that nulls Proposal.portfolio_id) so deleting a Project never orphans a FK.
+    # is_active_for_project has to clear in the same statement: the partial
+    # unique index is scoped to project_id IS NOT NULL, so a left-behind True is
+    # perfectly legal and would silently make the proposal active again the
+    # moment someone re-links it to another project.
     db.query(Proposal).filter(Proposal.project_id == ppid).update(
-        {Proposal.project_id: None}, synchronize_session=False
+        {Proposal.project_id: None, Proposal.is_active_for_project: False},
+        synchronize_session=False,
     )
     db.delete(pp)
     return None

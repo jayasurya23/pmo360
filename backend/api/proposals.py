@@ -22,6 +22,7 @@ from typing import Optional
 from fastapi import (
     APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import require_db_user
@@ -34,7 +35,7 @@ from schemas.common import (
     ProposalOut, ProposalListItem, ProposalVersionOut, ProposalVersionDetail,
     ProposalBoardResponse, ProposalPatch, ProposalTreePut, ProposalRecomputeRequest,
     ProposalLinkRequest, ProposalLinkProjectRequest, ProposalSyncRequest, ProposalSyncResult,
-    ProposalToTimelineRequest, ProposalToTimelineResult,
+    ProposalToTimelineRequest, ProposalToTimelineResult, ProposalTimelineResyncOut,
     ProposalTimelineMilestonesOut, ProposalTimelineMilestoneOut,
     ProposalTimelineBarRequest, ProposalTimelineBarResult,
     ProposalLogos, ProposalLogosUpdate,
@@ -46,7 +47,7 @@ from api.schedules import save_schedule
 from proposal.serialization import (
     parse_workbook_to_tree, serialize_tree, deserialize_tree,
     info_dict_to_project_info, build_info_json, project_info_from_json,
-    tree_summary, tree_to_schedule_rows, _mdy_to_date,
+    tree_summary, tree_to_schedule_rows, _mdy_to_date, _to_mdy,
 )
 from proposal.scheduling import (
     ScheduleConfig, calculate_all_dates, CircularDependencyError,
@@ -121,6 +122,82 @@ def _apply_summary(version: ProposalVersion, items) -> None:
     version.computed_start_date = s["start_date"]
     version.computed_end_date = s["end_date"]
     version.total_price = s["total_price"]
+
+
+async def _parse_upload(
+    file: UploadFile,
+    source: str = "workbook",
+    project_start: Optional[str] = None,
+    utilization_percent: float = 100.0,
+) -> "tuple[list, dict, ScheduleConfig, str]":
+    """Read an uploaded spreadsheet -> ``(items, info_json, cfg, source_format)``.
+
+    The single parse pipeline behind every entry point that turns a file into a
+    proposal tree: a brand-new proposal from a cost workbook (/upload) or from a
+    saved template (/template), and a new VERSION of an existing proposal from
+    either (/{pid}/versions/from-upload). Kept in one place so the three callers
+    can't drift — the error strings, the extension guard and the template's
+    "no re-injection" rule are all load-bearing.
+
+    ``source="workbook"`` runs the Castillo cost-workbook parser, which injects
+    Client Review / Record Drawings rows and schedules them. ``"template"``
+    rebuilds a previously exported tree verbatim (deserialize, NOT build_tree, so
+    nothing is injected twice) and only re-runs the date calc.
+    """
+    src = (source or "workbook").strip().lower()
+    if src not in ("workbook", "template"):
+        raise HTTPException(400, "source must be 'workbook' or 'template'.")
+
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xlsx") or name.endswith(".xlsm")):
+        raise HTTPException(400, (
+            "Template must be a saved proposal workbook (.xlsx / .xlsm)."
+            if src == "template"
+            else "Proposal upload must be a Castillo cost workbook (.xlsx / .xlsm)."
+        ))
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Empty file")
+    source_format = "xlsm" if name.endswith(".xlsm") else "xlsx"
+
+    if src == "template":
+        try:
+            parsed = read_template_xlsx(data)
+        except Exception as exc:  # noqa: BLE001 — surface a clean 400 to the UI
+            raise HTTPException(400, f"Could not read template workbook: {exc}") from exc
+        items, id_map = deserialize_tree(parsed["tree_json"])
+        cfg = _cfg_from_json(parsed["config_json"])
+        # An explicitly supplied start beats the template's stored one: a saved
+        # template is a reusable shape, and re-dating it is the whole point of
+        # loading it into a new version.
+        if project_start:
+            cfg.project_start = _to_mdy(project_start) or cfg.project_start
+        if not cfg.project_start:
+            from datetime import datetime
+            cfg.project_start = datetime.now().strftime("%m/%d/%y")
+        try:
+            calculate_all_dates(items, id_map, cfg)
+        except CircularDependencyError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return items, parsed["info_json"], cfg, source_format
+
+    tmp = tempfile.NamedTemporaryFile(suffix=f".{source_format}", delete=False)
+    try:
+        tmp.write(data)
+        tmp.close()
+        try:
+            items, _id_map, info, cfg = parse_workbook_to_tree(
+                tmp.name, project_start=project_start,
+                utilization_percent=utilization_percent,
+            )
+        except Exception as exc:  # noqa: BLE001 — surface a clean 400 to the UI
+            raise HTTPException(400, f"Could not parse workbook: {exc}") from exc
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+    return items, build_info_json(info, info_dict_to_project_info(info)), cfg, source_format
 
 
 def _get_proposal(pid: int, db: Session) -> Proposal:
@@ -382,34 +459,13 @@ async def upload_proposal(
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
 ):
-    name = (file.filename or "").lower()
-    if not (name.endswith(".xlsx") or name.endswith(".xlsm")):
-        raise HTTPException(400, "Proposal upload must be a Castillo cost workbook (.xlsx / .xlsm).")
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "Empty file")
     if portfolio_id is not None and not db.get(Project, portfolio_id):
         raise HTTPException(404, "Portfolio not found")
 
-    suffix = ".xlsm" if name.endswith(".xlsm") else ".xlsx"
-    tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
-    try:
-        tmp.write(data)
-        tmp.close()
-        try:
-            items, _id_map, info, cfg = parse_workbook_to_tree(
-                tmp.name, project_start=project_start,
-                utilization_percent=utilization_percent,
-            )
-        except Exception as exc:  # noqa: BLE001 — surface a clean 400 to the UI
-            raise HTTPException(400, f"Could not parse workbook: {exc}") from exc
-    finally:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
-
-    pinfo = info_dict_to_project_info(info)
+    items, info_json, cfg, source_format = await _parse_upload(
+        file, "workbook", project_start, utilization_percent,
+    )
+    pinfo = project_info_from_json(info_json)
     proposal = Proposal(
         title=pinfo.project_title or (file.filename or "Untitled Proposal"),
         customer_name=pinfo.customer_name or None,
@@ -426,12 +482,12 @@ async def upload_proposal(
     v = ProposalVersion(
         proposal_id=proposal.id, label="V1",
         tree_json=serialize_tree(items),
-        info_json=build_info_json(info, pinfo),
+        info_json=info_json,
         config_json=_cfg_to_json(cfg),
         computed_start_date=summary["start_date"],
         computed_end_date=summary["end_date"],
         total_price=summary["total_price"],
-        source_filename=file.filename, source_format=suffix.lstrip("."),
+        source_filename=file.filename, source_format=source_format,
         created_by_id=actor.id,
     )
     db.add(v)
@@ -445,6 +501,7 @@ async def upload_proposal(
 def list_proposals(
     portfolio_id: Optional[int] = Query(None),
     project_id: Optional[int] = Query(None),
+    active_only: bool = Query(False),
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
 ):
@@ -453,6 +510,10 @@ def list_proposals(
         q = q.filter(Proposal.portfolio_id == portfolio_id)
     if project_id is not None:
         q = q.filter(Proposal.project_id == project_id)
+    if active_only:
+        # The picker deliberately does NOT use this (history rows must stay
+        # reachable); it exists for callers that want only the live proposal.
+        q = q.filter(Proposal.is_active_for_project.is_(True))
     out = []
     for p in q.order_by(Proposal.updated_at.desc()).all():
         active = db.get(ProposalVersion, p.current_version_id) if p.current_version_id else None
@@ -591,7 +652,13 @@ def put_tree(
     _apply_summary(v, items)
     v.version = (v.version or 1) + 1
     db.flush()
-    return _version_detail(v)
+    detail = _version_detail(v)
+    # Only the ACTIVE version owns the Timeline projection — re-dating the board
+    # from an archived version would overwrite it with stale geometry.
+    if p.current_version_id == v.id:
+        rs = _resync_proposal_timeline(p, v, db, actor)
+        detail.timeline_resync = ProposalTimelineResyncOut(**rs) if rs else None
+    return detail
 
 
 @router.post("/{pid}/versions/{vid}/recompute", response_model=ProposalVersionDetail)
@@ -615,7 +682,11 @@ def recompute_version(
     _apply_summary(v, items)
     v.version = (v.version or 1) + 1
     db.flush()
-    return _version_detail(v)
+    detail = _version_detail(v)
+    if p.current_version_id == v.id:   # see put_tree — active version only
+        rs = _resync_proposal_timeline(p, v, db, actor)
+        detail.timeline_resync = ProposalTimelineResyncOut(**rs) if rs else None
+    return detail
 
 
 @router.get("/{pid}/versions", response_model=list[ProposalVersionOut])
@@ -633,8 +704,13 @@ def new_version(pid: int, db: Session = Depends(get_db), actor=Depends(require_d
     label = _next_label(p)
     new_info = copy.deepcopy(active.info_json) or {}
     new_info["version"] = label
+    # Attach via the relationship rather than assigning proposal_id. `_next_label`
+    # just loaded `p.versions`, and a raw FK assignment never reaches an
+    # already-loaded collection — so `_board()` would report the new version as
+    # active while still listing only the old ones, and the picker wouldn't
+    # catch up until the page was reloaded.
     nv = ProposalVersion(
-        proposal_id=p.id, label=label,
+        label=label,
         tree_json=copy.deepcopy(active.tree_json),
         info_json=new_info,
         config_json=copy.deepcopy(active.config_json),
@@ -644,11 +720,93 @@ def new_version(pid: int, db: Session = Depends(get_db), actor=Depends(require_d
         source_filename=active.source_filename, source_format=active.source_format,
         created_by_id=actor.id,
     )
-    db.add(nv)
+    p.versions.append(nv)
     db.flush()
     p.current_version_id = nv.id
     db.flush()
-    return _board(p, db)
+    rs = _resync_proposal_timeline(p, nv, db, actor)
+    board = _board(p, db)
+    board.timeline_resync = ProposalTimelineResyncOut(**rs) if rs else None
+    return board
+
+
+# info_json keys a new-from-upload version inherits from the version it
+# supersedes: the PM's deliverable/export preferences, which belong to the
+# proposal rather than to any one spreadsheet. Deliberately NOT carried:
+# `split_deposit_memory` (its keys are task ids from the old tree, which
+# build_tree has just re-minted) and `client_review_days` (already baked into
+# the freshly parsed durations).
+_UPLOAD_CARRY_FORWARD_INFO_KEYS = (
+    "schedule_table_mode", "schedule_table_modes", "include_gantt",
+    "milestones_only_pdf", "logo_path", "client_logo_path",
+)
+
+
+@router.post("/{pid}/versions/from-upload", response_model=ProposalBoardResponse, status_code=201)
+async def new_version_from_upload(
+    pid: int,
+    file: UploadFile = File(...),
+    source: str = Form("workbook"),
+    project_start: Optional[str] = Form(None),
+    utilization_percent: float = Form(100.0),
+    update_identity: bool = Form(False),
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+):
+    """Add a version to an EXISTING proposal from a freshly uploaded spreadsheet.
+
+    The re-bid path: same proposal, same Timeline project, same client — a new
+    cost workbook (or saved template). The parsed tree REPLACES the old one, so
+    row locks and hand edits from the previous version do not survive (build_tree
+    mints fresh ids and no id mapping exists); the dialog says so. Export/PDF
+    preferences do carry over.
+    """
+    p = _get_proposal(pid, db)
+    prev = _active_version(p, db)
+    items, info_json, cfg, source_format = await _parse_upload(
+        file, source, project_start, utilization_percent,
+    )
+
+    # Label before the append: _next_label() reads p.versions, which must not yet
+    # contain the row we are about to add.
+    label = _next_label(p)
+    prev_info = (prev.info_json if prev else None) or {}
+    for k in _UPLOAD_CARRY_FORWARD_INFO_KEYS:
+        if k in prev_info:
+            info_json[k] = prev_info[k]
+    # The spreadsheet's own version cell is meaningless here — _build_proposal_pdf
+    # stamps info.version onto the Gantt header, so without this every uploaded
+    # version's PDF would claim to be whatever the file said (usually "V1").
+    info_json["version"] = label
+
+    if update_identity:
+        pinfo = project_info_from_json(info_json)
+        p.title = pinfo.project_title or p.title
+        p.customer_name = pinfo.customer_name or p.customer_name
+        p.project_location = pinfo.project_location or p.project_location
+        p.project_state = pinfo.project_state or p.project_state
+        p.project_size_mw = pinfo.project_size_mw or p.project_size_mw
+        p.updated_by_id = actor.id
+        p.version = (p.version or 1) + 1
+
+    nv = ProposalVersion(
+        label=label,
+        tree_json=serialize_tree(items),
+        info_json=info_json,
+        config_json=_cfg_to_json(cfg),
+        source_filename=file.filename, source_format=source_format,
+        created_by_id=actor.id,
+    )
+    _apply_summary(nv, items)
+    # Relationship append, never proposal_id= — see new_version() above.
+    p.versions.append(nv)
+    db.flush()
+    p.current_version_id = nv.id
+    db.flush()
+    rs = _resync_proposal_timeline(p, nv, db, actor)
+    board = _board(p, db)
+    board.timeline_resync = ProposalTimelineResyncOut(**rs) if rs else None
+    return board
 
 
 @router.post("/{pid}/versions/{vid}/activate", response_model=ProposalBoardResponse)
@@ -660,7 +818,10 @@ def activate_version(
     v = _get_version(p, vid, db)
     p.current_version_id = v.id
     db.flush()
-    return _board(p, db)
+    rs = _resync_proposal_timeline(p, v, db, actor)
+    board = _board(p, db)
+    board.timeline_resync = ProposalTimelineResyncOut(**rs) if rs else None
+    return board
 
 
 # ---------------------------------------------------------------------------
@@ -804,32 +965,10 @@ async def import_template(
     actor=Depends(require_db_user),
 ):
     """Load a saved proposal template .xlsx -> fresh Proposal + V1 (no injection)."""
-    name = (file.filename or "").lower()
-    if not (name.endswith(".xlsx") or name.endswith(".xlsm")):
-        raise HTTPException(400, "Template must be a saved proposal workbook (.xlsx / .xlsm).")
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "Empty file")
     if portfolio_id is not None and not db.get(Project, portfolio_id):
         raise HTTPException(404, "Portfolio not found")
 
-    try:
-        parsed = read_template_xlsx(data)
-    except Exception as exc:  # noqa: BLE001 — surface a clean 400 to the UI
-        raise HTTPException(400, f"Could not read template workbook: {exc}") from exc
-
-    # Reconstruct the live tree (no build_tree node-injection) + recompute dates.
-    items, id_map = deserialize_tree(parsed["tree_json"])
-    cfg = _cfg_from_json(parsed["config_json"])
-    if not cfg.project_start:
-        from datetime import datetime
-        cfg.project_start = datetime.now().strftime("%m/%d/%y")
-    try:
-        calculate_all_dates(items, id_map, cfg)
-    except CircularDependencyError as exc:
-        raise HTTPException(422, str(exc)) from exc
-
-    info_json = parsed["info_json"]
+    items, info_json, cfg, source_format = await _parse_upload(file, "template")
     pinfo = project_info_from_json(info_json)
     proposal = Proposal(
         title=pinfo.project_title or (file.filename or "Imported Proposal"),
@@ -853,7 +992,7 @@ async def import_template(
         computed_end_date=summary["end_date"],
         total_price=summary["total_price"],
         source_filename=file.filename,
-        source_format=("xlsm" if name.endswith(".xlsm") else "xlsx"),
+        source_format=source_format,
         created_by_id=actor.id,
     )
     db.add(v)
@@ -866,6 +1005,36 @@ async def import_template(
 # ---------------------------------------------------------------------------
 # Portfolio tie-in: link / unlink / sync
 # ---------------------------------------------------------------------------
+def _active_proposal_conflict() -> HTTPException:
+    """409 for a lost race on the one-active-proposal-per-Project slot. Shaped
+    like _check_stale's body so the UI's existing stale-version handling picks
+    it up unchanged."""
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "stale_version",
+            "message": "Someone else just changed the active proposal for this "
+                       "project. Reload first.",
+        },
+    )
+
+
+def _activate_for_project(p: Proposal, db: Session) -> None:
+    """Hand ``p`` the single ACTIVE slot on its Project, demoting the incumbent.
+
+    The demotion is flushed BEFORE the promotion: the partial unique index on
+    (project_id) WHERE active is evaluated per statement, so promoting first
+    would collide with the very row we are about to demote.
+    """
+    (db.query(Proposal)
+       .filter(Proposal.project_id == p.project_id,
+               Proposal.id != p.id,
+               Proposal.is_active_for_project.is_(True))
+       .update({Proposal.is_active_for_project: False}, synchronize_session=False))
+    db.flush()
+    p.is_active_for_project = True
+
+
 @router.patch("/{pid}/link", response_model=ProposalOut)
 def link_portfolio(
     pid: int, payload: ProposalLinkRequest,
@@ -876,8 +1045,11 @@ def link_portfolio(
         raise HTTPException(404, "Portfolio not found")
     p.portfolio_id = payload.portfolio_id
     # A direct portfolio link bypasses the project tier — clear any project so it
-    # can't dangle against a different portfolio.
+    # can't dangle against a different portfolio. The ACTIVE slot belongs to a
+    # Project, so it goes with it; leaving it set would silently re-activate the
+    # proposal the moment it is linked to a project again.
     p.project_id = None
+    p.is_active_for_project = False
     p.updated_by_id = actor.id
     p.version = (p.version or 1) + 1
     db.flush()
@@ -891,7 +1063,11 @@ def link_project(
 ):
     """Link a proposal to a Project (the tier under a Portfolio). The proposal's
     ``portfolio_id`` is derived from the project's portfolio so portfolio-scoped
-    behavior (Sync, lists, CO rollups) keeps working."""
+    behavior (Sync, lists, CO rollups) keeps working.
+
+    ``make_active`` unset means True — linking has always made the proposal the
+    live one, and pre-existing callers must keep that. Pass False to file it as
+    history under the project instead."""
     p = _get_proposal(pid, db)
     _check_stale(payload.expected_version, p.version)
     proj = db.get(PortfolioProject, payload.project_id)
@@ -899,9 +1075,42 @@ def link_project(
         raise HTTPException(404, "Project not found")
     p.project_id = proj.id
     p.portfolio_id = proj.portfolio_id   # derive the portfolio from the project
+    # Drop the old Project's ACTIVE slot BEFORE anything can flush: carrying it
+    # across would collide with the new Project's incumbent on the partial
+    # unique index. _activate_for_project re-takes it when make_active.
+    p.is_active_for_project = False
+    if payload.make_active is None or payload.make_active:
+        _activate_for_project(p, db)
     p.updated_by_id = actor.id
     p.version = (p.version or 1) + 1
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise _active_proposal_conflict() from exc
+    return p
+
+
+@router.post("/{pid}/activate-for-project", response_model=ProposalOut)
+def activate_proposal_for_project(
+    pid: int, db: Session = Depends(get_db), actor=Depends(require_db_user),
+):
+    """Promote this proposal to the live one for its Project, demoting whichever
+    sibling holds the slot today. There is no matching deactivate: "no active
+    proposal" is reached by unlinking, or by activating a sibling."""
+    p = _get_proposal(pid, db)
+    if not p.project_id:
+        raise HTTPException(400, "Link the proposal to a project first.")
+    if p.is_active_for_project:
+        return p        # already live — don't churn the version counter
+    _activate_for_project(p, db)
+    p.updated_by_id = actor.id
+    p.version = (p.version or 1) + 1
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise _active_proposal_conflict() from exc
     return p
 
 
@@ -910,6 +1119,7 @@ def unlink_portfolio(pid: int, db: Session = Depends(get_db), actor=Depends(requ
     p = _get_proposal(pid, db)
     p.portfolio_id = None
     p.project_id = None   # project implies a portfolio, so clear both
+    p.is_active_for_project = False   # …and the ACTIVE slot belongs to a project
     p.updated_by_id = actor.id
     p.version = (p.version or 1) + 1
     db.flush()
@@ -1077,6 +1287,93 @@ def _proposal_timeline_project(p: Proposal, v: ProposalVersion, db: Session, act
     return proj
 
 
+def _resync_proposal_timeline(p, v, db, actor, *, rename_project: bool = False) -> "dict | None":
+    """Re-project version `v` onto the proposal's EXISTING Timeline project.
+
+    NO-OP (returns None) when the proposal has never been sent to the Timeline.
+    Rebuilds only bars this projection owns and that no human has touched;
+    preserves + reports everything else.
+
+    Failing to INTERPRET the proposal (malformed tree_json or info_json) returns
+    None rather than raising: there is one transaction per request
+    (core/deps.py), so letting a projection error escape would roll back the PM's
+    proposal save along with it. A genuine database write failure is deliberately
+    NOT swallowed — after a failed flush the session cannot be committed anyway,
+    so hiding it would trade a visible 500 for a silently dropped save.
+    """
+    from datetime import datetime          # house style: function-local import
+    proj = (db.query(TimelineProject)
+              .filter(TimelineProject.source_proposal_id == p.id)
+              .order_by(TimelineProject.id).first())
+    if proj is None:
+        return None                                    # guard rail 1
+    try:
+        bars, skipped = _proposal_timeline_bars(v)
+        # Resolved inside the same guard: project_info_from_json reads
+        # PM-supplied info_json, so it is the other half of the "bad stored JSON
+        # must not cost the caller their save" risk.
+        renamed = _proposal_display(p, v) if rename_project else None
+    except Exception:
+        return None                                    # guard rail 3
+    if not bars:
+        return None                                    # guard rail 2 (never a 422)
+
+    existing = (db.query(TimelineAssignment)
+                  .filter(TimelineAssignment.timeline_project_id == proj.id).all())
+    protected = [a for a in existing if a.manual_edit or a.origin != "proposal"]
+    protected_keys = {(a.discipline, a.milestone) for a in protected}
+    auto: dict = {}
+    for a in existing:
+        if a.origin == "proposal" and not a.manual_edit:
+            auto.setdefault((a.discipline, a.milestone), []).append(a)
+    live_keys = {(b["discipline"], b["milestone"]) for b in bars}
+
+    added = updated = removed = 0
+    for b in bars:
+        key = (b["discipline"], b["milestone"])
+        if key in protected_keys:
+            continue                                   # a PM owns this phase
+        rows = auto.get(key) or []
+        if rows:
+            a = rows.pop(0)                            # reuse the row -> id is stable
+            if (a.start_date != b["start_date"] or a.end_date != b["end_date"]
+                    or (a.order_index or 0) != b["order_index"]):
+                a.start_date = b["start_date"]
+                a.end_date = b["end_date"]
+                a.order_index = b["order_index"]
+                a.version = (a.version or 1) + 1
+                a.updated_at = datetime.utcnow()
+                updated += 1
+        else:
+            db.add(TimelineAssignment(
+                timeline_project_id=proj.id, resource_id=None,
+                discipline=b["discipline"], milestone=b["milestone"],
+                start_date=b["start_date"], end_date=b["end_date"],
+                utilization=1.0, status=None, label=None,
+                order_index=b["order_index"],
+                origin="proposal", manual_edit=False,
+                created_by_id=actor.id))
+            added += 1
+    for rows in auto.values():                         # leftovers: vanished phases + dupes
+        for a in rows:
+            db.delete(a); removed += 1
+
+    orphaned = [a for a in protected if (a.discipline, a.milestone) not in live_keys]
+    if renamed is not None:                            # ONLY from send_to_timeline
+        proj.name, proj.client = renamed
+        proj.notes = f"Imported from proposal {v.label}"
+    db.flush()
+    return {
+        "timeline_project_id": proj.id, "version_label": v.label,
+        "bars_added": added, "bars_updated": updated, "bars_removed": removed,
+        "preserved_manual": len(protected), "skipped_no_dates": skipped,
+        "orphaned": [{"assignment_id": a.id, "discipline": a.discipline,
+                      "milestone": a.milestone, "resource_id": a.resource_id,
+                      "start_date": a.start_date, "end_date": a.end_date}
+                     for a in orphaned],
+    }
+
+
 @router.post("/{pid}/send-to-timeline", response_model=ProposalToTimelineResult)
 def send_to_timeline(
     pid: int, payload: ProposalToTimelineRequest,
@@ -1084,13 +1381,15 @@ def send_to_timeline(
 ):
     """Bulk-project a proposal version's schedule into the Timeline: one
     TimelineProject + one UNASSIGNED bar per design-phase milestone, at the
-    schedule's dates. Re-import replaces the prior import (keyed off the exact
-    source_proposal_id)."""
+    schedule's dates. Re-import updates the prior import in place (keyed off the
+    exact source_proposal_id).
+
+    This is the ONLY endpoint that may create a TimelineProject — every implicit
+    resync is a no-op until a PM has explicitly sent the proposal here once."""
     p = _get_proposal(pid, db)
     v = _get_version(p, payload.version_id, db) if payload.version_id else _active_version(p, db)
     if v is None:
         raise HTTPException(422, "No version to send to the Timeline")
-    project_name, client = _proposal_display(p, v)
 
     bars, skipped = _proposal_timeline_bars(v)
     if not bars:
@@ -1098,52 +1397,30 @@ def send_to_timeline(
             422, "This version has no dated design-phase milestones to send to the Timeline."
         )
 
-    # One Timeline project per proposal (get-or-create on the unique
-    # source_proposal_id). The refresh is NON-DESTRUCTIVE of a PM's work: when
-    # replace_existing, we remove only the prior auto-generated UNASSIGNED bars
-    # and re-add the schedule's phases — bars staffed onto an engineer
-    # (resource_id set, e.g. dragged from the milestone palette) are kept, and we
-    # don't re-add an unassigned duplicate of a phase already staffed. So "Send
-    # to Timeline" can never wipe palette/manual placements.
+    # Get-or-create first, then run the same projection every implicit resync
+    # uses — so the explicit button and an automatic re-date can never diverge.
+    # `replace_existing` is now moot: the projection re-dates the bars it owns in
+    # place instead of delete+insert, and anything a PM has touched is preserved
+    # and reported rather than replaced.
     proj = _proposal_timeline_project(p, v, db, actor)
-    proj.name = project_name
-    proj.client = client
-    proj.notes = f"Imported from proposal {v.label}"
+    rs = _resync_proposal_timeline(p, v, db, actor, rename_project=True) or {}
 
-    existing = (
+    count = (
         db.query(TimelineAssignment)
         .filter(TimelineAssignment.timeline_project_id == proj.id)
-        .all()
+        .count()
     )
-    staffed = {(a.discipline, a.milestone) for a in existing if a.resource_id is not None}
-    kept = sum(1 for a in existing if a.resource_id is not None)
-    replaced = False
-    if payload.replace_existing:
-        for a in existing:
-            if a.resource_id is None:
-                db.delete(a)
-                replaced = True
-
-    added = 0
-    for b in bars:
-        if (b["discipline"], b["milestone"]) in staffed:
-            continue   # already placed onto someone — leave it as-is
-        db.add(TimelineAssignment(
-            timeline_project_id=proj.id, resource_id=None,
-            discipline=b["discipline"], milestone=b["milestone"],
-            start_date=b["start_date"], end_date=b["end_date"],
-            utilization=1.0, status=None, label=None,
-            order_index=b["order_index"], created_by_id=actor.id,
-        ))
-        added += 1
-
-    db.flush()
     return ProposalToTimelineResult(
-        timeline_project_id=proj.id, project_name=project_name,
-        assignment_count=added + kept, replaced_existing=replaced,
-        skipped_no_dates=skipped,
+        timeline_project_id=proj.id, project_name=proj.name,
+        assignment_count=count,
+        # "a prior import was replaced" now means "bars that already existed were
+        # re-dated or dropped" — nothing is deleted-and-recreated any more.
+        replaced_existing=bool(rs.get("bars_updated") or rs.get("bars_removed")),
+        skipped_no_dates=rs.get("skipped_no_dates", skipped),
         start_date=min(b["start_date"] for b in bars),
         end_date=max(b["end_date"] for b in bars),
+        preserved_manual=rs.get("preserved_manual", 0),
+        orphaned=rs.get("orphaned", []),
     )
 
 
@@ -1188,7 +1465,14 @@ def place_timeline_bar(
 ):
     """Place ONE proposal milestone onto the board as an assignment (palette
     drag-drop). Ensures the proposal's Timeline project exists (get-or-create, no
-    bulk bars), then creates the assignment for the dropped resource + dates."""
+    bulk bars), then creates the assignment for the dropped resource + dates.
+
+    A drop is a deliberate human placement, so the bar is born ``manual_edit``
+    and the auto-resync leaves it alone. It matters most for a drop onto the
+    Unassigned row: keyed only on ``resource_id IS NULL`` it would otherwise be
+    indistinguishable from an auto-generated bar and be deleted on the next
+    proposal save."""
+    from datetime import datetime
     p = _get_proposal(pid, db)
     v = _get_version(p, payload.version_id, db) if payload.version_id else _active_version(p, db)
     if v is None:
@@ -1207,6 +1491,7 @@ def place_timeline_bar(
         start_date=payload.start_date, end_date=payload.end_date,
         utilization=(payload.utilization if payload.utilization is not None else 1.0),
         status=None, label=None, order_index=0,
+        origin="proposal", manual_edit=True, manual_edit_at=datetime.utcnow(),
         created_by_id=actor.id,
     )
     db.add(a)

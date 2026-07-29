@@ -438,6 +438,11 @@ export interface TimelineAssignment {
   project_name?: string | null;
   client?: string | null;
   effective_status?: string | null;
+  /** "proposal" = projected from a proposal schedule; "manual" = hand-built. */
+  origin: "proposal" | "manual";
+  /** Latched true once a human drags/resizes/reassigns/edits it — a proposal
+   *  resync then leaves the bar alone. */
+  manual_edit: boolean;
 }
 export interface TimelineTimeOff {
   id: number;
@@ -496,6 +501,8 @@ export interface ProposalOut {
   // project's portfolio; project_name is a read-only derived label.
   project_id: number | null;
   project_name: string | null;
+  /** Exactly one proposal per Project is the ACTIVE one; the rest are history. */
+  is_active_for_project: boolean;
   linked_schedule_id: number | null;
   current_version_id: number | null;
   version: number;
@@ -521,6 +528,30 @@ export interface ProposalLogos {
   company_logo: string | null;
   client_logo: string | null;
 }
+/** A hand-scheduled Timeline bar whose phase no longer exists in the schedule.
+ *  The (discipline, milestone) pair is the only link between a proposal phase
+ *  and its bar, so renaming a phase strands the bar rather than moving it. */
+export interface ProposalTimelineOrphan {
+  assignment_id: number;
+  discipline: string;
+  milestone: string | null;
+  resource_id: number | null;
+  start_date: string; // ISO yyyy-mm-dd
+  end_date: string;
+}
+/** What an implicit resync did to the proposal's Timeline project. Absent
+ *  whenever the proposal has no Timeline project, the edited version isn't the
+ *  active one, or the projection produced no bars. */
+export interface ProposalTimelineResync {
+  timeline_project_id: number;
+  version_label: string;
+  bars_added: number;
+  bars_updated: number;
+  bars_removed: number;
+  preserved_manual: number;
+  skipped_no_dates: number;
+  orphaned: ProposalTimelineOrphan[];
+}
 /** Result of sending a proposal version's schedule to the Timeline module. */
 export interface ProposalToTimelineResult {
   timeline_project_id: number;
@@ -530,6 +561,8 @@ export interface ProposalToTimelineResult {
   skipped_no_dates: number;
   start_date: string | null;
   end_date: string | null;
+  preserved_manual: number;
+  orphaned: ProposalTimelineOrphan[];
 }
 /** A draggable design-phase milestone for the Timeline palette. */
 export interface ProposalTimelineMilestone {
@@ -568,11 +601,15 @@ export interface ProposalVersionDetail extends ProposalVersionOut {
   info: Record<string, any>;
   config: Record<string, any>;
   tree: ProposalItemNode[];
+  /** Set by tree save / recompute when the edit re-projected onto the Timeline. */
+  timeline_resync?: ProposalTimelineResync | null;
 }
 export interface ProposalBoard {
   proposal: ProposalOut;
   version: ProposalVersionDetail;
   versions: ProposalVersionOut[];
+  /** Set by activate / new version / from-upload; always null on a plain board read. */
+  timeline_resync?: ProposalTimelineResync | null;
 }
 
 // Split Deposit — persisted inside ProposalVersionDetail.info under the

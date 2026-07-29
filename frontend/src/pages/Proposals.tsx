@@ -28,6 +28,8 @@ import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import { businessDaysBetween } from "@/lib/businessDays";
+import { fmtMoney } from "@/lib/money";
+import MoneyInput from "@/components/MoneyInput";
 import PdfPagePreview from "@/components/PdfPagePreview";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
@@ -42,6 +44,7 @@ import {
   putProposalTree,
   recomputeProposal,
   createProposalVersion,
+  createProposalVersionFromUpload,
   activateProposalVersion,
   generateProposalPdf,
   fetchProposalPdfBlob,
@@ -55,6 +58,7 @@ import {
   updateProposalLogos,
   listChangeOrders,
   linkProposalProject,
+  activateProposalForProject,
   listPortfolioProjects,
   createPortfolioProject,
 } from "@/lib/api";
@@ -64,6 +68,7 @@ import type {
   ProposalItemNode,
   ProposalOut,
   ProposalLogos,
+  ProposalTimelineResync,
   PortfolioProject,
   SplitDepositMemory,
   SplitHistoryEntry,
@@ -212,8 +217,23 @@ function blankNode(
 
 const fmtDate = (iso: string | null | undefined) =>
   iso ? format(parseISO(iso), "MMM d, yyyy") : "—";
-const fmtPrice = (n: number | null | undefined) =>
-  n != null ? `$${Number(n).toLocaleString()}` : "—";
+
+/** ` · active` / ` · history` for a project-linked proposal — several proposals
+ *  may share a Project (revisions, re-bids) but only one is live. History rows
+ *  stay in the picker, badged rather than hidden, or they'd be unreachable.
+ *  Renders nothing while the field is absent, so a server that doesn't send it
+ *  yet can't label every proposal "history". */
+const activeSuffix = (p: {
+  project_id: number | null;
+  is_active_for_project: boolean;
+}) =>
+  p.project_id == null
+    ? ""
+    : p.is_active_for_project === true
+      ? " · active"
+      : p.is_active_for_project === false
+        ? " · history"
+        : "";
 
 // ---------------- mm/dd/yy date math (tree dates, NOT ISO) ----------------
 /** Parse a `mm/dd/yy` string into a Date (local midnight). Returns null on
@@ -249,9 +269,6 @@ function inclusiveDays(start: Date, end: Date): number {
   const ms = end.getTime() - start.getTime();
   return Math.round(ms / 86400000) + 1;
 }
-
-/** Integer dollars with thousands separators, no decimals. */
-const fmtMoney = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
 // ---------------- project summary (client-side, mirrors desktop) ----------------
 interface DisciplineLine {
@@ -596,6 +613,11 @@ export default function Proposals() {
   const [conflict, setConflict] = useState<string | null>(null);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  // What the last save / recompute did to the proposal's Timeline bars. Null
+  // whenever the proposal has never been sent to the Timeline (the resync is a
+  // no-op then) or the server predates the feature.
+  const [timelineResync, setTimelineResync] =
+    useState<ProposalTimelineResync | null>(null);
 
   // working copy of the tree (flat, ordered) — edits mutate this; saves send
   // the rebuilt nested tree and replace it with the server's recomputed result.
@@ -661,6 +683,7 @@ export default function Proposals() {
 
   // dialogs
   const [showUpload, setShowUpload] = useState(false);
+  const [showNewVersion, setShowNewVersion] = useState(false);
   const [showPdf, setShowPdf] = useState(false);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
@@ -827,6 +850,9 @@ export default function Proposals() {
       setCollapsedKeys(new Set());
       setLinkSourceKey(undefined);
       setLinkBanner(null);
+      // Activate / new version / from-upload resync the Timeline too; a plain
+      // board read carries null, which also clears the previous save's report.
+      setTimelineResync(b.timeline_resync ?? null);
     },
     [keyOf, seedDrafts],
   );
@@ -1067,7 +1093,16 @@ export default function Proposals() {
 
   function updateNode(key: string, patch: Partial<ProposalItemNode>) {
     setFlat((rows) =>
-      rows.map((n) => (keyOf(n) === key ? { ...n, ...patch } : n)),
+      rows.map((n) => {
+        if (keyOf(n) !== key) return n;
+        // Re-bind the row's key onto the clone. Without this, keyOf() mints a NEW
+        // key for the fresh object and React remounts the row on every keystroke —
+        // dropping focus, caret and any in-progress draft state. Same technique as
+        // the drag-drop path (orderedKeys re-bind, ~line 1386).
+        const next = { ...n, ...patch };
+        keyMap.current.set(next, key);
+        return next;
+      }),
     );
     setDirty(true);
   }
@@ -1445,6 +1480,9 @@ export default function Proposals() {
       keyMap.current = new WeakMap();
       setFlat(flatten(detail.tree, keyOf).map((f) => f.node));
       seedDrafts(detail);
+      // Saving the active version re-projects its dates onto the Timeline; the
+      // server reports what moved so the PM sees it without opening that board.
+      setTimelineResync(detail.timeline_resync ?? null);
       setDirty(false);
       setConflict(null);
       // tree re-keyed by the server response — clear transient row UI state.
@@ -1498,6 +1536,7 @@ export default function Proposals() {
       );
       keyMap.current = new WeakMap();
       setFlat(flatten(detail.tree, keyOf).map((f) => f.node));
+      setTimelineResync(detail.timeline_resync ?? null);
       setDirty(false);
     } catch (e) {
       if (isStaleVersionError(e)) {
@@ -1522,15 +1561,32 @@ export default function Proposals() {
       setError(e?.message || "Could not switch version");
     }
   }
-  async function newVersion() {
+  // Two ways to mint the next version, both offered by NewVersionDialog: copy
+  // the active tree forward, or re-parse a fresh Excel. Errors propagate to the
+  // dialog, which shows them inline — the page's error banner sits behind the
+  // open modal where nobody would see it.
+  async function duplicateVersion() {
     if (!proposalId) return;
-    try {
-      applyBoard(await createProposalVersion(proposalId));
-      flashToast("New version created — it's now active.");
-      void loadList();
-    } catch (e: any) {
-      setError(e?.message || "Could not create a version");
-    }
+    applyBoard(await createProposalVersion(proposalId));
+    setShowNewVersion(false);
+    flashToast("New version created — it's now active.");
+    void loadList();
+  }
+  async function versionFromUpload(
+    file: File,
+    opts: {
+      source: "workbook" | "template";
+      project_start?: string;
+      utilization_percent?: number;
+      update_identity?: boolean;
+    },
+  ) {
+    if (!proposalId) return;
+    const b = await createProposalVersionFromUpload(proposalId, file, opts);
+    applyBoard(b);
+    setShowNewVersion(false);
+    flashToast(`${b.version.label} parsed from “${file.name}” — it's now active.`);
+    void loadList();
   }
 
   // ---- pdf ----
@@ -1672,6 +1728,19 @@ export default function Proposals() {
       void loadList();
     } catch (e: any) {
       setError(e?.message || "Could not link to project");
+    }
+  }
+  // Promote this proposal to the project's live one. The incumbent is demoted
+  // server-side, so refresh the list too — its badge just changed as well.
+  async function doActivateForProject() {
+    if (!proposalId) return;
+    try {
+      const updated = await activateProposalForProject(proposalId);
+      setBoard((b) => (b ? { ...b, proposal: updated } : b));
+      flashToast("This proposal is now the active one for the project.");
+      void loadList();
+    } catch (e: any) {
+      setError(e?.message || "Could not make this proposal active");
     }
   }
   async function doCreateAndLinkProject() {
@@ -1960,7 +2029,10 @@ export default function Proposals() {
   const headerKicker = board
     ? [
         board.proposal.project_id
-          ? `Linked to 🔗 ${board.proposal.project_name || `#${board.proposal.project_id}`}`
+          ? `Linked to 🔗 ${board.proposal.project_name || `#${board.proposal.project_id}`}${
+              // Only a definite `false` demotes the title — an absent flag stays quiet.
+              board.proposal.is_active_for_project === false ? " (history)" : ""
+            }`
           : "Standalone proposal",
         linkedPortfolioName || null,
         activeVersion?.label || null,
@@ -1972,7 +2044,14 @@ export default function Proposals() {
       }`;
 
   return (
-    <div className="space-y-4">
+    /* Every card on an open board shares one width: the wrapper sizes to
+       max-content, which the (wide) Schedule table drives, so Project
+       Information / Schedule drivers / the summary panels stretch to the same
+       right edge instead of stopping at the page gutter. Gated to lg+ so a phone
+       still reads cards at viewport width, and only while a board is open — the
+       empty state's long PageHeader subtitle would otherwise blow the page out
+       sideways. */
+    <div className={clsx("space-y-4", board && !boardLoading && "lg:w-max lg:min-w-full")}>
       <PageHeader
         kicker={headerKicker}
         title={board ? board.proposal.title || "Untitled proposal" : "Proposals"}
@@ -1994,7 +2073,14 @@ export default function Proposals() {
               />
               <HeaderStat
                 label="Total"
-                value={fmtPrice(activeVersion?.total_price)}
+                // An em-dash, not "$0", when the version has no computed total:
+                // "we haven't priced this yet" and "this is worth nothing" are
+                // very different claims to make on a contract figure.
+                value={
+                  activeVersion?.total_price != null
+                    ? fmtMoney(activeVersion.total_price)
+                    : "—"
+                }
                 accent
               />
               <div className="flex items-center gap-2">
@@ -2042,6 +2128,7 @@ export default function Proposals() {
               {p.title}
               {p.current_label ? ` · ${p.current_label}` : ""}
               {p.portfolio_name ? ` · ${p.portfolio_name}` : ""}
+              {activeSuffix(p)}
             </option>
           ))}
         </select>
@@ -2073,7 +2160,7 @@ export default function Proposals() {
                 </option>
               ))}
             </select>
-            <button className={railPillCls} onClick={() => void newVersion()}>
+            <button className={railPillCls} onClick={() => setShowNewVersion(true)}>
               + New version
             </button>
           </>
@@ -2129,6 +2216,41 @@ export default function Proposals() {
           🔗 {linkBanner.msg}
         </Banner>
       )}
+      {/* What the save just did to the Timeline. Suppressed when the resync
+          moved nothing and stranded nothing — otherwise every save of a
+          Timeline-linked proposal would pop an all-zeroes banner. */}
+      {timelineResync &&
+        (timelineResync.bars_added +
+          timelineResync.bars_updated +
+          timelineResync.bars_removed >
+          0 ||
+          timelineResync.orphaned.length > 0) && (
+          <Banner tone="amber" onDismiss={() => setTimelineResync(null)}>
+            📊 Timeline re-synced from {timelineResync.version_label} —{" "}
+            {timelineResync.bars_added} bar
+            {timelineResync.bars_added === 1 ? "" : "s"} added,{" "}
+            {timelineResync.bars_updated} re-dated, {timelineResync.bars_removed}{" "}
+            removed
+            {timelineResync.preserved_manual > 0
+              ? `; ${timelineResync.preserved_manual} hand-scheduled bar${
+                  timelineResync.preserved_manual === 1 ? "" : "s"
+                } left as-is`
+              : ""}
+            .
+            {timelineResync.orphaned.length > 0 && (
+              <div className="mt-1">
+                ⚠️ These hand-scheduled bars no longer match a phase in the
+                schedule (renamed or deleted) and were left alone:{" "}
+                {timelineResync.orphaned
+                  .map((o) =>
+                    o.milestone ? `${o.discipline} · ${o.milestone}` : o.discipline,
+                  )
+                  .join(", ")}
+                . Fix or delete them on the Timeline board.
+              </div>
+            )}
+          </Banner>
+        )}
 
       {!loading && !board && list.length === 0 && (
         <EmptyState
@@ -2183,6 +2305,30 @@ export default function Proposals() {
                     </span>
                   ) : null}
                 </span>
+                {/* Which of the project's proposals is live. Nothing renders
+                    until the server sends the flag, so an older backend can't
+                    make every proposal look like history. */}
+                {board.proposal.is_active_for_project === true ? (
+                  <span
+                    className="pill-completed text-[11px]"
+                    title="This is the live proposal for the project — the others are history"
+                  >
+                    Active
+                  </span>
+                ) : board.proposal.is_active_for_project === false ? (
+                  <>
+                    <span className="pill-pending text-[11px]" title="Another proposal is the live one for this project">
+                      History
+                    </span>
+                    <button
+                      className={railPillCls}
+                      onClick={() => void doActivateForProject()}
+                      title="Make this the live proposal for the project (demotes the current one)"
+                    >
+                      ✓ Make this one active
+                    </button>
+                  </>
+                ) : null}
                 <button
                   className="text-xs font-semibold text-brand-gray transition hover:text-brand-red"
                   onClick={() => void doUnlink()}
@@ -2597,6 +2743,15 @@ export default function Proposals() {
             void loadList();
             flashToast(`Parsed “${b.proposal.title}” — V1 ready to edit.`);
           }}
+        />
+      )}
+
+      {showNewVersion && board && (
+        <NewVersionDialog
+          currentLabel={activeVersion?.label || "this version"}
+          onClose={() => setShowNewVersion(false)}
+          onDuplicate={duplicateVersion}
+          onUpload={versionFromUpload}
         />
       )}
 
@@ -3499,17 +3654,20 @@ function Row({
             <span className="pointer-events-none absolute left-1.5 top-1/2 -translate-y-1/2 text-[12.5px] text-brand-lightgray">
               $
             </span>
-            <input
-              type="number"
-              className={clsx(cellBase, "w-[76px] pl-4 text-right tabular-nums")}
+            {/* Thousands separators as you type — a type="number" control
+                refuses to display a value containing commas, so MoneyInput is
+                a text field that hands back a bare number. The node keeps a JS
+                number: a comma on the wire 422s the whole tree save. */}
+            <MoneyInput
+              className="w-[104px] pl-4 text-right tabular-nums"
               value={node.price}
               disabled={isLocked}
-              onChange={(e) => onUpdate(rowKey, { price: Number(e.target.value) || 0 })}
+              onChange={(n) => onUpdate(rowKey, { price: n })}
             />
           </div>
         ) : (
           <span
-            className="block w-[76px] px-1 text-right font-bold tabular-nums"
+            className="block w-[104px] px-1 text-right font-bold tabular-nums"
             title="Cumulative cost of enabled child tasks"
           >
             {fmtMoney(rollupCost)}
@@ -4149,6 +4307,283 @@ function UploadDialog({
         </div>
       </div>
     </Modal>
+  );
+}
+
+// ---------------- new-version dialog ----------------
+/** The two ways to mint the next version. Duplicating carries the saved version
+ *  forward untouched; uploading re-parses an Excel, which builds a brand-new
+ *  tree with brand-new row ids — so anything keyed to the old ids (row locks,
+ *  hand edits) cannot follow it. That trade-off is spelled out in the dialog
+ *  rather than buried here, because it is not recoverable after the fact. */
+function NewVersionDialog({
+  currentLabel,
+  onClose,
+  onDuplicate,
+  onUpload,
+}: {
+  currentLabel: string;
+  onClose: () => void;
+  onDuplicate: () => Promise<void>;
+  onUpload: (
+    file: File,
+    opts: {
+      source: "workbook" | "template";
+      project_start?: string;
+      utilization_percent?: number;
+      update_identity?: boolean;
+    },
+  ) => Promise<void>;
+}) {
+  const [choice, setChoice] = useState<"duplicate" | "upload" | null>(null);
+  const [source, setSource] = useState<"workbook" | "template">("workbook");
+  const [file, setFile] = useState<File | null>(null);
+  const [projectStart, setProjectStart] = useState("");
+  const [util, setUtil] = useState(100);
+  const [updateIdentity, setUpdateIdentity] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const pick = (f: File | null | undefined) => {
+    if (!f) return;
+    const n = f.name.toLowerCase();
+    if (!n.endsWith(".xlsx") && !n.endsWith(".xlsm")) {
+      setErr("Only Excel files (.xlsx / .xlsm) are accepted.");
+      return;
+    }
+    setErr(null);
+    setFile(f);
+  };
+
+  // On success the parent closes the dialog, so `busy` only ever needs
+  // clearing on the failure path (same contract as UploadDialog).
+  async function run(fn: () => Promise<void>, fallback: string) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+    } catch (e: any) {
+      setErr(e?.message || fallback);
+      setBusy(false);
+    }
+  }
+
+  const isUpload = choice === "upload";
+  const isTemplate = source === "template";
+
+  return (
+    <Modal title={`New version after ${currentLabel}`} onClose={onClose}>
+      <div className="space-y-3">
+        <p className="text-sm text-brand-gray">
+          How should the next version be built?
+        </p>
+
+        <VersionChoice
+          selected={choice === "duplicate"}
+          onSelect={() => {
+            setChoice("duplicate");
+            setErr(null);
+          }}
+          title="📋 Duplicate this version"
+          body={`Copies ${currentLabel}'s schedule, prices, row locks and settings forward. Nothing is re-parsed — carry on editing from where you left off.`}
+        />
+        <VersionChoice
+          selected={isUpload}
+          onSelect={() => {
+            setChoice("upload");
+            setErr(null);
+          }}
+          title="⬆ Upload a new Excel"
+          body="Re-parses a cost workbook (or a saved template) into a fresh schedule tree for the next version."
+        />
+
+        {isUpload && (
+          <div className="space-y-3 rounded-lg border border-surface-border p-3">
+            {/* Same two sources the create-proposal dialog offers. */}
+            <div className="flex gap-2 text-sm">
+              <button
+                className={clsx(
+                  "btn-ghost text-xs py-1",
+                  !isTemplate &&
+                    "border-brand-red bg-brand-red text-white hover:border-brand-red hover:text-white",
+                )}
+                onClick={() => setSource("workbook")}
+              >
+                Cost workbook
+              </button>
+              <button
+                className={clsx(
+                  "btn-ghost text-xs py-1",
+                  isTemplate &&
+                    "border-brand-red bg-brand-red text-white hover:border-brand-red hover:text-white",
+                )}
+                onClick={() => setSource("template")}
+              >
+                Saved template (.xlsx)
+              </button>
+            </div>
+
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOver(false);
+                pick(e.dataTransfer.files?.[0]);
+              }}
+              className={clsx(
+                "rounded-lg border-2 border-dashed p-5 text-center transition",
+                dragOver ? "border-brand-red bg-brand-red/5" : "border-surface-ghost",
+              )}
+            >
+              {file ? (
+                <div className="text-sm font-medium text-brand-black">
+                  📄 {file.name}
+                  <button
+                    className="ml-2 text-xs text-brand-gray hover:text-brand-red hover:underline"
+                    onClick={() => setFile(null)}
+                  >
+                    change
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-2 text-sm text-brand-gray">
+                    {isTemplate ? (
+                      <>
+                        Drag a previously <b>Saved Excel</b> template here, or
+                      </>
+                    ) : (
+                      <>
+                        Drag a <b>.xlsx</b> / <b>.xlsm</b> workbook here, or
+                      </>
+                    )}
+                  </div>
+                  <label className="btn-ghost inline-block cursor-pointer text-sm">
+                    Choose file
+                    <input
+                      type="file"
+                      accept=".xlsx,.xlsm"
+                      className="hidden"
+                      onChange={(e) => pick(e.target.files?.[0])}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+
+            {/* A template carries its own utilization; its stored start is only
+                overridden when a date is typed here. */}
+            <div className="grid grid-cols-2 gap-3">
+              <Field
+                label={isTemplate ? "Override project start" : "Project start (optional)"}
+              >
+                <input
+                  type="date"
+                  className={inputCls}
+                  value={projectStart}
+                  onChange={(e) => setProjectStart(e.target.value)}
+                />
+              </Field>
+              {!isTemplate && (
+                <Field label="Utilization %">
+                  <input
+                    type="number"
+                    className={inputCls}
+                    value={util}
+                    onChange={(e) => setUtil(Number(e.target.value) || 100)}
+                  />
+                </Field>
+              )}
+            </div>
+
+            <label className="flex items-start gap-2 text-[13px] text-brand-gray">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-brand-red"
+                checked={updateIdentity}
+                onChange={(e) => setUpdateIdentity(e.target.checked)}
+              />
+              Also refresh the project name, customer, location, state and size
+              from the file
+            </label>
+
+            <div className="rounded-lg border border-status-pending-border bg-status-pending-bg px-3 py-2 text-[12.5px] text-status-pending-text">
+              ⚠️ Row locks and manual tree edits from {currentLabel} do not carry
+              over — the parse builds brand-new rows. Your PDF / export settings
+              do carry over.
+            </div>
+          </div>
+        )}
+
+        {err && <div className="text-sm text-brand-red">{err}</div>}
+        <div className="flex justify-end gap-2 pt-1">
+          <button className="btn-ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            className="btn-primary"
+            disabled={busy || choice === null || (isUpload && !file)}
+            onClick={() =>
+              void (isUpload
+                ? run(
+                    () =>
+                      onUpload(file!, {
+                        source,
+                        project_start: projectStart || undefined,
+                        utilization_percent: isTemplate ? undefined : util,
+                        update_identity: updateIdentity,
+                      }),
+                    "Could not build a version from that file",
+                  )
+                : run(onDuplicate, "Could not create a version"))
+            }
+          >
+            {busy
+              ? isUpload
+                ? "Parsing…"
+                : "Creating…"
+              : isUpload
+                ? "Upload + create version"
+                : "Create version"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** One of NewVersionDialog's two option cards — selected state mirrors the
+ *  PDF-kind chooser's hover treatment so the two modals read the same. */
+function VersionChoice({
+  selected,
+  onSelect,
+  title,
+  body,
+}: {
+  selected: boolean;
+  onSelect: () => void;
+  title: string;
+  body: string;
+}) {
+  return (
+    <button
+      type="button"
+      className={clsx(
+        "w-full rounded-lg border p-3 text-left transition",
+        selected
+          ? "border-brand-red bg-surface-rowhover"
+          : "border-surface-border hover:border-brand-red hover:bg-surface-rowhover",
+      )}
+      onClick={onSelect}
+    >
+      <div className="font-semibold text-brand-black">{title}</div>
+      <div className="mt-0.5 text-[12.5px] text-brand-gray">{body}</div>
+    </button>
   );
 }
 

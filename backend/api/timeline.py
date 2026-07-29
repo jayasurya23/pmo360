@@ -326,6 +326,13 @@ def patch_assignment(
         setattr(a, field, value)
     if a.end_date < a.start_date:
         raise HTTPException(422, "end_date must be on or after start_date")
+    # Any hand edit takes the bar out of the proposal auto-resync's hands, so a
+    # re-projected schedule can't stomp a PM's deliberate change. The latch is
+    # broad on purpose — a status or utilization tweak still means a human owns
+    # this row. POST /assignments/{id}/release is the way back.
+    if data and not a.manual_edit:
+        a.manual_edit = True
+        a.manual_edit_at = datetime.utcnow()
     a.version = (a.version or 1) + 1
     a.updated_at = datetime.utcnow()
     db.flush()
@@ -343,6 +350,30 @@ def delete_assignment(
         return None
     db.delete(a)
     return None
+
+
+@router.post("/assignments/{assignment_id}/release", response_model=TimelineAssignmentOut)
+def release_assignment(
+    assignment_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+):
+    """Hand a hand-edited bar back to the proposal auto-resync.
+
+    Deliberately not routed through patch_assignment: that handler latches
+    manual_edit on any field it writes, so clearing the flag through it would
+    re-set it in the same request. `manual_edit` is likewise kept out of
+    TimelineAssignmentPatch — this endpoint is the only way to clear it.
+    """
+    a = db.get(TimelineAssignment, assignment_id)
+    if a is None:
+        raise HTTPException(404, "Assignment not found")
+    a.manual_edit = False
+    a.manual_edit_at = None
+    a.version = (a.version or 1) + 1
+    a.updated_at = datetime.utcnow()
+    db.flush()
+    return _assignment_out(a, db.get(TimelineProject, a.timeline_project_id))
 
 
 # ============================================================
@@ -421,6 +452,13 @@ def _assignment_out(a: TimelineAssignment, project: Optional[TimelineProject]) -
         project_name=(project.name if project else None),
         client=(project.client if project else None),
         effective_status=eff,
+        # Provenance for the proposal auto-resync. TimelineAssignmentOut is a
+        # plain BaseModel assembled by hand, so these must be listed here —
+        # from_attributes would never see them. `manual_edit_at` stays
+        # server-side: the board draws the flag, not the timestamp, and this
+        # payload carries every bar on screen.
+        origin=a.origin or "manual",
+        manual_edit=bool(a.manual_edit),
     )
 
 

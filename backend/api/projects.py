@@ -142,10 +142,14 @@ def delete_project(project_id: int, db: Session = Depends(get_db), _user=Depends
     # Project-tier rows (sites) belong to this portfolio. Null any proposal
     # pointers into them so those proposals survive standalone, then drop the
     # project rows (their FK to projects.id would otherwise block the delete).
+    # is_active_for_project clears alongside project_id: the partial unique index
+    # only covers project_id IS NOT NULL, so a stale True survives unnoticed and
+    # would re-activate the proposal the next time it is linked somewhere.
     pp_ids = select(PortfolioProject.id).where(
         PortfolioProject.portfolio_id == project_id)
     db.query(Proposal).filter(Proposal.project_id.in_(pp_ids)).update(
-        {Proposal.project_id: None}, synchronize_session=False)
+        {Proposal.project_id: None, Proposal.is_active_for_project: False},
+        synchronize_session=False)
     db.query(PortfolioProject).filter(
         PortfolioProject.portfolio_id == project_id
     ).delete(synchronize_session=False)
