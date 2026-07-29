@@ -86,6 +86,30 @@ export default {
           },
         },
       },
+      // Red, green and brightred do double duty: a solid fill carrying white
+      // text, and a foreground sitting on a surface. In dark mode one value
+      // can't do both — a red light enough to read on near-black is too light
+      // to carry white text. So `text-*` and `border-*` resolve to the `-on`
+      // variant while `bg-*` keeps the fill. Light mode sets both variables to
+      // the same value, so nothing changes there and no component has to know.
+      textColor: ({ theme }) => ({
+        ...theme("colors"),
+        brand: {
+          ...theme("colors.brand"),
+          red: token("brand-red-on"),
+          green: token("brand-green-on"),
+          brightred: token("brand-brightred-on"),
+        },
+      }),
+      borderColor: ({ theme }) => ({
+        ...theme("colors"),
+        brand: {
+          ...theme("colors.brand"),
+          red: token("brand-red-on"),
+          green: token("brand-green-on"),
+          brightred: token("brand-brightred-on"),
+        },
+      }),
       maxWidth: {
         // Content widths from the redesign: wide boards vs document-like pages.
         shell: "1560px",

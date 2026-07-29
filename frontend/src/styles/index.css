@@ -50,8 +50,23 @@ input[type="number"] {
  * Dark is a warm near-black derived from brand #333132, deliberately not a
  * cool slate/blue-black: Castillo red sits badly on blue-tinted greys.
  * ============================================================ */
+/*
+ * A note on the `-on` variants (red / green / brightred):
+ *
+ * These hues do double duty — a solid fill with white text ON it (primary
+ * button, status bar) and a foreground colour sitting ON a surface (a red
+ * link, a green figure). In light mode one value serves both. In dark mode
+ * it cannot: a red light enough to read as text on near-black is too light
+ * to carry white text, and vice versa.
+ *
+ * So the fill keeps the base token and text/border use `--brand-*-on`.
+ * tailwind.config.js wires `text-*` and `border-*` to the `-on` variant, so
+ * `text-brand-red` and `bg-brand-red` resolve differently without a single
+ * component having to know. In light mode both hold the same value.
+ */
 :root {
   --brand-red: 173 31 43;          /* #ad1f2b */
+  --brand-red-on: 173 31 43;
   --brand-darkred: 153 31 43;      /* #991f2b — hover, darker on light */
   --brand-black: 51 49 50;         /* #333132 — primary text */
   --brand-gray: 77 77 79;          /* #4d4d4f — secondary text */
@@ -59,8 +74,10 @@ input[type="number"] {
   --brand-nearwhite: 230 231 232;  /* #e6e7e8 */
   --brand-brown: 94 75 64;         /* #5e4b40 */
   --brand-brightred: 225 42 63;    /* #e12a3f — alert/destructive */
+  --brand-brightred-on: 225 42 63;
   --brand-blue: 26 166 201;        /* #1aa6c9 */
   --brand-green: 39 135 71;        /* #278747 */
+  --brand-green-on: 39 135 71;
   --brand-brightgreen: 74 183 81;  /* #4ab751 */
   --brand-gold: 199 187 46;        /* #c7bb2e */
   --brand-deepgold: 138 128 33;    /* #8a8021 — gold as text */
@@ -94,20 +111,24 @@ input[type="number"] {
 }
 
 .dark {
-  /* Red lightens so it stays legible as text and as an icon on a dark
-     surface; it still reads as Castillo red when used as a button fill.
-     `darkred` is the hover step, and in dark mode hover BRIGHTENS rather
-     than darkens — the semantic name is kept, the behaviour inverts. */
-  --brand-red: 210 67 79;          /* #d2434f */
-  --brand-darkred: 224 85 97;      /* #e05561 */
+  /* Fill stays dark enough that white button text clears AA; the `-on`
+     variant is the light red used for text, icons and borders. */
+  --brand-red: 176 33 45;          /* #b0212d */
+  --brand-red-on: 240 138 146;     /* #f08a92 */
+  /* Hover DARKENS here rather than brightening: the button carries white
+     text, so lightening the fill would cost contrast exactly when the
+     control is under the cursor. */
+  --brand-darkred: 143 25 35;      /* #8f1923 */
   --brand-black: 237 237 236;      /* primary text, now near-white */
   --brand-gray: 168 165 164;       /* secondary text */
   --brand-lightgray: 122 120 119;  /* micro-labels — dimmer than body here */
   --brand-nearwhite: 58 56 57;
   --brand-brown: 156 133 120;
-  --brand-brightred: 240 74 92;
+  --brand-brightred: 200 40 58;
+  --brand-brightred-on: 244 150 160;
   --brand-blue: 53 188 221;
-  --brand-green: 63 165 99;
+  --brand-green: 32 110 58;
+  --brand-green-on: 122 208 148;
   --brand-brightgreen: 94 201 106;
   --brand-gold: 212 200 60;
   /* The "deep" text variants invert: against a dark surface the readable
