@@ -633,8 +633,13 @@ def new_version(pid: int, db: Session = Depends(get_db), actor=Depends(require_d
     label = _next_label(p)
     new_info = copy.deepcopy(active.info_json) or {}
     new_info["version"] = label
+    # Attach via the relationship rather than assigning proposal_id. `_next_label`
+    # just loaded `p.versions`, and a raw FK assignment never reaches an
+    # already-loaded collection — so `_board()` would report the new version as
+    # active while still listing only the old ones, and the picker wouldn't
+    # catch up until the page was reloaded.
     nv = ProposalVersion(
-        proposal_id=p.id, label=label,
+        label=label,
         tree_json=copy.deepcopy(active.tree_json),
         info_json=new_info,
         config_json=copy.deepcopy(active.config_json),
@@ -644,7 +649,7 @@ def new_version(pid: int, db: Session = Depends(get_db), actor=Depends(require_d
         source_filename=active.source_filename, source_format=active.source_format,
         created_by_id=actor.id,
     )
-    db.add(nv)
+    p.versions.append(nv)
     db.flush()
     p.current_version_id = nv.id
     db.flush()
