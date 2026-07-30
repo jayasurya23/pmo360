@@ -91,7 +91,13 @@ export default function MoneyInput({
     // old type="number" field did on its own. "0" and "0.5" are left alone.
     const clean = sanitizeMoney(raw).replace(/^(-?)0+(?=\d)/, "$1");
     setDraft(clean);
-    onChange(parseMoney(clean));
+    // Emit only when the NUMBER actually moved. A rejected character (a letter,
+    // a second ".") sanitises straight back to the value already stored, and
+    // emitting that anyway marked the board dirty — the PM then saves nothing,
+    // which still bumps the version's optimistic lock and re-projects the
+    // schedule onto its linked Timeline for an edit that never happened.
+    const next = parseMoney(clean);
+    if (next !== value) onChange(next);
   }
 
   return (

@@ -364,10 +364,29 @@ def release_assignment(
     manual_edit on any field it writes, so clearing the flag through it would
     re-set it in the same request. `manual_edit` is likewise kept out of
     TimelineAssignmentPatch — this endpoint is the only way to clear it.
+
+    A released bar lands on origin="proposal" + manual_edit=False, which is the
+    same fingerprint api.proposals._timeline_bulk_sent reads as "a PM explicitly
+    sent this whole proposal here". A milestone-palette drop is born on that same
+    origin, so releasing one would arm implicit projection for a project nobody
+    ever bulk-sent: one drag, one release, and the next proposal save imports a
+    bar for every other phase. There is no auto-resync to hand such a bar back to
+    (the same guard no-ops it), so it is re-homed as a plain board bar instead.
+    Should the PM bulk-send later, the projection then protects it rather than
+    re-dating it — the safe direction, and how it already treats every other bar
+    a human owns.
     """
+    # Function-local: keeps the two API modules free of a module-level
+    # dependency in either direction.
+    from api.proposals import _timeline_bulk_sent
     a = db.get(TimelineAssignment, assignment_id)
     if a is None:
         raise HTTPException(404, "Assignment not found")
+    if a.origin == "proposal":
+        # Asked BEFORE manual_edit is cleared, or this very row would answer it.
+        proj = db.get(TimelineProject, a.timeline_project_id)
+        if proj is None or not _timeline_bulk_sent(proj, db):
+            a.origin = "manual"
     a.manual_edit = False
     a.manual_edit_at = None
     a.version = (a.version or 1) + 1

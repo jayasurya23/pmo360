@@ -34,7 +34,8 @@ from db.models import (
 from schemas.common import (
     ProposalOut, ProposalListItem, ProposalVersionOut, ProposalVersionDetail,
     ProposalBoardResponse, ProposalPatch, ProposalTreePut, ProposalRecomputeRequest,
-    ProposalLinkRequest, ProposalLinkProjectRequest, ProposalSyncRequest, ProposalSyncResult,
+    ProposalLinkRequest, ProposalLinkProjectRequest, ProposalLinkProjectResult,
+    ProposalDemotedOut, ProposalSyncRequest, ProposalSyncResult,
     ProposalToTimelineRequest, ProposalToTimelineResult, ProposalTimelineResyncOut,
     ProposalTimelineMilestonesOut, ProposalTimelineMilestoneOut,
     ProposalTimelineBarRequest, ProposalTimelineBarResult,
@@ -129,6 +130,7 @@ async def _parse_upload(
     source: str = "workbook",
     project_start: Optional[str] = None,
     utilization_percent: float = 100.0,
+    prev_config: Optional[dict] = None,
 ) -> "tuple[list, dict, ScheduleConfig, str]":
     """Read an uploaded spreadsheet -> ``(items, info_json, cfg, source_format)``.
 
@@ -143,6 +145,11 @@ async def _parse_upload(
     Client Review / Record Drawings rows and schedules them. ``"template"``
     rebuilds a previously exported tree verbatim (deserialize, NOT build_tree, so
     nothing is injected twice) and only re-runs the date calc.
+
+    ``prev_config`` is the config_json of the version being superseded, and seeds
+    the CALENDAR settings a cost workbook cannot state — see the workbook branch.
+    A template is ignored here on purpose: it ships its own saved calendar, which
+    is the whole point of loading one.
     """
     src = (source or "workbook").strip().lower()
     if src not in ("workbook", "template"):
@@ -181,6 +188,15 @@ async def _parse_upload(
             raise HTTPException(422, str(exc)) from exc
         return items, parsed["info_json"], cfg, source_format
 
+    # Which holidays the team observes and whether an FS successor starts the next
+    # day are the PM's calendar POLICY — a cost workbook states neither, so
+    # parsing a re-bid on the parser's defaults silently dropped the client
+    # shutdown dates and the FS rule entered on the version being superseded.
+    # Seeded BEFORE the date calc, since holidays move every date: patching cfg
+    # afterwards would store a calendar the stored dates do not obey. The
+    # project_start stays the workbook's/caller's — a re-bid is re-dated by
+    # definition, and both it and utilization are on the upload dialog.
+    prev = _cfg_from_json(prev_config) if prev_config else None
     tmp = tempfile.NamedTemporaryFile(suffix=f".{source_format}", delete=False)
     try:
         tmp.write(data)
@@ -189,6 +205,9 @@ async def _parse_upload(
             items, _id_map, info, cfg = parse_workbook_to_tree(
                 tmp.name, project_start=project_start,
                 utilization_percent=utilization_percent,
+                fs_start_next_day=(prev.fs_start_next_day if prev else True),
+                disabled_holidays=(prev.disabled_holidays if prev else None),
+                custom_holidays=(prev.custom_holidays if prev else None),
             )
         except Exception as exc:  # noqa: BLE001 — surface a clean 400 to the UI
             raise HTTPException(400, f"Could not parse workbook: {exc}") from exc
@@ -748,7 +767,9 @@ async def new_version_from_upload(
     file: UploadFile = File(...),
     source: str = Form("workbook"),
     project_start: Optional[str] = Form(None),
-    utilization_percent: float = Form(100.0),
+    # Optional, unlike the create-a-proposal upload: omitted means "keep what the
+    # superseded version used" instead of snapping the schedule back to 100%.
+    utilization_percent: Optional[float] = Form(None),
     update_identity: bool = Form(False),
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
@@ -759,12 +780,16 @@ async def new_version_from_upload(
     cost workbook (or saved template). The parsed tree REPLACES the old one, so
     row locks and hand edits from the previous version do not survive (build_tree
     mints fresh ids and no id mapping exists); the dialog says so. Export/PDF
-    preferences do carry over.
+    preferences and the schedule calendar (holidays + FS rule, and utilization
+    unless this request states one) do carry over.
     """
     p = _get_proposal(pid, db)
     prev = _active_version(p, db)
+    prev_config = (prev.config_json if prev else None) or {}
+    if utilization_percent is None:
+        utilization_percent = float(prev_config.get("utilization_percent") or 100.0)
     items, info_json, cfg, source_format = await _parse_upload(
-        file, source, project_start, utilization_percent,
+        file, source, project_start, utilization_percent, prev_config,
     )
 
     # Label before the append: _next_label() reads p.versions, which must not yet
@@ -1019,20 +1044,24 @@ def _active_proposal_conflict() -> HTTPException:
     )
 
 
-def _activate_for_project(p: Proposal, db: Session) -> None:
+def _activate_for_project(p: Proposal, db: Session) -> "Proposal | None":
     """Hand ``p`` the single ACTIVE slot on its Project, demoting the incumbent.
+    Returns the proposal that lost the slot (None when there was none) so callers
+    can say whose contract of record just became history.
 
     The demotion is flushed BEFORE the promotion: the partial unique index on
     (project_id) WHERE active is evaluated per statement, so promoting first
     would collide with the very row we are about to demote.
     """
-    (db.query(Proposal)
-       .filter(Proposal.project_id == p.project_id,
-               Proposal.id != p.id,
-               Proposal.is_active_for_project.is_(True))
-       .update({Proposal.is_active_for_project: False}, synchronize_session=False))
+    holders = (db.query(Proposal)
+                 .filter(Proposal.project_id == p.project_id,
+                         Proposal.id != p.id,
+                         Proposal.is_active_for_project.is_(True)))
+    incumbent = holders.first()
+    holders.update({Proposal.is_active_for_project: False}, synchronize_session=False)
     db.flush()
     p.is_active_for_project = True
+    return incumbent
 
 
 @router.patch("/{pid}/link", response_model=ProposalOut)
@@ -1056,7 +1085,7 @@ def link_portfolio(
     return p
 
 
-@router.patch("/{pid}/link-project", response_model=ProposalOut)
+@router.patch("/{pid}/link-project", response_model=ProposalLinkProjectResult)
 def link_project(
     pid: int, payload: ProposalLinkProjectRequest,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
@@ -1067,7 +1096,12 @@ def link_project(
 
     ``make_active`` unset means True — linking has always made the proposal the
     live one, and pre-existing callers must keep that. Pass False to file it as
-    history under the project instead."""
+    history under the project instead.
+
+    Because the default promotes, linking can file the Project's current — often
+    signed — proposal as history. That demotion is reported in
+    ``demoted_proposal`` so the UI can name it instead of leaving the PM to spot
+    the badge move."""
     p = _get_proposal(pid, db)
     _check_stale(payload.expected_version, p.version)
     proj = db.get(PortfolioProject, payload.project_id)
@@ -1079,8 +1113,9 @@ def link_project(
     # across would collide with the new Project's incumbent on the partial
     # unique index. _activate_for_project re-takes it when make_active.
     p.is_active_for_project = False
+    demoted = None
     if payload.make_active is None or payload.make_active:
-        _activate_for_project(p, db)
+        demoted = _activate_for_project(p, db)
     p.updated_by_id = actor.id
     p.version = (p.version or 1) + 1
     try:
@@ -1088,7 +1123,10 @@ def link_project(
     except IntegrityError as exc:
         db.rollback()
         raise _active_proposal_conflict() from exc
-    return p
+    out = ProposalLinkProjectResult.model_validate(p)
+    if demoted is not None:
+        out.demoted_proposal = ProposalDemotedOut(id=demoted.id, title=demoted.title)
+    return out
 
 
 @router.post("/{pid}/activate-for-project", response_model=ProposalOut)
@@ -1266,9 +1304,18 @@ def _proposal_timeline_bars(v: ProposalVersion) -> "tuple[list[dict], int]":
     return bars, skipped
 
 
+# Stamped into TimelineProject.notes by the explicit bulk send, and the marker
+# that ARMS implicit projection (see _timeline_bulk_sent). A palette drop writes
+# the other one, so the two ways a Timeline project can be born stay tellable
+# apart after the fact.
+_TIMELINE_IMPORT_NOTE = "Imported from proposal"
+_TIMELINE_PALETTE_NOTE = "From proposal"
+
+
 def _proposal_timeline_project(p: Proposal, v: ProposalVersion, db: Session, actor) -> TimelineProject:
     """Get-or-create the Timeline project for a proposal (keyed on
-    source_proposal_id), without creating any bars. Used by the palette drop."""
+    source_proposal_id), without creating any bars. Used by the palette drop —
+    which is why creating one here must NOT arm the implicit projection."""
     proj = (
         db.query(TimelineProject)
         .filter(TimelineProject.source_proposal_id == p.id)
@@ -1279,7 +1326,7 @@ def _proposal_timeline_project(p: Proposal, v: ProposalVersion, db: Session, act
         project_name, client = _proposal_display(p, v)
         proj = TimelineProject(
             name=project_name, client=client, status="in_progress",
-            source_proposal_id=p.id, notes=f"From proposal {v.label}",
+            source_proposal_id=p.id, notes=f"{_TIMELINE_PALETTE_NOTE} {v.label}",
             created_by_id=actor.id,
         )
         db.add(proj)
@@ -1287,10 +1334,35 @@ def _proposal_timeline_project(p: Proposal, v: ProposalVersion, db: Session, act
     return proj
 
 
-def _resync_proposal_timeline(p, v, db, actor, *, rename_project: bool = False) -> "dict | None":
+def _timeline_bulk_sent(proj: TimelineProject, db: Session) -> bool:
+    """Was this proposal ever explicitly bulk-sent to the Timeline?
+
+    NOT the same question as "does a Timeline project exist": the milestone
+    palette drops one chip at a time and has to get-or-create the project to land
+    it, so keying implicit projection off mere existence turned a single drag
+    into a standing order to bulk-import every other phase of the proposal on the
+    next save. The explicit send stamps the project notes; any bar it left behind
+    that no human has taken over is the fallback, so rewriting those notes on the
+    board (they are editable) does not silently disarm the projection.
+    """
+    if (proj.notes or "").startswith(_TIMELINE_IMPORT_NOTE):
+        return True
+    return (
+        db.query(TimelineAssignment.id)
+        .filter(TimelineAssignment.timeline_project_id == proj.id,
+                TimelineAssignment.origin == "proposal",
+                TimelineAssignment.manual_edit.is_(False))
+        .first()
+    ) is not None
+
+
+def _resync_proposal_timeline(p, v, db, actor, *, explicit: bool = False) -> "dict | None":
     """Re-project version `v` onto the proposal's EXISTING Timeline project.
 
-    NO-OP (returns None) when the proposal has never been sent to the Timeline.
+    NO-OP (returns None) when the proposal has never been BULK-SENT to the
+    Timeline — a project the milestone palette had to create in passing does not
+    count (see _timeline_bulk_sent). ``explicit`` marks the send_to_timeline call
+    itself, which is doing the arming and so cannot be gated on it.
     Rebuilds only bars this projection owns and that no human has touched;
     preserves + reports everything else.
 
@@ -1307,12 +1379,14 @@ def _resync_proposal_timeline(p, v, db, actor, *, rename_project: bool = False) 
               .order_by(TimelineProject.id).first())
     if proj is None:
         return None                                    # guard rail 1
+    if not explicit and not _timeline_bulk_sent(proj, db):
+        return None                                    # guard rail 1b
     try:
         bars, skipped = _proposal_timeline_bars(v)
         # Resolved inside the same guard: project_info_from_json reads
         # PM-supplied info_json, so it is the other half of the "bad stored JSON
         # must not cost the caller their save" risk.
-        renamed = _proposal_display(p, v) if rename_project else None
+        renamed = _proposal_display(p, v) if explicit else None
     except Exception:
         return None                                    # guard rail 3
     if not bars:
@@ -1322,6 +1396,13 @@ def _resync_proposal_timeline(p, v, db, actor, *, rename_project: bool = False) 
                   .filter(TimelineAssignment.timeline_project_id == proj.id).all())
     protected = [a for a in existing if a.manual_edit or a.origin != "proposal"]
     protected_keys = {(a.discipline, a.milestone) for a in protected}
+    # The subset of `protected` this projection could ever have owned. A bar the
+    # PM built on the board themselves (origin="manual" — right-click Add, ⧉
+    # Duplicate) still blocks a duplicate via protected_keys, but it is their own
+    # entry: counting it as a "preserved" proposal bar overstated the tally, and
+    # reporting it as a vanished phase nagged them on every single save to fix a
+    # bar that was never a proposal phase in the first place.
+    owned_manual = [a for a in existing if a.origin == "proposal" and a.manual_edit]
     auto: dict = {}
     for a in existing:
         if a.origin == "proposal" and not a.manual_edit:
@@ -1373,20 +1454,30 @@ def _resync_proposal_timeline(p, v, db, actor, *, rename_project: bool = False) 
     # silently removed for them.
     stale = [a for rows in auto.values() for a in rows]
 
-    orphaned = [a for a in protected if (a.discipline, a.milestone) not in live_keys]
-    orphaned = orphaned + stale
+    # Split by who owns the stranded bar: a human's is actionable (relink it or
+    # delete it), ours is informational (safe to delete, we just no longer do it
+    # for them). `orphaned` stays the concatenation so existing readers keep
+    # working — it only loses the origin="manual" rows that never belonged in it.
+    orphaned_manual = [a for a in owned_manual
+                       if (a.discipline, a.milestone) not in live_keys]
+    orphaned = orphaned_manual + stale
     if renamed is not None:                            # ONLY from send_to_timeline
         proj.name, proj.client = renamed
-        proj.notes = f"Imported from proposal {v.label}"
+        proj.notes = f"{_TIMELINE_IMPORT_NOTE} {v.label}"
     db.flush()
+
+    def _orphan(a) -> dict:
+        return {"assignment_id": a.id, "discipline": a.discipline,
+                "milestone": a.milestone, "resource_id": a.resource_id,
+                "start_date": a.start_date, "end_date": a.end_date}
+
     return {
         "timeline_project_id": proj.id, "version_label": v.label,
         "bars_added": added, "bars_updated": updated, "bars_removed": removed,
-        "preserved_manual": len(protected), "skipped_no_dates": skipped,
-        "orphaned": [{"assignment_id": a.id, "discipline": a.discipline,
-                      "milestone": a.milestone, "resource_id": a.resource_id,
-                      "start_date": a.start_date, "end_date": a.end_date}
-                     for a in orphaned],
+        "preserved_manual": len(owned_manual), "skipped_no_dates": skipped,
+        "orphaned": [_orphan(a) for a in orphaned],
+        "orphaned_manual": [_orphan(a) for a in orphaned_manual],
+        "orphaned_auto": [_orphan(a) for a in stale],
     }
 
 
@@ -1400,8 +1491,10 @@ def send_to_timeline(
     schedule's dates. Re-import updates the prior import in place (keyed off the
     exact source_proposal_id).
 
-    This is the ONLY endpoint that may create a TimelineProject — every implicit
-    resync is a no-op until a PM has explicitly sent the proposal here once."""
+    This is the only endpoint that ARMS implicit projection: a proposal save
+    re-dates the Timeline only once a PM has explicitly sent it here. A palette
+    drop also creates the TimelineProject (it has to, to land the bar), but it
+    stakes no claim on the rest of the schedule."""
     p = _get_proposal(pid, db)
     v = _get_version(p, payload.version_id, db) if payload.version_id else _active_version(p, db)
     if v is None:
@@ -1419,7 +1512,7 @@ def send_to_timeline(
     # place instead of delete+insert, and anything a PM has touched is preserved
     # and reported rather than replaced.
     proj = _proposal_timeline_project(p, v, db, actor)
-    rs = _resync_proposal_timeline(p, v, db, actor, rename_project=True) or {}
+    rs = _resync_proposal_timeline(p, v, db, actor, explicit=True) or {}
 
     count = (
         db.query(TimelineAssignment)
@@ -1437,6 +1530,8 @@ def send_to_timeline(
         end_date=max(b["end_date"] for b in bars),
         preserved_manual=rs.get("preserved_manual", 0),
         orphaned=rs.get("orphaned", []),
+        orphaned_manual=rs.get("orphaned_manual", []),
+        orphaned_auto=rs.get("orphaned_auto", []),
     )
 
 
@@ -1482,6 +1577,12 @@ def place_timeline_bar(
     """Place ONE proposal milestone onto the board as an assignment (palette
     drag-drop). Ensures the proposal's Timeline project exists (get-or-create, no
     bulk bars), then creates the assignment for the dropped resource + dates.
+
+    Creating that project is deliberately NOT an opt-in to bulk projection: the
+    palette exists to staff proposals one chip at a time (the board only offers
+    proposals that are not already on it), so a single drag must not sign the PM
+    up for a bar per phase on their next proposal save. "Send to Timeline" is
+    what asks for the whole schedule.
 
     A drop is a deliberate human placement, so the bar is born ``manual_edit``
     and the auto-resync leaves it alone. It matters most for a drop onto the

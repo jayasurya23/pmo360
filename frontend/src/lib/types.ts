@@ -510,6 +510,18 @@ export interface ProposalOut {
   updated_at: string | null;
 }
 
+/** The sibling that just lost its Project's ACTIVE slot. */
+export interface ProposalDemoted {
+  id: number;
+  title: string;
+}
+/** ProposalOut plus the collateral damage of the link. Linking promotes by
+ *  default, which files the Project's incumbent — often a signed proposal — as
+ *  history; naming it is what stops that being something the PM has to spot. */
+export interface ProposalLinkProjectResult extends ProposalOut {
+  demoted_proposal: ProposalDemoted | null;
+}
+
 /** The "Project" tier: a site (e.g. "Cobra") under a Portfolio. */
 export interface PortfolioProject {
   id: number;
@@ -547,10 +559,17 @@ export interface ProposalTimelineResync {
   version_label: string;
   bars_added: number;
   bars_updated: number;
+  /** An implicit resync never deletes, so this is 0 outside an explicit import. */
   bars_removed: number;
   preserved_manual: number;
   skipped_no_dates: number;
+  /** `orphaned_manual` + `orphaned_auto`. The server keeps the merged list for
+   *  consumers written before the split; this UI reads the two halves. */
   orphaned: ProposalTimelineOrphan[];
+  /** A human staffed this phase and it left the schedule — actionable. */
+  orphaned_manual: ProposalTimelineOrphan[];
+  /** The projection placed it and no longer deletes it — informational. */
+  orphaned_auto: ProposalTimelineOrphan[];
 }
 /** Result of sending a proposal version's schedule to the Timeline module. */
 export interface ProposalToTimelineResult {
@@ -562,7 +581,10 @@ export interface ProposalToTimelineResult {
   start_date: string | null;
   end_date: string | null;
   preserved_manual: number;
+  /** Same three-way split as ProposalTimelineResync. */
   orphaned: ProposalTimelineOrphan[];
+  orphaned_manual: ProposalTimelineOrphan[];
+  orphaned_auto: ProposalTimelineOrphan[];
 }
 /** A draggable design-phase milestone for the Timeline palette. */
 export interface ProposalTimelineMilestone {
