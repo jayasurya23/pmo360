@@ -794,6 +794,9 @@ export interface ChangeOrder {
   pdf_storage_path?: string | null;
   sent_at?: string | null;
   sent_to?: string | null;
+  /** How it reached the client: "graph" | "outlook" | "manual". Null on rows
+   *  recorded before the method was tracked. */
+  sent_method?: string | null;
   version?: number;
   line_items: ChangeOrderLineItem[];
   created_by?: UserStub | null;

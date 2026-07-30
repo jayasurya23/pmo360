@@ -1127,10 +1127,13 @@ export interface ChangeOrderCreate {
 
 // projectId omitted → aggregate across all portfolios (optionally narrowed to a
 // client). Used by the "All clients" CO view + the Home rollup card.
+// `sent` splits approved COs into still-to-send (false) vs already-delivered
+// (true); omit it to get both.
 export const listChangeOrders = (
   projectId?: number | null,
   status?: "draft" | "pending" | "sent_back" | "approved",
   clientId?: number | null,
+  sent?: boolean,
 ) =>
   apiClient
     .get<ChangeOrder[]>("/change-orders", {
@@ -1138,6 +1141,7 @@ export const listChangeOrders = (
         ...(projectId != null ? { project_id: projectId } : {}),
         ...(clientId != null ? { client_id: clientId } : {}),
         ...(status ? { status } : {}),
+        ...(sent != null ? { sent } : {}),
       },
     })
     .then((r) => r.data);
@@ -1162,9 +1166,18 @@ export const approveChangeOrder = (id: number) =>
   apiClient.post<ChangeOrder>(`/change-orders/${id}/approve`).then((r) => r.data);
 export const rejectChangeOrder = (id: number) =>
   apiClient.post<ChangeOrder>(`/change-orders/${id}/reject`).then((r) => r.data);
-export const markChangeOrderSent = (id: number, recipients: string) =>
+// `method` records HOW it went out ("graph" | "outlook" | "manual"). Omitted by
+// older callers, which the server stores as an unknown method.
+export const markChangeOrderSent = (
+  id: number,
+  recipients: string,
+  method?: "graph" | "outlook" | "manual",
+) =>
   apiClient
-    .post<ChangeOrder>(`/change-orders/${id}/mark-sent`, { recipients })
+    .post<ChangeOrder>(`/change-orders/${id}/mark-sent`, {
+      recipients,
+      ...(method ? { method } : {}),
+    })
     .then((r) => r.data);
 export const deleteChangeOrder = (id: number) =>
   apiClient.delete(`/change-orders/${id}`);
