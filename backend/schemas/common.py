@@ -989,6 +989,21 @@ class ProposalLinkProjectRequest(BaseModel):
     make_active: Optional[bool] = None
 
 
+class ProposalDemotedOut(BaseModel):
+    """The sibling that just lost its Project's ACTIVE slot."""
+    id: int
+    title: str
+
+
+class ProposalLinkProjectResult(ProposalOut):
+    """ProposalOut plus the collateral damage of the link.
+
+    Linking promotes by default, which silently files the Project's incumbent
+    (often a signed proposal) as history. Reporting it is what lets the UI say so
+    instead of leaving the PM to notice the badge move on its own."""
+    demoted_proposal: Optional[ProposalDemotedOut] = None
+
+
 class ProposalTimelineOrphanOut(BaseModel):
     """A hand-scheduled Timeline bar whose phase no longer exists in the schedule."""
     assignment_id: int
@@ -1008,9 +1023,19 @@ class ProposalTimelineResyncOut(BaseModel):
     bars_added: int = 0          # brand-new auto bars
     bars_updated: int = 0        # existing auto bars re-dated in place
     bars_removed: int = 0        # auto bars whose phase vanished
-    preserved_manual: int = 0    # hand-owned bars left untouched
+    # Bars this projection could own (origin="proposal") that a human has taken
+    # over. The PM's OWN board entries (origin="manual") are none of this
+    # projection's business and are counted nowhere here.
+    preserved_manual: int = 0
     skipped_no_dates: int = 0
+    # Phases that vanished from the schedule, split by who owns the stranded bar
+    # so the UI can phrase them differently: `orphaned_manual` is actionable (a
+    # human staffed it — relink or delete), `orphaned_auto` is informational (we
+    # made it and simply no longer delete implicitly). `orphaned` stays as the
+    # concatenation for consumers written before the split.
     orphaned: list[ProposalTimelineOrphanOut] = Field(default_factory=list)
+    orphaned_manual: list[ProposalTimelineOrphanOut] = Field(default_factory=list)
+    orphaned_auto: list[ProposalTimelineOrphanOut] = Field(default_factory=list)
 
 
 class ProposalVersionOut(ORMModel):
@@ -1114,7 +1139,10 @@ class ProposalToTimelineResult(BaseModel):
     start_date: Optional[date] = None     # span of the imported bars — lets the
     end_date: Optional[date] = None       # UI open the board focused on them
     preserved_manual: int = 0             # hand-owned bars the import left alone
+    # Same three-way split as ProposalTimelineResyncOut — see there.
     orphaned: list[ProposalTimelineOrphanOut] = Field(default_factory=list)
+    orphaned_manual: list[ProposalTimelineOrphanOut] = Field(default_factory=list)
+    orphaned_auto: list[ProposalTimelineOrphanOut] = Field(default_factory=list)
 
 
 class ProposalTimelineMilestoneOut(BaseModel):

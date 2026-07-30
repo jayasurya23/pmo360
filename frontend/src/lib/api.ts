@@ -33,6 +33,7 @@ import type {
   ProposalBoard,
   ProposalListItem,
   ProposalOut,
+  ProposalLinkProjectResult,
   ProposalVersionDetail,
   ProposalItemNode,
   ProposalLogos,
@@ -602,7 +603,12 @@ export const createProposalVersion = (id: number) =>
     .then((r) => r.data);
 /** Increment the version of an EXISTING proposal from a freshly uploaded Excel.
  *  `source`: "workbook" = Castillo cost workbook, "template" = saved template.
- *  Returns the same board shape as createProposalVersion, new version active. */
+ *  Returns the same board shape as createProposalVersion, new version active.
+ *
+ *  Leave `utilization_percent` undefined unless the PM actually typed one: the
+ *  field is OMITTED from the form then, which is how the server knows to inherit
+ *  the superseded version's utilization rather than snap a 60% schedule to 100%.
+ *  Sending a defaulted 100 here silently re-bids the whole thing at full rate. */
 export const createProposalVersionFromUpload = async (
   id: number,
   file: File,
@@ -702,12 +708,13 @@ export const linkProposal = (id: number, portfolio_id: number) =>
     .patch<ProposalOut>(`/proposals/${id}/link`, { portfolio_id })
     .then((r) => r.data);
 /** Link a proposal to a Project (the tier under a Portfolio); the portfolio is
- *  derived from the project server-side. */
+ *  derived from the project server-side. Linking promotes by default, so the
+ *  result also carries whichever sibling it just filed as history. */
 export const linkProposalProject = (
   id: number, project_id: number, make_active?: boolean,
 ) =>
   apiClient
-    .patch<ProposalOut>(`/proposals/${id}/link-project`, {
+    .patch<ProposalLinkProjectResult>(`/proposals/${id}/link-project`, {
       project_id,
       ...(make_active != null ? { make_active } : {}),
     })

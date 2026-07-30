@@ -68,6 +68,7 @@ import type {
   ProposalItemNode,
   ProposalOut,
   ProposalLogos,
+  ProposalTimelineOrphan,
   ProposalTimelineResync,
   PortfolioProject,
   SplitDepositMemory,
@@ -185,6 +186,15 @@ function rebuild(flat: ProposalItemNode[]): ProposalItemNode[] {
     stack.push(node);
   }
   return roots;
+}
+
+/** "Electrical Engineering · IFC" for each stranded Timeline bar. The
+ *  (discipline, milestone) pair is all that ties a bar to a phase, so it is
+ *  also the only handle the PM has for finding it on the board. */
+function orphanNames(list: ProposalTimelineOrphan[]): string {
+  return list
+    .map((o) => (o.milestone ? `${o.discipline} · ${o.milestone}` : o.discipline))
+    .join(", ");
 }
 
 function blankNode(
@@ -688,6 +698,20 @@ export default function Proposals() {
     }
     return k;
   }, []);
+  // Clone a row for the flat list, carrying its key onto the copy. keyOf() mints
+  // a FRESH key for an object it has never seen, so a plain `{ ...n }` remounts
+  // the row (dropping focus, caret and any in-progress MoneyInput draft) and
+  // strands every key the page holds elsewhere — the selection set, the collapse
+  // set, the armed predecessor link. Every mutator clones through here so the
+  // next one added can't forget.
+  const cloneRow = useCallback(
+    (n: ProposalItemNode, patch?: Partial<ProposalItemNode>) => {
+      const next = { ...n, ...patch };
+      keyMap.current.set(next, keyOf(n));
+      return next;
+    },
+    [keyOf],
+  );
 
   // dialogs
   const [showUpload, setShowUpload] = useState(false);
@@ -701,13 +725,21 @@ export default function Proposals() {
 
   // Approved change orders on this proposal's owning portfolio — drives the
   // "revised contract value" rollup (original proposal total + approved COs).
+  // `portfolioProjects` is how many Project-tier sites share that portfolio, and
+  // decides whether the total can be read as this proposal's (see `coScope`);
+  // null means we couldn't establish it.
   const [coApproved, setCoApproved] = useState<{
     total: number;
     count: number;
+    portfolioProjects: number | null;
   } | null>(null);
   // Monotonic token so a slow approved-CO fetch from a previously-open proposal
   // can't land on top of the one now displayed (fire-and-forget has no abort).
   const coReqRef = useRef(0);
+  // `projectsForPortfolio` mirrored for loadBoard, tagged with the portfolio it
+  // was fetched for. Held in a ref rather than read as state so the board loader
+  // doesn't take a dependency on the picker and re-run every time it refreshes.
+  const pfProjectsRef = useRef<{ portfolioId: number; count: number } | null>(null);
 
   const proposalId = board?.proposal.id ?? null;
   const activeVersion = board?.version ?? null;
@@ -749,15 +781,23 @@ export default function Proposals() {
   useEffect(() => {
     if (!currentProject) {
       setProjectsForPortfolio([]);
+      pfProjectsRef.current = null;
       return;
     }
+    const pfId = currentProject.id;
     let cancelled = false;
-    void listPortfolioProjects(currentProject.id)
+    void listPortfolioProjects(pfId)
       .then((rows) => {
-        if (!cancelled) setProjectsForPortfolio(rows);
+        if (cancelled) return;
+        setProjectsForPortfolio(rows);
+        pfProjectsRef.current = { portfolioId: pfId, count: rows.length };
       })
       .catch(() => {
-        if (!cancelled) setProjectsForPortfolio([]);
+        if (cancelled) return;
+        setProjectsForPortfolio([]);
+        // An empty picker is a fine fallback; an empty COUNT is not — it would
+        // read as "no sibling projects" to the CO rollup. Leave it unknown.
+        pfProjectsRef.current = null;
       });
     return () => {
       cancelled = true;
@@ -782,12 +822,34 @@ export default function Proposals() {
         // rollup. Best-effort + non-blocking; standalone proposals (no portfolio)
         // have no COs to tie in. The token invalidates any earlier in-flight
         // fetch so switching proposals can't show a stale portfolio's figure.
+        // The Project count rides along because change orders are still filed
+        // against the PORTFOLIO: with sibling sites under it the total covers
+        // more than this proposal, and the panel has to say so.
         const coToken = ++coReqRef.current;
         setCoApproved(null);
         const pfId = b.proposal.portfolio_id;
         if (pfId != null) {
-          void listChangeOrders(pfId, "approved")
-            .then((cos) => {
+          // The Project-link picker already fetched this same list whenever the
+          // board's portfolio is the header's. Reuse its count instead of asking
+          // twice — and fall back to it if the fetch fails, because a transient
+          // error otherwise downgrades a legitimate single-project portfolio to
+          // "portfolio-wide" and silently withholds its Revised value. Unknown
+          // still has to read as "can't attribute", never "no sibling projects".
+          const cachedCount = () => {
+            const c = pfProjectsRef.current;
+            return c && c.portfolioId === pfId ? c.count : null;
+          };
+          const cached = cachedCount();
+          void Promise.all([
+            listChangeOrders(pfId, "approved"),
+            cached != null
+              ? Promise.resolve<number | null>(cached)
+              : listPortfolioProjects(pfId).then(
+                  (rows) => rows.length as number | null,
+                  cachedCount,
+                ),
+          ])
+            .then(([cos, portfolioProjects]) => {
               if (coReqRef.current !== coToken) return; // superseded
               setCoApproved({
                 total: cos.reduce(
@@ -795,6 +857,7 @@ export default function Proposals() {
                   0,
                 ),
                 count: cos.length,
+                portfolioProjects,
               });
             })
             .catch(() => {
@@ -1042,8 +1105,18 @@ export default function Proposals() {
   // delete every selected row (each with its subtree) after one confirm.
   async function deleteSelected() {
     if (selectedKeys.size === 0) return;
+    // Count the rows the filter below will actually match, not the size of the
+    // selection: promising "4" and removing 3 is worse than naming the real
+    // number if a key ever outlives the row it was minted for.
+    const matched = flat.filter((n) => selectedKeys.has(keyOf(n))).length;
+    if (matched === 0) {
+      // Keys outlive their rows across a re-parse. Say so rather than let a
+      // Delete keypress do nothing at all and read as a dead shortcut.
+      flashToast("Nothing removed — that selection is no longer on the schedule.");
+      return;
+    }
     const ok = await confirm({
-      title: `Remove ${selectedKeys.size} selected row(s)?`,
+      title: `Remove ${matched} selected row(s)?`,
       body: "This removes the selected rows (and their sub-tasks) from the schedule. Save to persist.",
       confirmLabel: "Remove",
       destructive: true,
@@ -1101,16 +1174,7 @@ export default function Proposals() {
 
   function updateNode(key: string, patch: Partial<ProposalItemNode>) {
     setFlat((rows) =>
-      rows.map((n) => {
-        if (keyOf(n) !== key) return n;
-        // Re-bind the row's key onto the clone. Without this, keyOf() mints a NEW
-        // key for the fresh object and React remounts the row on every keystroke —
-        // dropping focus, caret and any in-progress draft state. Same technique as
-        // the drag-drop path (orderedKeys re-bind, ~line 1386).
-        const next = { ...n, ...patch };
-        keyMap.current.set(next, key);
-        return next;
-      }),
+      rows.map((n) => (keyOf(n) === key ? cloneRow(n, patch) : n)),
     );
     setDirty(true);
   }
@@ -1132,7 +1196,7 @@ export default function Proposals() {
     setFlat((rows) =>
       rows.map((n) =>
         (n.name || "").toLowerCase().includes("client review")
-          ? { ...n, duration: value }
+          ? cloneRow(n, { duration: value })
           : n,
       ),
     );
@@ -1346,7 +1410,7 @@ export default function Proposals() {
         return rows;
       return rows.map((n, i) =>
         i >= idx && i < end
-          ? { ...n, indent_level: Math.max(0, n.indent_level + delta) }
+          ? cloneRow(n, { indent_level: Math.max(0, n.indent_level + delta) })
           : n,
       );
     });
@@ -1740,7 +1804,14 @@ export default function Proposals() {
     try {
       const updated = await linkProposalProject(proposalId, projectId);
       setBoard((b) => (b ? { ...b, proposal: updated } : b));
-      flashToast(`Linked to project “${updated.project_name || ""}”.`);
+      // Linking promotes by default, so it can file the project's incumbent —
+      // often a signed proposal — as history. Name it: the only other signal is
+      // a badge moving on a row the PM may not even be looking at.
+      const demoted = updated.demoted_proposal;
+      flashToast(
+        `Linked to project “${updated.project_name || ""}”.` +
+          (demoted ? ` “${demoted.title}” is now history.` : ""),
+      );
       void loadList();
     } catch (e: any) {
       setError(e?.message || "Could not link to project");
@@ -1780,6 +1851,31 @@ export default function Proposals() {
 
   const linkedPortfolioName =
     board && list.find((p) => p.id === board.proposal.id)?.portfolio_name;
+
+  // What the approved-CO total actually describes. Change orders are filed
+  // against the PORTFOLIO — there is no Project column on them — so
+  // "proposal total + approved COs" is only this proposal's revised contract
+  // when nothing else under that portfolio can own part of the total. Two ways
+  // it can't: sibling Projects share the portfolio and their COs are in the same
+  // rollup, or this proposal is history and corresponds to no live contract.
+  // Either way the panel states the scope and withholds the sum — a figure that
+  // silently folds in another site's change order is worse than no figure.
+  const coScope = useMemo<"project" | "portfolio" | "history">(() => {
+    if (!board || coApproved == null) return "portfolio";
+    if (
+      board.proposal.project_id != null &&
+      board.proposal.is_active_for_project === false
+    )
+      return "history";
+    if (coApproved.portfolioProjects == null) return "portfolio";
+    // 0 projects = the legacy portfolio-is-the-contract shape this rollup was
+    // built for; 1 = this proposal's own Project, with no sibling to confuse it
+    // with. An unlinked proposal alongside any Project is ambiguous either way.
+    return coApproved.portfolioProjects <=
+      (board.proposal.project_id == null ? 0 : 1)
+      ? "project"
+      : "portfolio";
+  }, [board, coApproved]);
 
   // enabled leaf count (rough sync preview)
   const syncItemCount = flat.filter((n) => n.enabled).length;
@@ -1920,7 +2016,7 @@ export default function Proposals() {
     // 8 — CORE mutation: subtract from each task (collected = post-round-up delta)
     const idById = new Map<string, ProposalItemNode>();
     const nextFlat = flat.map((n) => {
-      const copy = { ...n };
+      const copy = cloneRow(n);
       if (n.id != null) idById.set(memKey(n), copy);
       return copy;
     });
@@ -1978,7 +2074,7 @@ export default function Proposals() {
     });
     if (!ok) return;
     const nextFlat = flat.map((n) => {
-      const copy = { ...n };
+      const copy = cloneRow(n);
       if (n.id == null) return copy;
       const k = memKey(n);
       const isSelected = selected.some((s) => memKey(s) === k);
@@ -2023,7 +2119,7 @@ export default function Proposals() {
     });
     if (!ok) return;
     const nextFlat = flat.map((n) => {
-      const copy = { ...n };
+      const copy = cloneRow(n);
       if (n.id == null) return copy;
       const k = memKey(n);
       if (!n.is_milestone && n.enabled && k in restore.task_states) {
@@ -2235,36 +2331,52 @@ export default function Proposals() {
         </Banner>
       )}
       {/* What the save just did to the Timeline. Suppressed when the resync
-          moved nothing and stranded nothing — otherwise every save of a
-          Timeline-linked proposal would pop an all-zeroes banner. */}
+          moved nothing and stranded nothing the PM can act on — otherwise every
+          save of a Timeline-linked proposal would pop an all-zeroes banner.
+          `orphaned_auto` is deliberately NOT a trigger: an implicit resync never
+          deletes, so one leftover auto bar would nag on every save until the PM
+          hunted it down on the board. It rides along when the banner is already
+          up for another reason, and is silent otherwise. */}
       {timelineResync &&
         (timelineResync.bars_added +
           timelineResync.bars_updated +
           timelineResync.bars_removed >
           0 ||
-          timelineResync.orphaned.length > 0) && (
+          timelineResync.orphaned_manual.length > 0) && (
           <Banner tone="amber" onDismiss={() => setTimelineResync(null)}>
             📊 Timeline re-synced from {timelineResync.version_label} —{" "}
             {timelineResync.bars_added} bar
             {timelineResync.bars_added === 1 ? "" : "s"} added,{" "}
-            {timelineResync.bars_updated} re-dated, {timelineResync.bars_removed}{" "}
-            removed
+            {timelineResync.bars_updated} re-dated
+            {/* A save-triggered resync only ever adds and re-dates now, so this
+                count is 0 — printing "0 removed" told PMs their bars had been
+                deleted. Rendered only if some path really does report one. */}
+            {timelineResync.bars_removed > 0
+              ? `, ${timelineResync.bars_removed} removed`
+              : ""}
             {timelineResync.preserved_manual > 0
               ? `; ${timelineResync.preserved_manual} hand-scheduled bar${
                   timelineResync.preserved_manual === 1 ? "" : "s"
                 } left as-is`
               : ""}
             .
-            {timelineResync.orphaned.length > 0 && (
+            {/* Two kinds of stranded bar, and only one of them is the PM's
+                problem: a bar THEY staffed wants relinking, whereas one this
+                projection placed is just left behind. Both used to share a
+                sentence that told the PM to go fix all of them. */}
+            {timelineResync.orphaned_manual.length > 0 && (
               <div className="mt-1">
-                ⚠️ These hand-scheduled bars no longer match a phase in the
-                schedule (renamed or deleted) and were left alone:{" "}
-                {timelineResync.orphaned
-                  .map((o) =>
-                    o.milestone ? `${o.discipline} · ${o.milestone}` : o.discipline,
-                  )
-                  .join(", ")}
-                . Fix or delete them on the Timeline board.
+                ⚠️ These phases were staffed by hand and this version no longer
+                has them: {orphanNames(timelineResync.orphaned_manual)}. Their
+                bars are untouched on the Timeline board — repoint or remove
+                them there.
+              </div>
+            )}
+            {timelineResync.orphaned_auto.length > 0 && (
+              <div className="mt-1">
+                ℹ️ These auto-placed bars match no phase in this version and were
+                left in place rather than deleted:{" "}
+                {orphanNames(timelineResync.orphaned_auto)}.
               </div>
             )}
           </Banner>
@@ -2523,6 +2635,7 @@ export default function Proposals() {
             <SummaryPanel
               summary={summary}
               coApproved={coApproved}
+              coScope={coScope}
               versionLabel={activeVersion?.label}
             />
             <DisciplinesPanel disciplines={summary.disciplines} />
@@ -2847,6 +2960,9 @@ export default function Proposals() {
       {showNewVersion && board && (
         <NewVersionDialog
           currentLabel={activeVersion?.label || "this version"}
+          // The SAVED config, not configDraft: from-upload reads the stored
+          // version, so an unsaved panel edit is not what it would inherit.
+          inheritedUtil={Number(activeVersion?.config?.utilization_percent) || null}
           onClose={() => setShowNewVersion(false)}
           onDuplicate={duplicateVersion}
           onUpload={versionFromUpload}
@@ -3149,10 +3265,14 @@ function LogoUploader({
 function SummaryPanel({
   summary,
   coApproved,
+  coScope,
   versionLabel,
 }: {
   summary: ProjectSummary;
   coApproved: { total: number; count: number } | null;
+  /** Whether the approved-CO total describes this proposal's contract, the
+   *  whole portfolio's, or a superseded one. Only the first can be summed. */
+  coScope: "project" | "portfolio" | "history";
   versionLabel?: string;
 }) {
   const hasCOs = !!coApproved && coApproved.count > 0;
@@ -3175,16 +3295,31 @@ function SummaryPanel({
         {hasCOs && (
           <>
             <SummaryRow
-              label={`Approved COs (${coApproved!.count})`}
+              label={`Approved COs (${coApproved!.count})${
+                coScope === "portfolio" ? " · portfolio-wide" : ""
+              }`}
               value={`+ ${fmtMoney(coApproved!.total)}`}
               tone="green"
+              title={
+                coScope === "portfolio"
+                  ? "Change orders are filed against the portfolio, so this total can cover sibling projects too."
+                  : undefined
+              }
             />
-            <SummaryRow
-              label="Revised value"
-              value={fmtMoney(revisedTotal)}
-              tone="red"
-              ruled
-            />
+            {coScope === "project" ? (
+              <SummaryRow
+                label="Revised value"
+                value={fmtMoney(revisedTotal)}
+                tone="red"
+                ruled
+              />
+            ) : (
+              <p className="border-t border-surface-hairline pt-1 text-[11px] text-brand-gray">
+                {coScope === "history"
+                  ? "No revised value — this proposal is history for its project, so a revised contract figure would describe no live contract."
+                  : "No revised value — these change orders belong to the portfolio, not to this project alone, so they can't be added to this proposal's total."}
+              </p>
+            )}
           </>
         )}
         <SummaryRow label="Project start" value={fmtSummaryDate(summary.start)} />
@@ -4468,11 +4603,15 @@ function UploadDialog({
  *  rather than buried here, because it is not recoverable after the fact. */
 function NewVersionDialog({
   currentLabel,
+  inheritedUtil,
   onClose,
   onDuplicate,
   onUpload,
 }: {
   currentLabel: string;
+  /** Utilization the superseded version was computed at, so the field can show
+   *  what the server will carry forward. null => the version never stated one. */
+  inheritedUtil: number | null;
   onClose: () => void;
   onDuplicate: () => Promise<void>;
   onUpload: (
@@ -4489,7 +4628,12 @@ function NewVersionDialog({
   const [source, setSource] = useState<"workbook" | "template">("workbook");
   const [file, setFile] = useState<File | null>(null);
   const [projectStart, setProjectStart] = useState("");
-  const [util, setUtil] = useState(100);
+  // Seeded from the version being superseded, and the EDIT is tracked, not just
+  // the value: a re-bid that leaves this alone must send nothing at all, which
+  // is the only way the server carries the PM's utilization forward. Posting a
+  // defaulted 100 snapped every 60%-utilization schedule back to full rate.
+  const [util, setUtil] = useState(inheritedUtil ?? 100);
+  const [utilTouched, setUtilTouched] = useState(false);
   const [updateIdentity, setUpdateIdentity] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -4645,8 +4789,18 @@ function NewVersionDialog({
                     type="number"
                     className={inputCls}
                     value={util}
-                    onChange={(e) => setUtil(Number(e.target.value) || 100)}
+                    onChange={(e) => {
+                      setUtil(Number(e.target.value) || 100);
+                      setUtilTouched(true);
+                    }}
                   />
+                  {!utilTouched && (
+                    <span className="mt-1 block text-[11.5px] text-brand-gray">
+                      {inheritedUtil != null
+                        ? `Carried over from ${currentLabel} — leave it to keep ${inheritedUtil}%.`
+                        : `${currentLabel} set none; the schedule computes at 100%.`}
+                    </span>
+                  )}
                 </Field>
               )}
             </div>
@@ -4683,9 +4837,13 @@ function NewVersionDialog({
                 ? run(
                     () =>
                       onUpload(file!, {
+                        // A template carries its own; an untouched workbook
+                        // field must go over the wire OMITTED so the server
+                        // inherits rather than defaults (see the field's hint).
                         source,
                         project_start: projectStart || undefined,
-                        utilization_percent: isTemplate ? undefined : util,
+                        utilization_percent:
+                          isTemplate || !utilTouched ? undefined : util,
                         update_identity: updateIdentity,
                       }),
                     "Could not build a version from that file",
