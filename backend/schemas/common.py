@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ORMModel(BaseModel):
@@ -1257,6 +1257,7 @@ class ChangeOrderOut(ORMModel):
     pdf_storage_path: Optional[str] = None
     sent_at: Optional[datetime] = None
     sent_to: Optional[str] = None
+    sent_method: Optional[str] = None   # graph | outlook | manual; None = untracked
     version: int = 1
     line_items: list[ChangeOrderLineItemOut] = Field(default_factory=list)
     created_by: Optional[UserStub] = None
@@ -1289,8 +1290,21 @@ class ChangeOrderIn(BaseModel):
     line_items: list[ChangeOrderLineItemIn] = Field(default_factory=list)
 
 
+CO_SENT_METHODS = ("graph", "outlook", "manual")
+
+
 class ChangeOrderMarkSent(BaseModel):
     recipients: Optional[str] = None   # the To/Cc the CO was emailed to
+    # Omitted stays valid so existing callers keep working; an unknown value is a
+    # 422 rather than junk on the row, because the Sent tab renders this verbatim.
+    method: Optional[str] = None
+
+    @field_validator("method")
+    @classmethod
+    def _known_method(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in CO_SENT_METHODS:
+            raise ValueError(f"method must be one of: {', '.join(CO_SENT_METHODS)}")
+        return v
 
 
 class ChangeOrderUpdate(BaseModel):

@@ -114,12 +114,16 @@ def list_change_orders(
     project_id: "int | None" = Query(None),
     client_id: "int | None" = Query(None),
     status: "str | None" = Query(None),
+    sent: "bool | None" = Query(None),
     db: Session = Depends(get_db),
     _user=Depends(require_db_user),
 ):
     """List change orders. Scoped to one portfolio (project_id) for the module's
     per-portfolio tabs; with project_id omitted it aggregates across portfolios
-    (optionally narrowed to a client) for the "all clients" view + Home rollup."""
+    (optionally narrowed to a client) for the "all clients" view + Home rollup.
+
+    `sent` splits the approved pile into delivered vs still-to-send; omitted, it
+    leaves the result set untouched."""
     q = db.query(ChangeOrder)
     if project_id is not None:
         q = q.filter(ChangeOrder.project_id == project_id)
@@ -129,6 +133,10 @@ def list_change_orders(
         )
     if status in _VALID_STATUS:
         q = q.filter(ChangeOrder.status == status)
+    if sent is not None:
+        # sent_at, not sent_method: NULL-method rows are still genuinely sent.
+        q = q.filter(ChangeOrder.sent_at.isnot(None) if sent
+                     else ChangeOrder.sent_at.is_(None))
     if project_id is not None:
         # Per-portfolio: keep CO-number ordering (newest CO first).
         q = q.order_by(ChangeOrder.co_number.desc())
@@ -260,11 +268,26 @@ def mark_change_order_sent(
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
 ):
-    """Record that the approved CO PDF was emailed to the client (the email
-    itself is sent client-side via Microsoft Graph from the PM's mailbox)."""
+    """Record that the approved CO PDF was emailed to the client. The send itself
+    happens client-side — Microsoft Graph from the PM's mailbox, or handed off to
+    the desktop Outlook client — so `method` is how the Sent tab tells them apart."""
     co = _get(db, co_id)
-    co.sent_at = datetime.utcnow()
-    co.sent_to = (payload.recipients or "").strip() or None
+    recipients = (payload.recipients or "").strip() or None
+    if co.sent_at is None:
+        # First delivery is the one the archive is for: on a re-send we keep the
+        # original date, recipients and method rather than overwriting the record
+        # of when the client actually received it. There is no send-history table,
+        # so a re-send that re-stamped would destroy the only copy of that fact.
+        co.sent_at = datetime.utcnow()
+        co.sent_to = recipients
+        # Left NULL when the caller omits it, so an older client can't silently
+        # mislabel a send as Graph.
+        if payload.method:
+            co.sent_method = payload.method
+    elif recipients and recipients not in (co.sent_to or ""):
+        # A re-send to someone new is worth recording — append rather than
+        # replace, so the original recipient list survives.
+        co.sent_to = f"{co.sent_to}, {recipients}" if co.sent_to else recipients
     if actor:
         co.updated_by_id = actor.id
     db.flush()
@@ -283,6 +306,13 @@ def reject_change_order(co_id: int, db: Session = Depends(get_db), actor=Depends
     co.approved_by = None
     co.approved_by_user_id = None
     co.approved_at = None
+    # The delivery stamp goes back with the approval stamp. sent_at decides which
+    # tab an approved CO lives in, so leaving it set would send a revised CO
+    # straight to "Sent to client" on re-approval — filed as delivered while the
+    # client still holds the superseded version, and never queued for sending.
+    co.sent_at = None
+    co.sent_to = None
+    co.sent_method = None
     if actor:
         co.updated_by_id = actor.id
     db.flush()

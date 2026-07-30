@@ -25,8 +25,20 @@ import { sendMail, blobToBase64 } from "@/lib/graph";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
-type Tab = "create" | "pending" | "sent_back" | "approved";
+type Tab = "create" | "pending" | "sent_back" | "approved" | "sent";
 type RateType = "fixed" | "hourly";
+
+// An approved CO is "delivered" once it carries a send timestamp, whichever
+// pathway put it there — Graph, Outlook, or a PM marking it by hand.
+const isSent = (co: ChangeOrder) => !!co.sent_at;
+
+// Rows recorded before sent_method existed have no method, so they degrade to a
+// bare "Sent" rather than us guessing which pathway was used.
+const SENT_METHOD_LABEL: Record<string, string> = {
+  graph: "via Graph",
+  outlook: "via Outlook",
+  manual: "marked manually",
+};
 
 // Standard Castillo hourly billing rates (from the request-form rate card).
 // Picking a role pre-fills the rate; the rate stays editable per line.
@@ -209,6 +221,11 @@ export default function ChangeOrders() {
     () => approved.reduce((s, c) => s + (Number(c.total_amount) || 0), 0),
     [approved],
   );
+  // Approved splits into a work queue (approved, still needs sending) and an
+  // archive (already delivered). `approved` stays whole so the header rollup
+  // keeps reporting total approved value regardless of delivery.
+  const toSend = useMemo(() => approved.filter((c) => !isSent(c)), [approved]);
+  const sent = useMemo(() => approved.filter(isSent), [approved]);
   // Needs-attention first (awaiting a decision, then yours to finish), settled last.
   const inFlight = useMemo(
     () => [...pending, ...sentBack, ...drafts, ...approved],
@@ -428,6 +445,21 @@ export default function ChangeOrders() {
     await load();
     setTab("pending");
   }
+  // Escape hatch for a CO the PM delivered outside the app entirely — forwarded
+  // it, printed it, sent it from their phone. Confirmed first so a stray click
+  // can't file an undelivered CO as done.
+  async function doMarkSent(co: ChangeOrder) {
+    const ok = await confirm({
+      title: `Mark CO-${co.co_number} as sent?`,
+      body: "Use this when you delivered it yourself, outside this app. It moves to the Sent tab, recorded as marked manually.",
+      confirmLabel: "Mark as sent",
+    });
+    if (!ok) return;
+    // No recipient list to record — we only know that it went out somehow.
+    await markChangeOrderSent(co.id, "", "manual");
+    await load();
+    setTab("sent");
+  }
   async function doDelete(co: ChangeOrder) {
     const ok = await confirm({
       title: `Delete CO-${co.co_number}?`,
@@ -493,9 +525,18 @@ export default function ChangeOrders() {
         <TabBtn
           active={tab === "approved"}
           onClick={() => setTab("approved")}
-          count={approved.length}
+          count={toSend.length}
         >
           Approved
+        </TabBtn>
+        {/* "Sent to client", not "Sent" — it sits two tabs from "Sent back",
+            which means the opposite (returned to the requester). */}
+        <TabBtn
+          active={tab === "sent"}
+          onClick={() => setTab("sent")}
+          count={sent.length}
+        >
+          Sent to client
         </TabBtn>
       </div>
 
@@ -1058,18 +1099,26 @@ export default function ChangeOrders() {
           </div>
         ))}
 
-      {/* ============ APPROVED ============ */}
+      {/* ============ APPROVED (approved, still to send) ============ */}
       {tab === "approved" &&
         (loading ? (
           <div className="card p-5 text-sm text-brand-gray">Loading…</div>
-        ) : approved.length === 0 ? (
+        ) : toSend.length === 0 ? (
           <EmptyState
-            title="No approved change orders yet"
-            hint="Approved change orders show here with a downloadable PDF."
+            title={
+              sent.length
+                ? "Everything approved has been sent"
+                : "No approved change orders yet"
+            }
+            hint={
+              sent.length
+                ? "This tab holds approved change orders still waiting to go to the client. The ones already delivered are under Sent."
+                : "Approved change orders show here with a downloadable PDF, ready to send to the client."
+            }
           />
         ) : (
           <div className="card divide-y divide-surface-hairline overflow-hidden">
-            {approved.map((co) => (
+            {toSend.map((co) => (
               <CoRow
                 key={co.id}
                 co={co}
@@ -1088,6 +1137,53 @@ export default function ChangeOrders() {
                       onClick={() => setEmailFor(co)}
                     >
                       📧 Email to client
+                    </button>
+                    <button
+                      className="btn-ghost px-3 py-1.5 text-xs"
+                      onClick={() => doMarkSent(co)}
+                      title="Already delivered it another way? Record it as sent."
+                    >
+                      ✓ Mark as sent
+                    </button>
+                  </>
+                }
+              />
+            ))}
+          </div>
+        ))}
+
+      {/* ============ SENT (approved + delivered — the archive) ============ */}
+      {tab === "sent" &&
+        (loading ? (
+          <div className="card p-5 text-sm text-brand-gray">Loading…</div>
+        ) : sent.length === 0 ? (
+          <EmptyState
+            title="Nothing sent yet"
+            hint="Approved change orders land here once they reach the client — emailed via Graph, handed off to Outlook, or marked as sent by hand. Send one from the Approved tab."
+          />
+        ) : (
+          <div className="card divide-y divide-surface-hairline overflow-hidden">
+            {sent.map((co) => (
+              <CoRow
+                key={co.id}
+                co={co}
+                context={inAll}
+                sentDetail
+                onDelete={inAll ? undefined : () => doDelete(co)}
+                actions={
+                  <>
+                    <button
+                      className="btn-primary px-3 py-1.5 text-xs"
+                      onClick={() => openPdf(co)}
+                    >
+                      📄 Final PDF
+                    </button>
+                    <button
+                      className="btn-ghost px-3 py-1.5 text-xs"
+                      onClick={() => setEmailFor(co)}
+                      title="Send the same PDF again — e.g. the client asked for another copy."
+                    >
+                      ↻ Resend
                     </button>
                   </>
                 }
@@ -1141,8 +1237,14 @@ export default function ChangeOrders() {
           co={emailFor}
           onClose={() => setEmailFor(null)}
           onSent={() => {
+            const wasUnsent = !emailFor.sent_at;
             setEmailFor(null);
             void load();
+            // Follow the CO to where it just moved. Without this the row simply
+            // vanishes from Approved with no hint it went anywhere — the same
+            // outcome the "Mark as sent" button already narrates. A resend from
+            // the Sent tab has moved nothing, so leave that one alone.
+            if (wasUnsent) setTab("sent");
           }}
         />
       )}
@@ -1195,6 +1297,7 @@ function CoRow({
   onDelete,
   actions,
   context,
+  sentDetail,
 }: {
   co: ChangeOrder;
   onEdit?: () => void;
@@ -1203,7 +1306,11 @@ function CoRow({
   /** Show the owning client / portfolio — set in the cross-portfolio view
    *  where rows from many portfolios are mixed together. */
   context?: boolean;
+  /** Spell out when / how / to whom it was sent, replacing the compact badge.
+   *  Set on the Sent tab, where delivery is the whole point of the row. */
+  sentDetail?: boolean;
 }) {
+  const sentVia = SENT_METHOD_LABEL[co.sent_method || ""];
   return (
     <div className="flex items-center gap-3 px-5 py-3 transition hover:bg-surface-rowhover">
       <div className="min-w-0 flex-1">
@@ -1244,7 +1351,7 @@ function CoRow({
           {co.status === "approved" && co.approved_by
             ? ` · approved by ${co.approved_by}`
             : ""}
-          {co.sent_at ? (
+          {co.sent_at && !sentDetail ? (
             <span className="text-brand-green">
               {" · ✉ emailed "}
               {format(parseISO(co.sent_at), "MMM d")}
@@ -1253,6 +1360,20 @@ function CoRow({
             ""
           )}
         </div>
+        {sentDetail && co.sent_at && (
+          <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px]">
+            <span className="rounded bg-status-completed-bg px-1.5 py-0.5 font-semibold text-status-completed-text">
+              ✉ Sent {format(parseISO(co.sent_at), "MMM d, yyyy")}
+              {sentVia ? ` ${sentVia}` : ""}
+            </span>
+            {/* Absent for a manual mark, and for anything sent before we tracked it. */}
+            {co.sent_to && (
+              <span className="min-w-0 truncate text-brand-gray" title={co.sent_to}>
+                to {co.sent_to}
+              </span>
+            )}
+          </div>
+        )}
       </div>
       <CoStatusBadge status={co.status} />
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
@@ -1375,7 +1496,9 @@ function CoEmailModal({
       co.co_version || "V1"
     }.pdf`;
 
-  const [to, setTo] = useState("");
+  // On a resend the previous recipients are the likely ones again. sent_to is a
+  // flat To+Cc list, so it all lands in To for the PM to trim.
+  const [to, setTo] = useState(co.sent_to || "");
   const [cc, setCc] = useState("");
   const [subject, setSubject] = useState(
     `Change Order CO-${co.co_number} (${co.co_version || "V1"}) — ${project}`,
@@ -1389,6 +1512,9 @@ function CoEmailModal({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
+  // The mailto hand-off leaves the app blind — the OS mail client never tells us
+  // whether the PM actually hit send. So we ask instead of assuming.
+  const [askOutlook, setAskOutlook] = useState(false);
 
   // Portfolio contacts (with email) shown as one-click chips for the To line.
   useEffect(() => {
@@ -1409,6 +1535,8 @@ function CoEmailModal({
       return have.includes(email) ? cur : cur ? `${cur}, ${email}` : email;
     });
 
+  const recipients = () => [to, cc].filter((s) => s.trim()).join(", ");
+
   function mailtoFallback() {
     void fetchChangeOrderPdfBlob(co.id).then((b) =>
       window.open(URL.createObjectURL(b), "_blank"),
@@ -1418,6 +1546,23 @@ function CoEmailModal({
     setTimeout(() => {
       window.location.href = `mailto:${encodeURIComponent(to.trim())}?${q.join("&")}`;
     }, 250);
+    setAskOutlook(true);
+  }
+
+  // Only ever reached from the PM answering "yes, I sent it" — never optimistic.
+  async function confirmOutlookSent() {
+    setError(null);
+    setSending(true);
+    try {
+      await markChangeOrderSent(co.id, recipients(), "outlook");
+      setAskOutlook(false);
+      setOk(true);
+      setTimeout(onSent, 900);
+    } catch (e: any) {
+      setError(e?.message || "Could not record the send");
+    } finally {
+      setSending(false);
+    }
   }
 
   async function send() {
@@ -1443,10 +1588,7 @@ function CoEmailModal({
         },
         token,
       );
-      await markChangeOrderSent(
-        co.id,
-        [to, cc].filter((s) => s.trim()).join(", "),
-      );
+      await markChangeOrderSent(co.id, recipients(), "graph");
       setOk(true);
       setTimeout(onSent, 900);
     } catch (e: any) {
@@ -1533,6 +1675,29 @@ function CoEmailModal({
         {ok && (
           <div className="rounded-lg border border-status-completed-border bg-status-completed-bg px-3 py-2 text-sm text-status-completed-text">
             ✓ Sent — check your Outlook Sent Items.
+          </div>
+        )}
+        {askOutlook && !ok && (
+          <div className="rounded-lg border border-status-pending-border bg-status-pending-bg px-3 py-2.5 text-sm text-status-pending-text">
+            <div>
+              Outlook opened with the draft. Mark CO-{co.co_number} as sent?
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                className="btn-primary px-3 py-1.5 text-xs"
+                onClick={() => void confirmOutlookSent()}
+                disabled={sending}
+              >
+                {sending ? "Recording…" : "Yes, mark as sent"}
+              </button>
+              <button
+                className="btn-ghost px-3 py-1.5 text-xs"
+                onClick={() => setAskOutlook(false)}
+                disabled={sending}
+              >
+                Not yet
+              </button>
+            </div>
           </div>
         )}
 

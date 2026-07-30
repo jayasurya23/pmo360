@@ -902,6 +902,10 @@ class ChangeOrder(Base):
     pdf_storage_path = Column(String(500))  # archived approved PDF (storage backend)
     sent_at = Column(DateTime)              # when emailed to the client
     sent_to = Column(Text)                  # recipients it was emailed to
+    # graph | outlook | manual. Deliberately nullable with no default: NULL means
+    # "sent before we tracked the method", which is a real state distinct from all
+    # three — a default would forge provenance onto historical rows.
+    sent_method = Column(String(20))
     version = Column(Integer, nullable=False, default=1, server_default="1")  # optimistic lock
     created_by_id = Column(Integer, ForeignKey("users.id"))
     updated_by_id = Column(Integer, ForeignKey("users.id"))
