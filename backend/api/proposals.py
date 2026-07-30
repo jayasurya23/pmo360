@@ -1331,10 +1331,13 @@ def _resync_proposal_timeline(p, v, db, actor, *, rename_project: bool = False) 
     added = updated = removed = 0
     for b in bars:
         key = (b["discipline"], b["milestone"])
-        if key in protected_keys:
-            continue                                   # a PM owns this phase
         rows = auto.get(key) or []
         if rows:
+            # Re-date the auto row even when a protected bar shares this key.
+            # Skipping on `key in protected_keys` (as this once did) left the auto
+            # sibling un-dated AND stranded it in the leftovers below — so a phase
+            # that was still perfectly live lost its bar because some other bar
+            # happened to carry the same (discipline, milestone) pair.
             a = rows.pop(0)                            # reuse the row -> id is stable
             if (a.start_date != b["start_date"] or a.end_date != b["end_date"]
                     or (a.order_index or 0) != b["order_index"]):
@@ -1344,6 +1347,8 @@ def _resync_proposal_timeline(p, v, db, actor, *, rename_project: bool = False) 
                 a.version = (a.version or 1) + 1
                 a.updated_at = datetime.utcnow()
                 updated += 1
+        elif key in protected_keys:
+            continue          # a PM owns this phase — don't add a duplicate bar
         else:
             db.add(TimelineAssignment(
                 timeline_project_id=proj.id, resource_id=None,
@@ -1354,11 +1359,22 @@ def _resync_proposal_timeline(p, v, db, actor, *, rename_project: bool = False) 
                 origin="proposal", manual_edit=False,
                 created_by_id=actor.id))
             added += 1
-    for rows in auto.values():                         # leftovers: vanished phases + dupes
-        for a in rows:
-            db.delete(a); removed += 1
+
+    # Leftover auto rows are REPORTED, never deleted. `origin`/`manual_edit` are
+    # only trustworthy for bars this code created after fb1a2b3c4d5e6; that
+    # migration back-stamped every pre-existing UNASSIGNED bar on a
+    # proposal-sourced project as auto, and some of those were placed by a human
+    # (a palette drop onto the Unassigned row, a bar dragged back off an
+    # engineer, or a bar whose engineer was later deleted from the roster — none
+    # of which left a marker, because patch_assignment only began latching
+    # manual_edit in that same batch). Deleting on that basis destroyed real
+    # scheduling work on the next ordinary save, so an implicit resync now only
+    # ever adds and re-dates. A stale bar the PM can see and remove beats one we
+    # silently removed for them.
+    stale = [a for rows in auto.values() for a in rows]
 
     orphaned = [a for a in protected if (a.discipline, a.milestone) not in live_keys]
+    orphaned = orphaned + stale
     if renamed is not None:                            # ONLY from send_to_timeline
         proj.name, proj.client = renamed
         proj.notes = f"Imported from proposal {v.label}"
