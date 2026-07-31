@@ -158,6 +158,38 @@ def serialize_tree(items) -> list[dict]:
     return out
 
 
+def _adopt_unsaved_rows(items, item_id_map):
+    """Give every row an id, and register it.
+
+    Rows added in the UI arrive with ``id: null`` (blankNode in Proposals.tsx) and
+    nothing has ever minted one. That matters because calculate_all_dates walks
+    ``item_id_map.values()`` — a row missing from the map is invisible to the
+    scheduler, so it silently never gets a start or finish date no matter how
+    valid its duration and predecessor are. That was the whole "Client Review
+    under a new section shows no dates" symptom: not a section-name problem, an
+    unaddressable-row problem, and it hit every hand-added row equally.
+
+    Ids continue from the highest in use so a new row can never collide with, or
+    steal a predecessor reference from, an existing one.
+    """
+    def walk(nodes):
+        for n in nodes:
+            yield n
+            yield from walk(n.children)
+
+    all_nodes = list(walk(items))
+    next_id = max((n.id for n in all_nodes if n.id is not None), default=0) + 1
+    for n in all_nodes:
+        if n.id is None:
+            n.id = next_id
+            next_id += 1
+            item_id_map[n.id] = n
+        # A hand-added row also arrives with no parent_id; the tree already knows
+        # its parent, so fill it in rather than leaving a half-wired node behind.
+        if n.parent_id is None and n.parent is not None:
+            n.parent_id = n.parent.id
+
+
 def deserialize_tree(tree_json):
     """JSON dicts -> ProposalItem tree. Rebuilds ``.parent`` + an id map.
 
@@ -182,6 +214,7 @@ def deserialize_tree(tree_json):
         return result
 
     items = build(tree_json)
+    _adopt_unsaved_rows(items, item_id_map)
     # Re-assert the desktop's type defaults (electrical "study" -> FS) the same
     # way calculate_all_dates does each run (Full_proposal_V9.py:6225,
     # only_type_defaults=True). Without this, ProposalItem.__post_init__ would
