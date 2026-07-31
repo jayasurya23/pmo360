@@ -286,12 +286,22 @@ def build_tree(rows_out):
     item_id_map = {it.id: it for it in id_to_item.values()}
     task_counter = max(item_id_map.keys()) if item_id_map else 0
 
-    # Add "Client Review" tasks to specific engineering milestones
-    target_milestones = ["civil engineering",
-                         "electrical engineering", "structural engineering"]
+    # Add "Client Review" tasks to every engineering discipline's design phases.
+    #
+    # This used to be an allow-list of three names (civil / electrical /
+    # structural), which silently skipped any discipline Castillo added later —
+    # Substation, BESS, and anything invented next. The PM then had to hand-add
+    # every Client Review row, and the section looked like the app "didn't
+    # recognise" it. Inverted to a deny-list so a new discipline works by
+    # default: what disqualifies a root section is being administrative, not
+    # being absent from a list nobody remembers to update.
+    non_disciplines = ("project initiation", "project closeout",
+                       "additional services", "record drawings",
+                       "client review", "assumptions", "exclusions")
 
     for root_item in template_items:
-        if root_item.is_milestone and root_item.name.lower() in target_milestones:
+        root_name = (root_item.name or "").lower()
+        if root_item.is_milestone and not any(k in root_name for k in non_disciplines):
             for child in root_item.children:
                 # Skip adding client review under Additional Services
                 if child.is_milestone and child.children and "additional services" not in child.name.lower():
