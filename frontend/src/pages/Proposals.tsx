@@ -319,6 +319,22 @@ const SUMMARY_DISCIPLINES = [
   "Structural Engineering",
 ] as const;
 
+/** Root sections that are NOT a discipline. Mirrors — deliberately, verbatim —
+ *  the deny-list in backend proposal/scheduling.py build_tree, down to the
+ *  substring test on the lowered name. That list decides which root sections get
+ *  Client Review injected, i.e. which ones the backend already treats as real
+ *  engineering; a second list that drifted from it would put a section on this
+ *  card that the scheduler considers administrative. Keep the two in step. */
+const NON_DISCIPLINE_SECTIONS = [
+  "project initiation",
+  "project closeout",
+  "additional services",
+  "record drawings",
+  "client review",
+  "assumptions",
+  "exclusions",
+];
+
 /** Recompute the client-side summary from the working flat tree. Mirrors the
  *  desktop "Project Summary" panel: total = Σ price over enabled top-level
  *  nodes; deposit = the enabled "Deposit" node's price; dates = earliest /
@@ -364,31 +380,59 @@ function computeSummary(
     custom: config?.custom_holidays,
   });
 
-  const disciplines: DisciplineLine[] = SUMMARY_DISCIPLINES.map((name) => {
-    const node = enabled.find(
-      (n) => n.indent_level === 0 && (n.name || "").trim() === name,
-    );
-    if (!node) {
-      return {
-        name,
-        present: false,
-        amount: 0,
-        start: null,
-        end: null,
-        workingDays: null,
-      };
-    }
-    return {
+  const line = (name: string, node?: ProposalItemNode): DisciplineLine =>
+    node
+      ? {
+          name,
+          present: true,
+          amount: Number(node.price) || 0,
+          start: parseMdy(node.start_date),
+          end: parseMdy(node.end_date),
+          // Same rolled-up business-day duration the Schedule tree shows for this
+          // milestone (node.duration), so the two views agree.
+          workingDays: node.duration != null ? Number(node.duration) : null,
+        }
+      : { name, present: false, amount: 0, start: null, end: null, workingDays: null };
+
+  // The three standard disciplines always hold a slot, in this order, even when
+  // the proposal has none of them — the greyed line is how a PM notices one is
+  // missing. Everything else Castillo sections a proposal by (Substation, BESS,
+  // whatever is invented next) is appended in schedule order, so the card reads
+  // like the tree rather than going stale the day a new discipline appears.
+  // Matching is case-insensitive on BOTH sides: if the fixed lookup and the
+  // append filter disagreed on what counts as the same discipline, an oddly
+  // cased "Civil engineering" would be listed twice or dropped entirely.
+  const claimed = new Set<string>(SUMMARY_DISCIPLINES.map((d) => d.toLowerCase()));
+  const disciplines: DisciplineLine[] = SUMMARY_DISCIPLINES.map((name) =>
+    line(
       name,
-      present: true,
-      amount: Number(node.price) || 0,
-      start: parseMdy(node.start_date),
-      end: parseMdy(node.end_date),
-      // Same rolled-up business-day duration the Schedule tree shows for this
-      // milestone (node.duration), so the two views agree.
-      workingDays: node.duration != null ? Number(node.duration) : null,
-    };
-  });
+      enabled.find(
+        (n) =>
+          n.indent_level === 0 &&
+          (n.name || "").trim().toLowerCase() === name.toLowerCase(),
+      ),
+    ),
+  );
+  for (const n of enabled) {
+    const name = (n.name || "").trim();
+    const key = name.toLowerCase();
+    // `is_milestone` is what makes a root row a *section* (a bare top-level task
+    // is not a discipline), matching build_tree's own root test. Deposit is
+    // excluded by the same exact-name rule that finds it above — it is a payment
+    // line, not work.
+    if (
+      !name ||
+      key === "deposit" ||
+      n.indent_level !== 0 ||
+      !n.is_milestone ||
+      NON_DISCIPLINE_SECTIONS.some((k) => key.includes(k))
+    )
+      continue;
+    // Two sections sharing a name would collide on the card's `key={d.name}`.
+    if (claimed.has(key)) continue;
+    claimed.add(key);
+    disciplines.push(line(name, n));
+  }
 
   return {
     total,
@@ -713,6 +757,51 @@ export default function Proposals() {
     [keyOf],
   );
 
+  // Ids for rows minted in the browser. A predecessor link is stored as the
+  // TARGET row's id, so a row without one cannot be offered as a predecessor —
+  // which is why a milestone added by hand was missing from every dropdown until
+  // a save round-trip let the server name it (serialization._adopt_unsaved_rows).
+  // Naming it here closes that gap inside the editing session; the server keeps
+  // whatever id the client already assigned.
+  const nextIdRef = useRef(1);
+
+  // Adopt a tree that came back from the server: fresh row keys, plus the id
+  // counter re-seeded above every id in that tree. EVERY path that replaces
+  // `flat` from a server response goes through here — a counter left over from
+  // the previously open board would re-issue an id this tree already uses, and a
+  // duplicate id silently re-points the older row's dependents at the new row.
+  const adoptServerTree = useCallback(
+    (tree: ProposalItemNode[]) => {
+      keyMap.current = new WeakMap();
+      const rows = flatten(tree, keyOf).map((f) => f.node);
+      nextIdRef.current =
+        rows.reduce((hi, n) => (n.id != null && n.id > hi ? n.id : hi), 0) + 1;
+      setFlat(rows);
+    },
+    [keyOf],
+  );
+
+  // The one way to create a row. blankNode leaves `id` null and mints no key, and
+  // a row missing either is broken in ways that only surface later — unpickable
+  // as a predecessor, remounted (losing focus) on the next edit. Routing all of
+  // the add/seed actions through here means the next one added can't forget.
+  const newRow = useCallback(
+    (
+      indent: number,
+      type?: "section" | "milestone" | "task",
+      patch?: Partial<ProposalItemNode>,
+    ) => {
+      const node: ProposalItemNode = {
+        ...blankNode(indent, type),
+        ...patch,
+        id: nextIdRef.current++,
+      };
+      keyOf(node);
+      return node;
+    },
+    [keyOf],
+  );
+
   // dialogs
   const [showUpload, setShowUpload] = useState(false);
   const [showNewVersion, setShowNewVersion] = useState(false);
@@ -869,8 +958,7 @@ export default function Proposals() {
         void fetchProposalLogos(id)
           .then(setLogos)
           .catch(() => setLogos({ company_logo: null, client_logo: null }));
-        keyMap.current = new WeakMap();
-        setFlat(flatten(b.version.tree, keyOf).map((f) => f.node));
+        adoptServerTree(b.version.tree);
         seedDrafts(b.version);
         setDirty(false);
         setError(null);
@@ -888,7 +976,7 @@ export default function Proposals() {
         setBoardLoading(false);
       }
     },
-    [keyOf, seedDrafts],
+    [adoptServerTree, seedDrafts],
   );
 
   // Default the open proposal to the one matching the project picked in the
@@ -910,8 +998,7 @@ export default function Proposals() {
   const applyBoard = useCallback(
     (b: ProposalBoard) => {
       setBoard(b);
-      keyMap.current = new WeakMap();
-      setFlat(flatten(b.version.tree, keyOf).map((f) => f.node));
+      adoptServerTree(b.version.tree);
       seedDrafts(b.version);
       setDirty(false);
       setCalcError(null);
@@ -925,7 +1012,7 @@ export default function Proposals() {
       // board read carries null, which also clears the previous save's report.
       setTimelineResync(b.timeline_resync ?? null);
     },
-    [keyOf, seedDrafts],
+    [adoptServerTree, seedDrafts],
   );
 
   // ---- project-info PATCH (optimistic + 409 reload) ----
@@ -1211,8 +1298,7 @@ export default function Proposals() {
       const ref = rows[idx];
       const indent =
         mode === "child" ? ref.indent_level + 1 : ref.indent_level;
-      const node = blankNode(indent);
-      keyOf(node); // mint a key now so it's stable
+      const node = newRow(indent);
       // insert right after the ref's whole subtree
       let insertAt = idx + 1;
       while (
@@ -1241,8 +1327,7 @@ export default function Proposals() {
       } else {
         // append a top-level task at the end
         setFlat((rows) => {
-          const node = blankNode(0, "task");
-          keyOf(node);
+          const node = newRow(0, "task");
           return [...rows, node];
         });
         setDirty(true);
@@ -1253,8 +1338,7 @@ export default function Proposals() {
     setFlat((rows) => {
       const next = [...rows];
       if (type === "section") {
-        const node = blankNode(0, "section");
-        keyOf(node);
+        const node = newRow(0, "section");
         if (afterKey) {
           const idx = rows.findIndex((n) => keyOf(n) === afterKey);
           if (idx >= 0) {
@@ -1279,8 +1363,7 @@ export default function Proposals() {
         const idx = rows.findIndex((n) => keyOf(n) === afterKey);
         if (idx >= 0) {
           const ref = rows[idx];
-          const node = blankNode(ref.indent_level + 1, "milestone");
-          keyOf(node);
+          const node = newRow(ref.indent_level + 1, "milestone");
           // insert right after the ref's whole subtree (like addRow "child")
           let insertAt = idx + 1;
           while (
@@ -1293,9 +1376,8 @@ export default function Proposals() {
         }
       }
       // no selection → top-level milestone (== section) appended at end
-      const node = blankNode(0, "milestone");
+      const node = newRow(0, "milestone");
       node.indent_level = 0;
-      keyOf(node);
       next.push(node);
       return next;
     });
@@ -1311,16 +1393,13 @@ export default function Proposals() {
     setFlat((rows) => {
       const next = [...rows];
       for (const disc of DISCIPLINES) {
-        const section = { ...blankNode(0, "section"), name: disc };
-        keyOf(section);
+        const section = newRow(0, "section", { name: disc });
         next.push(section);
         for (const ph of PHASES) {
-          const ms = { ...blankNode(1, "milestone"), name: `${disc} — ${ph} Design` };
-          keyOf(ms);
+          const ms = newRow(1, "milestone", { name: `${disc} — ${ph} Design` });
           next.push(ms);
         }
-        const rec = { ...blankNode(1, "milestone"), name: "Record Drawings", enabled: false };
-        keyOf(rec);
+        const rec = newRow(1, "milestone", { name: "Record Drawings", enabled: false });
         next.push(rec);
       }
       return next;
@@ -1557,8 +1636,7 @@ export default function Proposals() {
             }
           : b,
       );
-      keyMap.current = new WeakMap();
-      setFlat(flatten(detail.tree, keyOf).map((f) => f.node));
+      adoptServerTree(detail.tree);
       seedDrafts(detail);
       // Saving the active version re-projects its dates onto the Timeline; the
       // server reports what moved so the PM sees it without opening that board.
@@ -1614,8 +1692,7 @@ export default function Proposals() {
             }
           : b,
       );
-      keyMap.current = new WeakMap();
-      setFlat(flatten(detail.tree, keyOf).map((f) => f.node));
+      adoptServerTree(detail.tree);
       setTimelineResync(detail.timeline_resync ?? null);
       setDirty(false);
     } catch (e) {
@@ -3406,6 +3483,40 @@ const DISCIPLINE_BADGES: Record<string, { letter: string; cls: string }> = {
   "Structural Engineering": { letter: "S", cls: "bg-brand-brown" },
 };
 
+// Fills available to a discipline Castillo adds later. Short on purpose: the
+// badge is a solid fill under a WHITE letter, and most brand tokens invert to a
+// light step in dark mode (gold, blue, brightgreen, brown) which would strand
+// that letter — the same trap the Civil note above describes. These two stay
+// dark in both themes. Three others are deliberately absent: brightred is the
+// app's destructive colour and would read as a warning here, while red and brown
+// already ARE the Electrical and Structural badges — reusing one would put two
+// identical chips on the same card.
+const NEW_DISCIPLINE_FILLS = [
+  "bg-brand-green",
+  "bg-brand-darkred",
+];
+
+/** Badge for a discipline that isn't one of the three standard ones.
+ *
+ *  Letter: the name's first alphanumeric. Single letters, because that is what
+ *  the standard badges use and the full name is rendered right beside it — the
+ *  badge is a colour marker, not an identifier, and mixing "E" with two-letter
+ *  initials just reads ragged at 9px.
+ *
+ *  Fill: hashed from the name, not taken from the row's position, so a
+ *  discipline keeps the same colour across reloads and no matter how its
+ *  neighbours are reordered, added or removed. */
+function derivedBadge(name: string): { letter: string; cls: string } {
+  const key = name.trim().toLowerCase();
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  const first = key.match(/[a-z0-9]/)?.[0] ?? key.charAt(0);
+  return {
+    letter: (first || "?").toUpperCase(),
+    cls: NEW_DISCIPLINE_FILLS[h % NEW_DISCIPLINE_FILLS.length],
+  };
+}
+
 function DisciplinesPanel({ disciplines }: { disciplines: DisciplineLine[] }) {
   const datesLabel = (start: Date | null, end: Date | null) =>
     start || end ? `${fmtSummaryDate(start)} → ${fmtSummaryDate(end)}` : "—";
@@ -3414,7 +3525,16 @@ function DisciplinesPanel({ disciplines }: { disciplines: DisciplineLine[] }) {
       <h3 className="section-title text-sm">Disciplines</h3>
       <div className="mt-2.5 flex flex-col gap-2 text-[12.5px]">
         {disciplines.map((d, i) => {
-          const badge = DISCIPLINE_BADGES[d.name];
+          // hasOwnProperty, not a bare index: d.name is now arbitrary PM-typed
+          // text, and a section called "constructor" would otherwise resolve to
+          // Object.prototype's member — truthy, so the fallback never fires and
+          // the chip renders empty and unstyled.
+          const badge = Object.prototype.hasOwnProperty.call(
+            DISCIPLINE_BADGES,
+            d.name,
+          )
+            ? DISCIPLINE_BADGES[d.name]
+            : derivedBadge(d.name);
           const days =
             d.present && d.start && d.end ? inclusiveDays(d.start, d.end) : null;
           return (
