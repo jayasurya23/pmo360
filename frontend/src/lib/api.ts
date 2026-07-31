@@ -190,6 +190,144 @@ export const fetchPortfolioMetrics = (projectId: number) =>
     .get<PortfolioMetrics>(`/projects/${projectId}/metrics`)
     .then((r) => r.data);
 
+// ---------- monday.com KPIs (read-only) ----------
+/**
+ * One KPI number plus its coverage.
+ *
+ * `value === null` means "not computable from current data" and is NOT the
+ * same as `0`. Render the two differently — a null on-time rate means nothing
+ * has been delivered yet, whereas 0 would claim everything shipped late.
+ * `sample_size` / `population` give the honest denominator.
+ */
+export interface MondayMeasure {
+  value: number | null;
+  sample_size: number;
+  population: number;
+  coverage: number | null;
+  unit: string;
+  low_confidence: boolean;
+}
+export interface MondayScheduleKpis {
+  total_tasks: number;
+  countable_tasks: number;
+  completed_tasks: number;
+  not_started_tasks: number;
+  in_progress_tasks: number;
+  blocked_tasks: number;
+  overdue_tasks: number;
+  completion_rate: MondayMeasure;
+  on_time_rate: MondayMeasure;
+  avg_schedule_variance_days: MondayMeasure;
+  by_phase: Record<string, MondayPhaseRollup>;
+  by_discipline: Record<string, MondayPhaseRollup>;
+}
+export interface MondayPhaseRollup {
+  total: number;
+  completed: number;
+  avg_schedule_variance_days: MondayMeasure;
+}
+export interface MondayQcKpis {
+  tasks_in_qc: number;
+  tasks_qc_complete: number;
+  awaiting_qc: number;
+  avg_cycle_days: MondayMeasure;
+  median_cycle_days: MondayMeasure;
+}
+export interface MondayEffortKpis {
+  planned_hours_total: MondayMeasure;
+  actual_hours_total: MondayMeasure;
+  hours_variance_total: MondayMeasure;
+  billable_cost_total: MondayMeasure;
+  actual_cost_total: MondayMeasure;
+  cost_ratio: number | null;
+  by_discipline: Record<string, Record<string, MondayMeasure>>;
+}
+export interface MondayBoardKpis {
+  board_id: string;
+  board_name: string | null;
+  /** False when the board is populated but no work has been logged yet. */
+  has_execution_data: boolean;
+  schedule: MondayScheduleKpis;
+  qc: MondayQcKpis;
+  effort: MondayEffortKpis;
+  data_quality: string[];
+}
+export interface MondayPortfolioKpis {
+  project_id: number;
+  configured: boolean;
+  linked: boolean;
+  last_synced_at: string | null;
+  boards: MondayBoardKpis[];
+  message: string | null;
+}
+export interface MondayBoardLink {
+  id: number;
+  project_id: number;
+  board_id: string;
+  board_name: string | null;
+  kind: string;
+  is_active: boolean;
+  last_synced_at: string | null;
+  last_sync_error: string | null;
+  last_sync_task_count: number | null;
+}
+export interface MondayTrendPoint {
+  snapshot_date: string;
+  total_tasks: number | null;
+  completed_tasks: number | null;
+  in_progress_tasks: number | null;
+  blocked_tasks: number | null;
+  overdue_tasks: number | null;
+  completion_rate: number | null;
+  on_time_rate: number | null;
+  avg_schedule_variance_days: number | null;
+  avg_qc_cycle_days: number | null;
+  planned_hours_total: number | null;
+  actual_hours_total: number | null;
+}
+
+export const fetchMondayStatus = () =>
+  apiClient
+    .get<{ configured: boolean; read_only: boolean }>("/monday/status")
+    .then((r) => r.data);
+
+export const fetchMondayKpis = (projectId: number, refresh = false) =>
+  apiClient
+    .get<MondayPortfolioKpis>(`/monday/projects/${projectId}/kpis`, {
+      params: refresh ? { refresh: true } : undefined,
+    })
+    .then((r) => r.data);
+
+export const listMondayLinks = (projectId: number) =>
+  apiClient
+    .get<MondayBoardLink[]>(`/monday/projects/${projectId}/links`)
+    .then((r) => r.data);
+
+export const createMondayLink = (
+  projectId: number,
+  boardId: string,
+  kind: "schedule" | "portfolio" = "schedule",
+) =>
+  apiClient
+    .post<MondayBoardLink>(`/monday/projects/${projectId}/links`, {
+      board_id: boardId,
+      kind,
+    })
+    .then((r) => r.data);
+
+export const deleteMondayLink = (linkId: number) =>
+  apiClient.delete(`/monday/links/${linkId}`).then(() => undefined);
+
+export const syncMondayLink = (linkId: number) =>
+  apiClient.post(`/monday/links/${linkId}/sync`).then((r) => r.data);
+
+export const fetchMondayTrend = (linkId: number, days = 90) =>
+  apiClient
+    .get<{ points: MondayTrendPoint[] }>(`/monday/links/${linkId}/trend`, {
+      params: { days },
+    })
+    .then((r) => r.data.points);
+
 // ---------- roster ----------
 export const listGlobalRoster = () =>
   apiClient.get<GlobalAttendee[]>("/roster/global").then((r) => r.data);

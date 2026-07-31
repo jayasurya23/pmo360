@@ -946,3 +946,153 @@ class ChangeOrderLineItem(Base):
     internal_notes = Column(Text)
 
     change_order = relationship("ChangeOrder", back_populates="line_items")
+
+
+# ============================================================
+# monday.com integration
+# ============================================================
+class MondayBoardLink(Base):
+    """Pins one monday.com board to a Portfolio.
+
+    Boards are addressed by **id, never by name**. Castillo's PMO workspace
+    contains eight boards literally named "Duplicate of MVP" plus several
+    called "Template 5.0", so a name lookup would resolve arbitrarily.
+
+    ``kind`` distinguishes the two board shapes we read:
+      - ``schedule``  — a per-project task board (e.g. "Nesler", 438 tasks)
+      - ``portfolio`` — the roll-up board holding one item per project
+    """
+    __tablename__ = "monday_board_links"
+    id = Column(Integer, primary_key=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # monday ids exceed 32-bit, and the API returns them as strings — keep
+    # them as text so we never round-trip through an int.
+    board_id = Column(String(50), nullable=False)
+    board_name = Column(String(300))
+    kind = Column(String(20), nullable=False, default="schedule")
+    is_active = Column(Boolean, nullable=False, default=True)
+
+    # Sync bookkeeping. last_sync_error is kept so a silently failing nightly
+    # refresh is visible in the UI instead of just going stale.
+    last_synced_at = Column(DateTime)
+    last_sync_error = Column(Text)
+    last_sync_task_count = Column(Integer)
+
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    project = relationship("Project", foreign_keys=[project_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    tasks = relationship(
+        "MondayTaskSnapshot", back_populates="board_link",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_monday_board_links_project", "project_id"),
+        Index("ix_monday_board_links_board", "board_id"),
+    )
+
+
+class MondayTaskSnapshot(Base):
+    """Cached copy of one monday task, refreshed on sync.
+
+    The cache exists so KPI rollups hit Postgres instead of burning monday's
+    complexity budget on every dashboard load. Rows are replaced wholesale per
+    board on each sync — this table is a mirror of current state, not history.
+    Trend data lives in :class:`MondayKpiSnapshot`.
+
+    Every metric column is nullable on purpose: monday returns ``"null"`` and
+    ``""`` for blank formula columns, and those must land as NULL rather than
+    as a fabricated zero.
+    """
+    __tablename__ = "monday_task_snapshots"
+    id = Column(Integer, primary_key=True)
+    board_link_id = Column(
+        Integer, ForeignKey("monday_board_links.id"), nullable=False
+    )
+    monday_item_id = Column(String(50), nullable=False)
+    name = Column(String(500))
+    url = Column(String(500))
+    group_title = Column(String(200))
+
+    status = Column(String(100))
+    phase = Column(String(100))
+    disciplines_json = Column(JSON)          # list[str] — multi-select
+    owner = Column(String(200))
+
+    start_date = Column(Date)
+    end_date = Column(Date)
+    completion_date = Column(Date)
+
+    planned_duration_days = Column(Float)
+    actual_duration_days = Column(Float)
+    schedule_variance_days = Column(Float)
+
+    planned_hours = Column(Float)
+    actual_hours = Column(Float)
+    hours_variance = Column(Float)
+
+    billable_cost = Column(Float)
+    actual_cost = Column(Float)
+
+    qc_status = Column(String(100))
+    qc_ready_date = Column(Date)
+    qc_complete_date = Column(Date)
+    qc_cycle_days = Column(Float)
+
+    synced_at = Column(DateTime, default=datetime.utcnow)
+
+    board_link = relationship("MondayBoardLink", back_populates="tasks")
+
+    __table_args__ = (
+        Index("ix_monday_task_snapshots_link", "board_link_id"),
+        Index("ix_monday_task_snapshots_item", "board_link_id", "monday_item_id"),
+    )
+
+
+class MondayKpiSnapshot(Base):
+    """A dated rollup of one board's KPIs — the trend record.
+
+    monday does not retain historical values of its formula columns: change a
+    status today and yesterday's schedule variance is simply gone. Nothing can
+    reconstruct it after the fact, so a row is written here on every sync. Each
+    row is the answer to "what did this board look like on that date", and the
+    series is the only place a trend line can come from.
+
+    ``payload_json`` holds the full computed KPI tree so new charts can be
+    built from history that predates them; the promoted columns exist for
+    cheap time-series queries without unpacking JSON.
+    """
+    __tablename__ = "monday_kpi_snapshots"
+    id = Column(Integer, primary_key=True)
+    board_link_id = Column(
+        Integer, ForeignKey("monday_board_links.id"), nullable=False
+    )
+    snapshot_date = Column(Date, nullable=False)
+
+    total_tasks = Column(Integer)
+    completed_tasks = Column(Integer)
+    in_progress_tasks = Column(Integer)
+    blocked_tasks = Column(Integer)
+    overdue_tasks = Column(Integer)
+    completion_rate = Column(Float)
+    on_time_rate = Column(Float)
+    avg_schedule_variance_days = Column(Float)
+    avg_qc_cycle_days = Column(Float)
+    planned_hours_total = Column(Float)
+    actual_hours_total = Column(Float)
+
+    payload_json = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    board_link = relationship("MondayBoardLink")
+
+    __table_args__ = (
+        # One row per board per day; a re-sync on the same day overwrites it.
+        Index(
+            "ix_monday_kpi_snapshots_unique", "board_link_id", "snapshot_date",
+            unique=True,
+        ),
+    )

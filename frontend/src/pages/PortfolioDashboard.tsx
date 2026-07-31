@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
+import MondayKpiSection from "@/components/monday/MondayKpiSection";
 import { listMeetings, fetchPortfolioMetrics, listChangeOrders } from "@/lib/api";
 import type { PortfolioMetrics, BurndownPoint } from "@/lib/api";
 import type { Meeting, ChangeOrder } from "@/lib/types";
@@ -114,6 +115,9 @@ export default function PortfolioDashboard() {
               onOpen={() => nav("/change-orders")}
             />
           </div>
+          {/* Delivery-side KPIs from the linked monday.com board. Loads on its
+              own so a monday outage never blocks the native metrics above. */}
+          <MondayKpiSection projectId={currentProject.id} />
         </>
       )}
     </div>

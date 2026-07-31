@@ -107,6 +107,49 @@ def sharepoint_config() -> dict:
 
 
 # ============================================================
+# monday.com
+# ============================================================
+# Read-only integration: PMO 360 pulls task status, schedule variance and
+# effort/cost figures out of the PMO workspace boards. Nothing is written
+# back, so a read-scoped token is sufficient (and preferred).
+#
+# Board IDs are pinned per portfolio in the `monday_board_links` table rather
+# than discovered by name — the workspace contains several boards sharing a
+# name (eight called "Duplicate of MVP"), so name lookup is ambiguous.
+def monday_api_token() -> str:
+    token = os.getenv("MONDAY_API_TOKEN", "")
+    if not token:
+        raise RuntimeError(
+            "MONDAY_API_TOKEN not set. Add it to your .env file, or leave the "
+            "monday.com integration disabled."
+        )
+    return token
+
+
+def monday_is_configured() -> bool:
+    """True when a token is present. Callers use this to degrade gracefully
+    instead of raising — the dashboard still renders its native metrics when
+    monday.com isn't wired up."""
+    return bool(os.getenv("MONDAY_API_TOKEN", "").strip())
+
+
+def monday_config() -> dict:
+    return {
+        "api_url": os.getenv("MONDAY_API_URL", "https://api.monday.com/v2"),
+        # monday versions its API by date. Pinning means a platform release
+        # can't silently reshape our payloads.
+        "api_version": os.getenv("MONDAY_API_VERSION", "2025-01"),
+        "timeout_seconds": float(os.getenv("MONDAY_TIMEOUT_SECONDS", "30")),
+        "max_retries": int(os.getenv("MONDAY_MAX_RETRIES", "3")),
+        # Page size for board item pulls. monday caps at 500; large boards
+        # burn complexity budget fast, so 100 is a safer default.
+        "page_size": int(os.getenv("MONDAY_PAGE_SIZE", "100")),
+        # How long a cached snapshot stays fresh before a sync refetches it.
+        "cache_ttl_minutes": int(os.getenv("MONDAY_CACHE_TTL_MINUTES", "60")),
+    }
+
+
+# ============================================================
 # App
 # ============================================================
 APP_TITLE = os.getenv("APP_TITLE", "PMO 360")
