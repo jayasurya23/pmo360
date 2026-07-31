@@ -2275,13 +2275,6 @@ export default function Proposals() {
                 accent
               />
               <div className="flex items-center gap-2">
-                <button
-                  className="btn-ghost text-[13px] px-3.5"
-                  onClick={() => void openPdf("schedule")}
-                  title="Preview the Project Schedule PDF — deliverables with dates and prices"
-                >
-                  👁 Preview
-                </button>
                 <ExportMenu
                   onExcel={() => void saveExcel()}
                   onZip={() => void saveZip()}
@@ -2809,6 +2802,16 @@ export default function Proposals() {
               {/* Controls stay pinned to the right edge even when the table is
                   wider than the viewport and scrolled horizontally. */}
               <div className="sticky right-4 flex items-center gap-2 bg-surface-card pl-3">
+                {/* Preview leads the cluster: it answers "what will the client
+                    see" about the table right below it, so it belongs with the
+                    schedule controls rather than up with the export menu. */}
+                <button
+                  className="btn-ghost text-xs py-1"
+                  onClick={() => void openPdf("schedule")}
+                  title="Preview the Project Schedule PDF — deliverables with dates and prices"
+                >
+                  👁 Preview
+                </button>
                 <AddMenu onAdd={(type) => addTyped(type, selectedKey)} onSeed={seedStandardStructure} />
                 <button
                   className="btn-ghost text-xs py-1"

@@ -920,6 +920,12 @@ class ProposalItemNode(BaseModel):
     show_start_date: bool = True
     show_end_date: bool = True
     task_utilization: Optional[float] = None
+    # The per-field row lock. It was missing here while living on the ORM item,
+    # in _ITEM_FIELDS and in the frontend type — and pydantic's default
+    # extra="ignore" silently dropped it, so PUT /tree stripped every lock and
+    # serialize_tree wrote the default back. The lock looked like it worked until
+    # you saved.
+    locked: bool = False
     parent_id: Optional[int] = None
     children: list[ProposalItemNode] = Field(default_factory=list)
 
