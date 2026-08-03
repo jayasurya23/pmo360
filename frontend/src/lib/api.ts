@@ -28,6 +28,7 @@ import type {
   MeetingTemplate,
   MeetingTemplateInput,
   MeResponse,
+  AdminUser,
   PortfolioProject,
   ProjectMember,
   ProposalBoard,
@@ -916,6 +917,35 @@ export const addProjectMember = (
  *  matches the backend's `/api/project-members/{member_id}` route. */
 export const removeProjectMember = (memberId: number) =>
   apiClient.delete(`/project-members/${memberId}`);
+
+// ---------- admin console (user + client management) ----------
+/**
+ * Full user directory for the admin console — role, active state, last seen
+ * and portfolio memberships in one round trip.
+ *
+ * Admin-gated on the server: a non-admin gets 403 here regardless of what
+ * the SPA chooses to render, so hiding the Settings section is presentation
+ * only and never the control.
+ */
+export const listAdminUsers = () =>
+  apiClient.get<AdminUser[]>("/admin/users").then((r) => r.data);
+
+/**
+ * Grant/revoke admin, or deactivate/reactivate a user. Never deletes — an
+ * offboarded user keeps every meeting, action and record they authored.
+ *
+ * The server owns the refusals (an ADMIN_EMAILS floor admin, the last
+ * remaining admin, acting on yourself) and each comes back as a 4xx whose
+ * message explains the fix. Surface `ApiError.message` verbatim instead of
+ * re-deriving which rule fired — that logic would drift from the backend.
+ */
+export const updateAdminUser = (
+  userId: number,
+  payload: { is_admin?: boolean; is_active?: boolean },
+) =>
+  apiClient
+    .patch<AdminUser>(`/admin/users/${userId}`, payload)
+    .then((r) => r.data);
 
 // ---------- calendar sync ----------
 /** Raw event-summary the calendar match endpoint accepts. ``key`` is whatever

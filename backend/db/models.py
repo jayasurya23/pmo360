@@ -10,7 +10,7 @@ rolling action log can track when items were raised vs when they were closed.
 from datetime import datetime, date
 from sqlalchemy import (
     Column, Integer, String, Text, Date, DateTime, ForeignKey, Boolean, JSON,
-    Float, Index, text,
+    Float, Index, text, true,
 )
 from sqlalchemy.orm import declarative_base, relationship, backref
 
@@ -46,10 +46,24 @@ class User(Base):
     # `previous_last_seen_at` as the cutoff. NULL on a brand-new user row.
     previous_last_seen_at = Column(DateTime)
     # When True, the user bypasses ProjectMember filtering — sees every
-    # portfolio + dashboard regardless of explicit membership. Set from
-    # the ADMIN_EMAILS env var on each authenticated request, so editing
-    # the env list takes effect within the next sign-in.
+    # portfolio + dashboard regardless of explicit membership, and can reach
+    # the admin-only routes. DB-AUTHORITATIVE: seeded from ADMIN_EMAILS on
+    # the very first insert, then owned by the admin UI. The auth layer never
+    # clears it from the env — it only ever forces it True for an address
+    # still listed in ADMIN_EMAILS (the break-glass floor). See
+    # auth/dependencies.py::_upsert_user_row.
     is_admin = Column(Boolean, default=False, nullable=False)
+    # False = offboarded. We never delete a user row (it anchors authored
+    # meetings, owned actions and every created_by stamp), so deactivation is
+    # how someone leaves. The auth dependency refuses the request outright, so
+    # this is a real lockout and not a UI-level hide.
+    # `true()` (not the literal "1") because Postgres rejects an integer
+    # default on a boolean column; it compiles to `true` on PG and `1` on
+    # SQLite. Must stay byte-identical to the migration's server_default or a
+    # create_all-built fresh DB drifts from a migrated one.
+    is_active = Column(
+        Boolean, default=True, nullable=False, server_default=true(),
+    )
 
 
 class ProjectMember(Base):
@@ -76,6 +90,14 @@ class ProjectMember(Base):
     )
     user = relationship("User", foreign_keys=[user_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
+
+    @property
+    def user_is_active(self) -> bool:
+        """Read by ProjectMemberOut so a member who has since been offboarded
+        renders as offboarded. Dropping the row from the roster instead would
+        read as "someone deleted them" — the assignment is real history, and
+        the actions they still own hang off it."""
+        return True if self.user is None else bool(self.user.is_active)
 
 
 class Client(Base):

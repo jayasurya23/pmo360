@@ -56,6 +56,17 @@ def _admin_email_set() -> set[str]:
     return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 
+def is_env_floor_admin(email: Optional[str]) -> bool:
+    """True when this address is pinned admin by the ADMIN_EMAILS env var.
+
+    The admin router calls this to refuse a revoke/deactivate with an accurate
+    reason: the upsert below re-forces these accounts back to admin+active on
+    their very next request, so accepting the write would be a lie. The only
+    way to demote them is to edit ADMIN_EMAILS and redeploy.
+    """
+    return (email or "").strip().lower() in _admin_email_set()
+
+
 # ============================================================
 # Pydantic model surfaced to routers
 # ============================================================
@@ -279,15 +290,16 @@ def _upsert_user_row(db: Session, jwt_user: User):
     from db.models import User as UserModel
     row = db.query(UserModel).filter_by(oid=jwt_user.oid).first()
     now = datetime.utcnow()
-    # Recompute admin status from the env list on every request — lets the
-    # team flip ADMIN_EMAILS without a DB write or restart.
-    is_admin_now = (jwt_user.email or "").lower() in _admin_email_set()
+    # ADMIN_EMAILS is a *floor*, not the source of truth. It seeds is_admin on
+    # the first insert and pins listed accounts admin forever after; the DB
+    # owns everyone else. See the update branch for why.
+    env_floor_admin = is_env_floor_admin(jwt_user.email)
     if row is None:
         row = UserModel(
             oid=jwt_user.oid,
             email=jwt_user.email or "",
             name=jwt_user.name or "",
-            is_admin=is_admin_now,
+            is_admin=env_floor_admin,
             created_at=now,
             last_seen_at=now,
             # First sign-in: nothing "previous". The briefing endpoint treats
@@ -305,8 +317,18 @@ def _upsert_user_row(db: Session, jwt_user: User):
             row.email = jwt_user.email
         if jwt_user.name and row.name != jwt_user.name:
             row.name = jwt_user.name
-        if row.is_admin != is_admin_now:
-            row.is_admin = is_admin_now
+        # Deliberately one-directional. We only ever raise privilege here,
+        # never lower it: is_admin/is_active are now owned by the admin
+        # screen, and recomputing them from the env (as we used to) would
+        # silently revert every grant/revoke on the admin's next request.
+        # The upward force is the break-glass hatch — an address in
+        # ADMIN_EMAILS can always get back in, so a bad revoke or a
+        # self-deactivation can never leave the app with no administrator.
+        if env_floor_admin:
+            if not row.is_admin:
+                row.is_admin = True
+            if not row.is_active:
+                row.is_active = True
         # Park the old `last_seen_at` in `previous_last_seen_at` BEFORE we
         # bump. This is the cutoff the Home briefing endpoint reads to ask
         # "what's changed since the user was last here?". Without this, the
@@ -316,14 +338,20 @@ def _upsert_user_row(db: Session, jwt_user: User):
     return row
 
 
-def get_current_db_user(
-    authorization: Optional[str] = Header(None),
-):
-    """Optional identity, DB-backed. Returns the User row if signed in,
-    None otherwise. 401s only when AUTH_REQUIRED is true.
+# The message an offboarded user gets. Stable string — the SPA matches on the
+# 403 to render its "access removed" screen rather than a broken app shell.
+INACTIVE_USER_DETAIL = (
+    "Your PMO 360 access has been deactivated. "
+    "Contact an administrator if you believe this is a mistake."
+)
 
-    Use this on routes that want to stamp writes with attribution but
-    work fine anonymously (existing behaviour).
+
+def _resolve_db_user(authorization: Optional[str]):
+    """Validate the Bearer and upsert the matching `users` row.
+
+    Returns the row, or None when the caller is anonymous (and AUTH_REQUIRED
+    is off). Does NOT enforce `is_active` — that's the caller's job, so the
+    identity-only route can still answer a deactivated user.
     """
     # Lazy import to avoid circular dependency: auth → db → ... → routers → auth.
     from core.deps import get_db
@@ -364,12 +392,60 @@ def get_current_db_user(
             pass
 
 
+def get_current_db_user(
+    authorization: Optional[str] = Header(None),
+):
+    """Optional identity, DB-backed. Returns the User row if signed in,
+    None otherwise. 401s only when AUTH_REQUIRED is true.
+
+    Use this on routes that want to stamp writes with attribution but
+    work fine anonymously (existing behaviour).
+
+    Every DB-backed route funnels through here (`require_db_user` and
+    `require_admin` both call it), which makes it the one place that has to
+    enforce offboarding — a deactivated user is refused outright, so hiding
+    the admin UI is presentation and *this* is the actual lockout.
+    """
+    row = _resolve_db_user(authorization)
+    if row is not None and not row.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=INACTIVE_USER_DETAIL,
+        )
+    return row
+
+
+def get_db_user_any_status(
+    authorization: Optional[str] = Header(None),
+):
+    """Identity for the /api/me route ONLY — the one thing a deactivated user
+    may still read, and only about themselves.
+
+    Without this exemption an offboarded user gets a 403 on /api/me, the SPA
+    reads that as "anonymous", and renders the full app shell where every
+    subsequent call 403s — a broken-looking app with no explanation. Letting
+    /api/me answer with `is_active: false` gives the SPA a positive signal to
+    show a proper "your access was removed" screen instead.
+
+    Safe because the route returns only the caller's own row. Do not reuse it
+    for anything that reads or writes app data.
+    """
+    row = _resolve_db_user(authorization)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return row
+
+
 def require_db_user(
     authorization: Optional[str] = Header(None),
 ):
-    """Strict DB-backed identity. 401 on no token / invalid token; returns
-    the SQLAlchemy User row otherwise. Same upsert behaviour as
-    `get_current_db_user`."""
+    """Strict DB-backed identity. 401 on no token / invalid token, 403 when
+    the user has been deactivated; returns the SQLAlchemy User row otherwise.
+    Same upsert behaviour as `get_current_db_user`."""
     row = get_current_db_user(authorization)
     if row is None:
         raise HTTPException(
@@ -383,12 +459,12 @@ def require_db_user(
 def require_admin(
     authorization: Optional[str] = Header(None),
 ):
-    """Admin-only identity. 401 without a valid token, 403 when the caller
-    isn't in ADMIN_EMAILS. Returns the SQLAlchemy User row.
+    """Admin-only identity. 401 without a valid token, 403 when the caller is
+    deactivated or isn't an admin. Returns the SQLAlchemy User row.
 
-    `is_admin` is recomputed from the env var on every authenticated request
-    (see `_upsert_user_row`), so adding/removing an admin takes effect on their
-    next call — no restart, no re-login.
+    `is_admin` is read from the DB — grants and revokes made in Settings →
+    Users take effect on the target's next request. ADMIN_EMAILS only seeds a
+    brand-new row and pins the accounts listed in it (see `_upsert_user_row`).
     """
     row = require_db_user(authorization)
     if not row.is_admin:

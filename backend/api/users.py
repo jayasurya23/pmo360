@@ -30,6 +30,10 @@ def list_users(
         "Empty returns all users — fine for our small team size."
     )),
     limit: int = Query(20, ge=1, le=200),
+    include_inactive: bool = Query(False, description=(
+        "Include deactivated users. Off by default so offboarded people stop "
+        "being offered as action owners."
+    )),
     db: Session = Depends(get_db),
     _actor=Depends(get_current_db_user),
 ) -> list[UserStub]:
@@ -41,10 +45,19 @@ def list_users(
     surface. Anonymous callers go through ``get_current_db_user`` and
     get an empty list (the auth dep returns None silently, so we skip
     the body).
+
+    Deactivated users are filtered out by default: offboarding is meant to
+    take someone out of circulation, and a picker that still offers them
+    quietly assigns new work to a person who can no longer sign in. The
+    escape hatch is ``include_inactive`` — the admin console reads the
+    richer ``/api/admin/users`` instead, which always lists everyone so an
+    admin can reactivate.
     """
     if _actor is None:
         return []
     rows = db.query(UserModel)
+    if not include_inactive:
+        rows = rows.filter(UserModel.is_active.is_(True))
     needle = q.strip().lower()
     if needle:
         rows = rows.filter(

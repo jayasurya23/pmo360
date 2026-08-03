@@ -1,16 +1,20 @@
 /**
- * Modal for managing the PM membership of a portfolio.
+ * Modal for viewing — and, for an admin, managing — the PM membership of a
+ * portfolio.
  *
  * Surfaces:
- *   - Existing members list (name + email + Remove button)
- *   - Add-by-email form (one user at a time)
- *   - "Browse Castillo directory" button — opens DirectoryBrowser in
- *     `members` mode so picking entries adds them as PMs rather than
- *     attendees on the portfolio roster
+ *   - Existing members list (name + email; Remove button for admins)
+ *   - Add-by-email form (admins only, one user at a time)
+ *   - "Browse Castillo directory" button (admins only) — opens
+ *     DirectoryBrowser in `members` mode so picking entries adds them as PMs
+ *     rather than attendees on the portfolio roster
  *
- * Permissions: anyone signed in can view + edit. The backend admits
- * non-admins as long as they hold a valid Bearer; this UI is just a
- * front-end for those endpoints.
+ * Permissions: read for everyone, write for admins. Membership drives which
+ * portfolios a PM can reach, so both mutations behind this dialog are
+ * `require_admin` on the server; rendering the edit controls for a non-admin
+ * would only produce guaranteed 403s. The roster itself stays visible to
+ * everyone — knowing who is on your team is not a privileged fact, and this
+ * is the only place it is listed in full.
  *
  * 404 handling: adding by email when no User row matches returns 404
  * with a helpful message. We render that inline as a "they haven't
@@ -27,6 +31,7 @@ import {
 } from "@/lib/api";
 import { useConfirm } from "@/components/ConfirmDialog";
 import DirectoryBrowser from "@/components/DirectoryBrowser";
+import { useApp } from "@/lib/state";
 import type { Project, ProjectMember } from "@/lib/types";
 
 interface Props {
@@ -37,6 +42,11 @@ interface Props {
 
 export default function ManageTeamDialog({ open, onClose, project }: Props) {
   const confirm = useConfirm();
+  const { me } = useApp();
+  /** Mirrors the server gate on POST /projects/{id}/members and
+   *  DELETE /project-members/{id}. Presentation only — the server refuses a
+   *  non-admin regardless of what this renders. */
+  const canEdit = !!me?.is_admin;
 
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [loading, setLoading] = useState(false);
@@ -172,7 +182,7 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
               id="manage-team-title"
               className="text-base font-semibold text-brand-black"
             >
-              👥 Manage team
+              {canEdit ? "👥 Manage team" : "👥 Portfolio team"}
             </h3>
             <div className="text-xs text-brand-gray mt-0.5 truncate">
               {project.name}
@@ -201,17 +211,36 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
               {members.map((m) => {
                 const name = m.user?.name || "(unknown)";
                 const mail = m.user?.email || "";
+                // Offboarded members keep their row: the assignment is real
+                // history and they may still own open actions here. A dashed
+                // avatar + explicit pill carries the state without colour.
+                const gone = m.user_is_active === false;
                 return (
                   <li
                     key={m.id}
-                    className="px-3 py-2 flex items-center gap-3"
+                    className={
+                      "px-3 py-2 flex items-center gap-3 " +
+                      (gone ? "bg-surface-mute/50 opacity-75" : "")
+                    }
                   >
-                    <div className="h-8 w-8 rounded-full bg-brand-red text-white flex items-center justify-center text-xs font-semibold shrink-0">
+                    <div
+                      className={
+                        "h-8 w-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 " +
+                        (gone
+                          ? "border border-dashed border-brand-lightgray text-brand-lightgray"
+                          : "bg-brand-red text-white")
+                      }
+                    >
                       {initialsFor(name || mail || "?")}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium text-brand-black truncate">
                         {name}
+                        {gone && (
+                          <span className="pill-cancelled ml-1.5 align-middle">
+                            Deactivated
+                          </span>
+                        )}
                       </div>
                       {mail && (
                         <div className="text-xs text-brand-gray truncate">
@@ -219,13 +248,15 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
                         </div>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      className="text-xs text-brand-brightred hover:text-brand-red hover:bg-status-open-bg px-2 py-1 rounded"
-                      onClick={() => void handleRemove(m)}
-                    >
-                      Remove
-                    </button>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        className="text-xs text-brand-brightred hover:text-brand-red hover:bg-status-open-bg px-2 py-1 rounded"
+                        onClick={() => void handleRemove(m)}
+                      >
+                        Remove
+                      </button>
+                    )}
                   </li>
                 );
               })}
@@ -233,54 +264,65 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
           )}
         </div>
 
-        {/* ----- Add by email ----- */}
-        <form onSubmit={handleAddByEmail} className="space-y-2">
-          <label className="label">Add by email</label>
-          <div className="flex items-center gap-2">
-            <input
-              type="email"
-              className="input flex-1"
-              placeholder="someone@castilloengineering.com"
-              value={email}
-              onChange={(e) => {
-                setEmail(e.target.value);
-                if (addMessage) setAddMessage(null);
-              }}
-              disabled={adding}
-            />
-            <button
-              type="submit"
-              className="btn-primary"
-              disabled={adding || !email.trim()}
-            >
-              {adding ? "Adding…" : "Add"}
-            </button>
-          </div>
-          {addMessage && (
-            <div
-              className={
-                "text-xs rounded-md px-3 py-2 " +
-                (addMessage.tone === "info"
-                  ? "bg-status-pending-bg border border-status-pending-border text-status-pending-text"
-                  : "bg-status-open-bg border border-status-open-border text-status-open-text")
-              }
-            >
-              {addMessage.text}
+        {/* ----- Add by email (admins only) ----- */}
+        {!canEdit && (
+          <p className="text-xs text-brand-gray">
+            Portfolio assignment is user management, so only an administrator
+            can add or remove PMs. Ask one to make the change in Settings →
+            Users.
+          </p>
+        )}
+        {canEdit && (
+          <form onSubmit={handleAddByEmail} className="space-y-2">
+            <label className="label">Add by email</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="email"
+                className="input flex-1"
+                placeholder="someone@castilloengineering.com"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  if (addMessage) setAddMessage(null);
+                }}
+                disabled={adding}
+              />
+              <button
+                type="submit"
+                className="btn-primary"
+                disabled={adding || !email.trim()}
+              >
+                {adding ? "Adding…" : "Add"}
+              </button>
             </div>
-          )}
-        </form>
+            {addMessage && (
+              <div
+                className={
+                  "text-xs rounded-md px-3 py-2 " +
+                  (addMessage.tone === "info"
+                    ? "bg-status-pending-bg border border-status-pending-border text-status-pending-text"
+                    : "bg-status-open-bg border border-status-open-border text-status-open-text")
+                }
+              >
+                {addMessage.text}
+              </div>
+            )}
+          </form>
+        )}
 
         {/* ----- Browse directory (same modal used on Capture, but
                 wired to add as PM members) ----- */}
-        <div className="flex justify-end pt-1">
-          <button
-            type="button"
-            className="btn-ghost text-sm"
-            onClick={() => setShowDirectory(true)}
-          >
-            🏢 Browse Castillo directory
-          </button>
-        </div>
+        {canEdit && (
+          <div className="flex justify-end pt-1">
+            <button
+              type="button"
+              className="btn-ghost text-sm"
+              onClick={() => setShowDirectory(true)}
+            >
+              🏢 Browse Castillo directory
+            </button>
+          </div>
+        )}
 
         <div className="flex justify-end gap-2 pt-2 border-t border-surface-hairline">
           <button

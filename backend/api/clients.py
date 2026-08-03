@@ -13,11 +13,18 @@ router = APIRouter(prefix="/api/clients", tags=["clients"])
 
 @router.get("", response_model=list[ClientOut])
 def get_clients(db: Session = Depends(get_db), _user=Depends(require_db_user)):
+    """Deliberately require_db_user, NOT require_admin. Every page in the app
+    resolves the client list to render the header switcher and navigation, so
+    tightening this to admins would break the app for everyone else. Client
+    *names* are not sensitive; the mutations below are what's gated."""
     return list_clients(db)
 
 
 @router.post("", response_model=ClientOut, status_code=201)
-def create_client(payload: ClientCreate, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def create_client(payload: ClientCreate, db: Session = Depends(get_db), _user=Depends(require_admin)):
+    """Admin-only — client management lives in Settings. A client is the top
+    of the Client → Portfolio → Project tree, so letting any signed-in PM
+    create or rename one lets them reshape everybody's navigation."""
     existing = db.query(Client).filter_by(name=payload.name).first()
     if existing:
         raise HTTPException(409, f"Client {payload.name!r} already exists")
@@ -30,8 +37,10 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db), _user=De
 @router.patch("/{client_id}", response_model=ClientOut)
 def update_client(
     client_id: int, payload: ClientUpdate, db: Session = Depends(get_db),
-    _user=Depends(require_db_user),
+    _user=Depends(require_admin),
 ):
+    """Admin-only, same reasoning as create_client — a rename here changes the
+    label on every portfolio, meeting and document underneath the client."""
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(404, "Client not found")

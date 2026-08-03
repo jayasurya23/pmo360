@@ -5,10 +5,16 @@
  * Anonymous callers get a friendly "sign in to save" callout. The values
  * shown then mirror the hardcoded defaults so the controls still render
  * sensibly even when persistence is unavailable.
+ *
+ * Admins additionally get the user + client administration console at the
+ * bottom of the page. It is absent — not disabled — for everyone else, and
+ * that absence is cosmetic: its endpoints are admin-gated server-side.
  */
 import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/PageHeader";
 import SaveStatus from "@/components/SaveStatus";
+import AdminUsersCard from "@/components/admin/AdminUsersCard";
+import AdminClientsCard from "@/components/admin/AdminClientsCard";
 import { useApp } from "@/lib/state";
 import { useAuth } from "@/auth/useAuth";
 import { useAutoSave } from "@/lib/useAutoSave";
@@ -36,7 +42,7 @@ interface PortfolioOption {
 }
 
 export default function Settings() {
-  const { clients } = useApp();
+  const { clients, me } = useApp();
   const { isAuthenticated, signIn, user } = useAuth();
 
   const [prefs, setPrefs] = useState<UserPreferences>(DEFAULT_PREFS);
@@ -321,6 +327,23 @@ export default function Settings() {
           {status === "saving" ? "Saving…" : "Save settings"}
         </button>
       </div>
+
+      {/* ---------- Administration (admins only) ----------
+          Rendered off `me.is_admin` from /api/me, which is the DB flag. This
+          check hides the console; it does not protect it — every endpoint
+          underneath refuses a non-admin on its own. */}
+      {me?.is_admin && (
+        <div className="space-y-[18px] pt-6 mt-2 border-t border-surface-border">
+          <div>
+            <h2 className="kicker">Administration</h2>
+            <p className="mt-1 text-xs text-brand-lightgray">
+              Only admins see this section. Changes here affect everyone.
+            </p>
+          </div>
+          <AdminUsersCard />
+          <AdminClientsCard />
+        </div>
+      )}
     </div>
   );
 }

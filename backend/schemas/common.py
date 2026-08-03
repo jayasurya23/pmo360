@@ -22,6 +22,11 @@ class UserOut(ORMModel):
     email: Optional[str] = None
     name: Optional[str] = None
     is_admin: bool = False
+    # /api/me answers even for a deactivated user (they still hold a valid Entra
+    # token, so the SPA's auth gate lets them in). This is the flag it branches
+    # on to say "your access was removed" instead of rendering an app where
+    # every other call 403s with no explanation.
+    is_active: bool = True
 
 
 class UserStub(ORMModel):
@@ -38,6 +43,11 @@ class ProjectMemberOut(ORMModel):
     project_id: int
     user_id: int
     user: Optional[UserStub] = None
+    # Sourced from ProjectMember.user_is_active (a model property, not a
+    # column). Deliberately narrower than putting `is_active` on UserStub:
+    # only the roster needs to distinguish an offboarded teammate, and every
+    # other created_by/updated_by stub stays free of role/status data.
+    user_is_active: bool = True
     created_at: Optional[datetime] = None
 
 
@@ -62,6 +72,49 @@ class UserPreferences(BaseModel):
     # Portfolios the PM has starred. Rendered as quick-jump chips in the
     # header's context row; order is the pin order, not id order.
     pinned_project_ids: list[int] = []
+
+
+# ---------- Admin: user + role management ----------
+class AdminUserPortfolioOut(BaseModel):
+    """One portfolio assignment, flattened for the admin user table.
+
+    Carries `member_id` because that — not `project_id` — is what the
+    existing DELETE /api/project-members/{member_id} takes, so the admin UI
+    can unassign without a second lookup.
+    """
+    member_id: int
+    project_id: int
+    project_name: str
+    client_name: Optional[str] = None
+
+
+class AdminUserOut(BaseModel):
+    """A user row as the admin console sees it.
+
+    Deliberately NOT an ORMModel: `is_env_admin` and `portfolios` are
+    computed, not columns, so the router builds these explicitly.
+    """
+    id: int
+    oid: Optional[str] = None
+    name: Optional[str] = None
+    email: Optional[str] = None
+    is_admin: bool = False
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    # True when the address is listed in ADMIN_EMAILS. Those users are a
+    # permanent admin FLOOR — the backend refuses to revoke them, so the UI
+    # renders the toggle disabled with the "edit the env var" explanation
+    # instead of letting the admin fire a request that can only 409.
+    is_env_admin: bool = False
+    portfolios: list[AdminUserPortfolioOut] = []
+
+
+class AdminUserUpdate(BaseModel):
+    """Partial role/offboard update. Omitted fields are left untouched, so
+    the UI can flip one toggle without echoing back the other."""
+    is_admin: Optional[bool] = None
+    is_active: Optional[bool] = None
 
 
 # ---------- Clients / Projects ----------
@@ -570,6 +623,10 @@ class LeadPmRow(BaseModel):
     name: str
     email: str
     is_admin: bool = False
+    # An offboarded PM keeps appearing here because their portfolios and open
+    # actions are real and still need reassigning. The flag is what stops the
+    # row reading as a working colleague.
+    is_active: bool = True
     portfolios: int = 0
     open_actions: int = 0
     overdue_actions: int = 0

@@ -9,8 +9,13 @@ publicly reachable in production.
 
 This script walks the real FastAPI app and classifies every `/api` route:
 
-    STRICT  — require_db_user / require_admin / require_user
+    STRICT  — require_db_user / require_admin / require_user /
+              get_db_user_any_status
               401s without a valid token regardless of environment.
+              get_db_user_any_status authenticates exactly as strictly as the
+              others; it only declines to enforce `is_active`, so a deactivated
+              user can still read the one route that tells them they have been
+              deactivated. Authentication is what this audit measures.
     ENV     — get_current_db_user / get_current_user
               Optional identity: 401s only when AUTH_REQUIRED=true. Fine for
               prod (which sets it) but it is a weaker guarantee.
@@ -45,7 +50,13 @@ PUBLIC_ALLOWLIST: dict[str, str] = {
     ),
 }
 
-STRICT_DEPS = {"require_db_user", "require_admin", "require_user"}
+STRICT_DEPS = {
+    "require_db_user", "require_admin", "require_user",
+    # Authenticates exactly as strictly (401 without a valid token); it only
+    # skips the is_active check, so a deactivated user can read the one route
+    # that tells them so. See auth/dependencies.py.
+    "get_db_user_any_status",
+}
 ENV_DEPS = {"get_current_db_user", "get_current_user"}
 
 

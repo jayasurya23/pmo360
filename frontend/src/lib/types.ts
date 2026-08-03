@@ -16,6 +16,10 @@ export interface MeResponse {
   email?: string | null;
   name?: string | null;
   is_admin: boolean;
+  /** False once an admin has offboarded them. /api/me is the one route they can
+   *  still read — every other call 403s — so this is what the shell branches on
+   *  to explain that, rather than rendering an app where nothing works. */
+  is_active: boolean;
 }
 
 /** Project membership row — one user assigned as a PM to a portfolio.
@@ -25,7 +29,45 @@ export interface ProjectMember {
   project_id: number;
   user_id: number;
   user?: UserStub | null;
+  /** False once the member has been offboarded. The row stays on the roster —
+   *  their assignment and the actions they own are real history — but renders
+   *  as deactivated rather than silently vanishing. */
+  user_is_active: boolean;
   created_at?: string;
+}
+
+/** One portfolio assignment, embedded in AdminUser. Mirrors the backend's
+ *  AdminUserPortfolioOut: `member_id` is the ProjectMember row id — the
+ *  handle `DELETE /api/project-members/{member_id}` takes — while
+ *  `project_id` is what POST /api/projects/{id}/members needs. Both are
+ *  present so the admin table can unassign without a second lookup. */
+export interface AdminUserPortfolio {
+  member_id: number;
+  project_id: number;
+  project_name: string;
+  client_name?: string | null;
+}
+
+/** A row of the admin user directory (`GET /api/admin/users`). Everything
+ *  here is richer than the `/api/users` typeahead exposes — it is the map of
+ *  who can do what — so the endpoint is admin-gated server-side. */
+export interface AdminUser {
+  id: number;
+  oid?: string | null;
+  name?: string | null;
+  email?: string | null;
+  /** DB-authoritative: ADMIN_EMAILS only seeds this on the row's first
+   *  insert, it no longer overwrites on every request. */
+  is_admin: boolean;
+  /** False = offboarded. The auth dependency rejects these users outright,
+   *  so it is a real lock-out and not just a hidden row. */
+  is_active: boolean;
+  /** Listed in ADMIN_EMAILS — the permanent admin floor. The server refuses
+   *  to revoke or deactivate these users until the env var changes. */
+  is_env_admin: boolean;
+  last_seen_at?: string | null;
+  created_at?: string | null;
+  portfolios: AdminUserPortfolio[];
 }
 
 export interface Client {
@@ -385,6 +427,9 @@ export interface LeadPmRow {
   name: string;
   email: string;
   is_admin: boolean;
+  /** False once offboarded. The row stays — their portfolios and open actions
+   *  still need reassigning — but must not read as a working colleague. */
+  is_active: boolean;
   portfolios: number;
   open_actions: number;
   overdue_actions: number;

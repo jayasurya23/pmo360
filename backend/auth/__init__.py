@@ -10,14 +10,20 @@ Public API:
     - `get_current_user`  — optional dependency, returns User|None
     - `require_user`      — required dependency, 401s on missing/invalid
     - `User`              — Pydantic model with oid / email / name
-    - `require_admin`     — required + ADMIN_EMAILS membership, else 403
+    - `require_admin`     — required + DB `is_admin`, else 403
+    - `get_db_user_any_status` — /api/me only: the one dependency that still
+      answers a deactivated user, so the SPA can explain the lockout
+    - `is_env_floor_admin` — "is this address pinned admin by ADMIN_EMAILS?",
+      used by the admin router to refuse an impossible revoke
 """
 from auth.dependencies import (
     get_current_user, require_user, User,
     get_current_db_user, require_db_user, require_admin,
+    get_db_user_any_status, is_env_floor_admin,
 )
 
 __all__ = [
     "get_current_user", "require_user", "User",
     "get_current_db_user", "require_db_user", "require_admin",
+    "get_db_user_any_status", "is_env_floor_admin",
 ]

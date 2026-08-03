@@ -170,11 +170,24 @@ export default function LeadDashboard() {
                     {data.pms.map((pm) => (
                       <tr
                         key={pm.user_id}
-                        className="border-t border-surface-page hover:bg-surface-rowhover transition"
+                        className={clsx(
+                          "border-t border-surface-page transition",
+                          pm.is_active
+                            ? "hover:bg-surface-rowhover"
+                            : // Offboarded PMs stay listed because the work
+                              // still attributed to them has to be reassigned
+                              // by someone — but the row must not read as a
+                              // colleague you can hand something to.
+                              "bg-surface-mute/50 opacity-75",
+                        )}
                       >
                         <Td edge>
                           <div className="flex items-center gap-2.5">
-                            <Avatar name={pm.name} seed={pm.user_id} />
+                            <Avatar
+                              name={pm.name}
+                              seed={pm.user_id}
+                              muted={!pm.is_active}
+                            />
                             <div>
                               <span className="font-semibold">{pm.name}</span>
                               {pm.is_admin && (
@@ -183,6 +196,14 @@ export default function LeadDashboard() {
                                   title="Admin / lead"
                                 >
                                   admin
+                                </span>
+                              )}
+                              {!pm.is_active && (
+                                <span
+                                  className="pill-cancelled ml-1.5 align-middle"
+                                  title="Deactivated — they can no longer sign in"
+                                >
+                                  Deactivated
                                 </span>
                               )}
                               <div className="text-[11px] text-brand-gray font-normal">
@@ -337,8 +358,26 @@ function Pill({ n, tone }: { n: number; tone: "danger" | "warn" }) {
  * separate from the dark card. Same reasoning as a solid brand-red button. */
 const AVATAR_COLORS = ["#ad1f2b", "#5e4b40", "#1aa6c9", "#278747", "#4d4d4f"];
 
-function Avatar({ name, seed }: { name: string; seed: number }) {
+function Avatar({
+  name,
+  seed,
+  muted,
+}: {
+  name: string;
+  seed: number;
+  muted?: boolean;
+}) {
   const bg = AVATAR_COLORS[Math.abs(seed) % AVATAR_COLORS.length];
+  // `muted` drops the solid fill for a dashed ring — the same shape cue the
+  // admin console uses, so a deactivated person reads the same in both places
+  // without depending on colour.
+  if (muted) {
+    return (
+      <span className="h-7 w-7 shrink-0 rounded-full border border-dashed border-brand-lightgray text-brand-lightgray flex items-center justify-center text-[11px] font-semibold">
+        {initialsFor(name)}
+      </span>
+    );
+  }
   return (
     <span
       className="h-7 w-7 shrink-0 rounded-full text-white flex items-center justify-center text-[11px] font-semibold"
