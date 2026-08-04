@@ -6,6 +6,7 @@ from datetime import date
 from typing import Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError
 
 from db.models import (
     Client, Project, ProjectAttendee, Meeting, MeetingAttendee,
@@ -73,8 +74,25 @@ def add_project_member(
     row = ProjectMember(
         project_id=project_id, user_id=user_id, created_by_id=created_by_id,
     )
-    session.add(row)
-    session.flush()
+    try:
+        # Savepoint, so a refusal here does not poison the caller's transaction
+        # — the bulk route assigns many pairs in one go and must survive one of
+        # them losing a race.
+        with session.begin_nested():
+            session.add(row)
+            session.flush()
+    except IntegrityError:
+        # The read above is not atomic. A concurrent assignment of the same
+        # pair can land between it and the insert, and until
+        # uq_project_members_project_user existed that produced a silent
+        # duplicate row. Now the database refuses it, and this turns the
+        # refusal back into the idempotent answer the caller asked for:
+        # whoever won the race, the pair is assigned.
+        return (
+            session.query(ProjectMember)
+            .filter_by(project_id=project_id, user_id=user_id)
+            .one()
+        )
     return row
 
 

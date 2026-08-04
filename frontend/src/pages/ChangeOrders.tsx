@@ -15,8 +15,10 @@ import {
   rejectChangeOrder,
   deleteChangeOrder,
   markChangeOrderSent,
+  checkChangeOrderSendable,
   listProjectRoster,
   fetchChangeOrderPdfBlob,
+  previewChangeOrderPdfBlob,
   type ChangeOrderCreate,
 } from "@/lib/api";
 import type { ChangeOrder } from "@/lib/types";
@@ -212,9 +214,13 @@ export default function ChangeOrders() {
   const [err, setErr] = useState<string | null>(null);
 
   // ---- PDF preview ----
+  // `pdfTitle` is what opens the modal, not `pdfFor`: the Create tab previews
+  // the unsaved form, so there is no row to take a heading or a filename from.
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfFor, setPdfFor] = useState<ChangeOrder | null>(null);
+  const [pdfTitle, setPdfTitle] = useState<string | null>(null);
+  const [pdfName, setPdfName] = useState("change-order.pdf");
   const [emailFor, setEmailFor] = useState<ChangeOrder | null>(null);
 
   const load = async () => {
@@ -479,6 +485,10 @@ export default function ChangeOrders() {
 
   async function openPdf(co: ChangeOrder) {
     setPdfFor(co);
+    setPdfTitle(`CO-${co.co_number} · ${money(co.total_amount)}`);
+    setPdfName(
+      `${co.client_name || "Castillo"}-CO-${co.co_number}-${co.co_version || "V1"}.pdf`,
+    );
     setPdfBusy(true);
     setPdfUrl(null);
     try {
@@ -487,22 +497,51 @@ export default function ChangeOrders() {
     } catch (e: any) {
       setErr(e?.message || "Could not load the PDF");
       setPdfFor(null);
+      setPdfTitle(null);
     } finally {
       setPdfBusy(false);
     }
   }
+
+  /** Preview the form as it stands, saved or not.
+   *
+   * The other Preview buttons need a row to point at, which meant the answer to
+   * "does this read right before I submit it?" was to save a draft and look at
+   * that — leaving a half-finished change order in the In-flight rail every time
+   * anyone wanted to sanity-check a total. This renders the payload server-side
+   * and stores nothing, so it works on a form that has never been saved.
+   */
+  async function previewDraft() {
+    if (!currentProject) return;
+    setPdfFor(null);
+    setPdfTitle(`Preview · ${money(clientTotal)} · not saved`);
+    setPdfName(
+      `${clientName || "Castillo"}-CO-${coVersion || "V1"}-PREVIEW.pdf`,
+    );
+    setPdfBusy(true);
+    setPdfUrl(null);
+    try {
+      const blob = await previewChangeOrderPdfBlob(buildPayload());
+      setPdfUrl(URL.createObjectURL(blob));
+    } catch (e: any) {
+      setErr(e?.message || "Could not render the preview");
+      setPdfTitle(null);
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
   function closePdf() {
     if (pdfUrl) URL.revokeObjectURL(pdfUrl);
     setPdfUrl(null);
     setPdfFor(null);
+    setPdfTitle(null);
   }
   function downloadPdf() {
-    if (!pdfUrl || !pdfFor) return;
+    if (!pdfUrl) return;
     const a = document.createElement("a");
     a.href = pdfUrl;
-    a.download = `${pdfFor.client_name || "Castillo"}-CO-${pdfFor.co_number}-${
-      pdfFor.co_version || "V1"
-    }.pdf`;
+    a.download = pdfName;
     a.click();
   }
 
@@ -549,8 +588,17 @@ export default function ChangeOrders() {
       confirmLabel: "Mark as sent",
     });
     if (!ok) return;
-    // No recipient list to record — we only know that it went out somehow.
-    await markChangeOrderSent(co.id, "", "manual");
+    setErr(null);
+    try {
+      // No recipient list to record — we only know that it went out somehow.
+      await markChangeOrderSent(co.id, "", "manual");
+    } catch (e: any) {
+      // This is gated on CO_APPROVAL too, and an unsurfaced refusal here lands
+      // in the same place the send bug did: the PM believes the CO is filed,
+      // it stays in the to-send queue, and someone emails the client a copy.
+      setErr(e?.message || "Could not mark it as sent — it is still unsent.");
+      return;
+    }
     await load();
     setTab("sent");
   }
@@ -984,6 +1032,16 @@ export default function ChangeOrders() {
                   </span>
                 )}
                 <div className="flex-1" />
+                {/* Deliberately not gated on editingId — the whole point is to
+                    read the client-facing page before anything is saved. */}
+                <button
+                  className="btn-ghost"
+                  disabled={saving || pdfBusy}
+                  onClick={() => void previewDraft()}
+                  title="Render this form as the client will receive it. Nothing is saved."
+                >
+                  {pdfBusy ? "Rendering…" : "👁 Preview PDF"}
+                </button>
                 <button
                   className="btn-ghost"
                   disabled={saving}
@@ -1400,8 +1458,8 @@ export default function ChangeOrders() {
           </div>
         ))}
 
-      {/* PDF preview modal */}
-      {pdfFor && (
+      {/* PDF preview modal — saved row or unsaved Create-tab form */}
+      {pdfTitle && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/40 backdrop-blur-sm"
           onMouseDown={(e) => {
@@ -1410,9 +1468,7 @@ export default function ChangeOrders() {
         >
           <div className="w-full max-w-3xl card p-5 shadow-xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="section-title">
-                CO-{pdfFor.co_number} · {money(pdfFor.total_amount)}
-              </h3>
+              <h3 className="section-title">{pdfTitle}</h3>
               <div className="flex items-center gap-2">
                 <button
                   className="btn-primary px-3 py-1.5 text-xs"
@@ -1780,6 +1836,7 @@ function CoEmailModal({
   onSent: () => void;
 }) {
   const { isAuthenticated, getMailSendToken } = useAuth();
+  const confirm = useConfirm();
   const project = co.project_name || co.client_name || "this project";
   const filename =
     `${(co.client_name || "Castillo").replace(/[^A-Za-z0-9]+/g, "_")}-CO-${co.co_number}-${
@@ -1798,22 +1855,37 @@ function CoEmailModal({
       `totaling ${money(co.total_amount)}.\n\n` +
       `Kindly review and return a signed copy at your convenience.\n\nBest regards,`,
   );
-  const [contacts, setContacts] = useState<{ name: string; email: string }[]>([]);
+  const [contacts, setContacts] = useState<
+    { name: string; email: string; org: string }[]
+  >([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
+  // Graph has accepted the message — the client HAS the change order. Set the
+  // instant sendMail resolves and never cleared: everything after it is
+  // bookkeeping, and no amount of retrying can un-deliver an email. This is what
+  // stops the recording step from reporting itself as a failure to send.
+  const [delivered, setDelivered] = useState(false);
   // The mailto hand-off leaves the app blind — the OS mail client never tells us
   // whether the PM actually hit send. So we ask instead of assuming.
   const [askOutlook, setAskOutlook] = useState(false);
 
   // Portfolio contacts (with email) shown as one-click chips for the To line.
+  // This is the WHOLE meeting roster, Castillo colleagues included — nothing
+  // here knows which side of the table anybody sits on, so the organization
+  // rides along on the chip and the PM does the filtering. Scoping this to the
+  // client's own contacts needs a client_id on the CO; see the handoff note.
   useEffect(() => {
     listProjectRoster(co.project_id)
       .then((rows: any[]) =>
         setContacts(
           (rows || [])
             .filter((r) => r.email)
-            .map((r) => ({ name: r.full_name || r.email, email: r.email })),
+            .map((r) => ({
+              name: r.full_name || r.email,
+              email: r.email,
+              org: r.organization || "",
+            })),
         ),
       )
       .catch(() => setContacts([]));
@@ -1827,24 +1899,53 @@ function CoEmailModal({
 
   const recipients = () => [to, cc].filter((s) => s.trim()).join(", ");
 
-  function mailtoFallback() {
-    void fetchChangeOrderPdfBlob(co.id).then((b) =>
-      window.open(URL.createObjectURL(b), "_blank"),
-    );
-    const q = [`subject=${encodeURIComponent(subject)}`, `body=${encodeURIComponent(body)}`];
-    if (cc.trim()) q.unshift(`cc=${encodeURIComponent(cc.trim())}`);
-    setTimeout(() => {
-      window.location.href = `mailto:${encodeURIComponent(to.trim())}?${q.join("&")}`;
-    }, 250);
-    setAskOutlook(true);
+  /**
+   * The pre-flight both send pathways run BEFORE anything irreversible happens.
+   *
+   * The send itself is client-side — the PM's own delegated Mail.Send, straight
+   * from this browser — so the server never sees it and cannot stop it. It can
+   * only refuse to authorise one, which is worth nothing unless somebody asks
+   * first. Asking afterwards is the bug this replaces: the dialog fetched the
+   * PDF, called Graph, and only then called mark-sent, which is gated on
+   * CO_APPROVAL. A PM holding only CO_CREATION delivered the change order, read
+   * the refusal as "the send failed", and left sent_at NULL — so the CO stayed
+   * in the to-send queue and the next person sent the client a second copy of
+   * the same priced change order.
+   *
+   * Throws with the server's own words if this CO must not go out. Returns false
+   * if the PM backed out of a deliberate re-send. Nothing has been sent either
+   * way — that is the entire point of running this first.
+   */
+  async function clearedToSend(): Promise<boolean> {
+    const check = await checkChangeOrderSendable(co.id);
+    if (!check.already_sent_at) return true;
+    const when = format(parseISO(check.already_sent_at), "MMM d, yyyy");
+    const how = check.already_sent_method
+      ? ` ${SENT_METHOD_LABEL[check.already_sent_method] || ""}`.trimEnd()
+      : "";
+    const who = check.already_sent_to?.trim();
+    // Named date and named recipients, so a deliberate re-send stays one click
+    // away and an accidental one has to be read past.
+    return confirm({
+      title: `CO-${co.co_number} has already gone to the client`,
+      body:
+        `It was sent on ${when}${how}${who ? ` to ${who}` : ""}. Sending now ` +
+        `delivers a second copy of the same priced change order to ` +
+        `${to.trim() || "the recipients above"}. Do this only if the client ` +
+        `asked for another copy or the first one never arrived.`,
+      confirmLabel: "Send a second copy",
+    });
   }
 
-  // Only ever reached from the PM answering "yes, I sent it" — never optimistic.
-  async function confirmOutlookSent() {
+  /**
+   * Write the send to the record. Never touches Graph — this is the only step
+   * that is safe to retry once the mail is out.
+   */
+  async function recordSent(method: "graph" | "outlook") {
     setError(null);
     setSending(true);
     try {
-      await markChangeOrderSent(co.id, recipients(), "outlook");
+      await markChangeOrderSent(co.id, recipients(), method);
       setAskOutlook(false);
       setOk(true);
       setTimeout(onSent, 900);
@@ -1855,6 +1956,29 @@ function CoEmailModal({
     }
   }
 
+  async function mailtoFallback() {
+    setError(null);
+    setSending(true);
+    try {
+      // Handing the PDF to Outlook is irreversible in exactly the way Graph is:
+      // the PM sends it from there and we can no longer take it back.
+      if (!(await clearedToSend())) return;
+      const blob = await fetchChangeOrderPdfBlob(co.id);
+      window.open(URL.createObjectURL(blob), "_blank");
+    } catch (e: any) {
+      setError(e?.message || "Could not prepare the draft — nothing was sent.");
+      return;
+    } finally {
+      setSending(false);
+    }
+    const q = [`subject=${encodeURIComponent(subject)}`, `body=${encodeURIComponent(body)}`];
+    if (cc.trim()) q.unshift(`cc=${encodeURIComponent(cc.trim())}`);
+    setTimeout(() => {
+      window.location.href = `mailto:${encodeURIComponent(to.trim())}?${q.join("&")}`;
+    }, 250);
+    setAskOutlook(true);
+  }
+
   async function send() {
     setError(null);
     if (!to.trim()) {
@@ -1862,7 +1986,13 @@ function CoEmailModal({
       return;
     }
     setSending(true);
+
+    // ---- everything below is still undoable ----
     try {
+      if (!(await clearedToSend())) {
+        setSending(false);
+        return;
+      }
       const blob = await fetchChangeOrderPdfBlob(co.id);
       const contentBytesBase64 = await blobToBase64(blob);
       const token = await getMailSendToken();
@@ -1878,21 +2008,41 @@ function CoEmailModal({
         },
         token,
       );
-      await markChangeOrderSent(co.id, recipients(), "graph");
-      setOk(true);
-      setTimeout(onSent, 900);
     } catch (e: any) {
-      setError(e?.message || "Send failed");
-    } finally {
+      // The pre-flight, the PDF fetch, the token and Graph itself all fail
+      // before delivery, so "nothing was sent" is true for every one of them.
+      setError(e?.message || "Could not send — nothing was delivered to the client.");
       setSending(false);
+      return;
     }
+    // ---- the client now has it; nothing below can undo that ----
+    setDelivered(true);
+    await recordSent("graph");
+  }
+
+  /** Closing here throws away the only knowledge that the CO went out. */
+  async function requestClose() {
+    if (sending) return;
+    if (delivered && !ok) {
+      const leave = await confirm({
+        title: `Close without recording CO-${co.co_number} as sent?`,
+        body:
+          "The client already has it — that cannot be undone. Left unrecorded " +
+          "it stays in the to-send queue and the next person will email it " +
+          "again. You can still mark it as sent from the Approved tab.",
+        confirmLabel: "Close anyway",
+        destructive: true,
+      });
+      if (!leave) return;
+    }
+    onClose();
   }
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-black/40 backdrop-blur-sm"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget && !sending) onClose();
+        if (e.target === e.currentTarget) void requestClose();
       }}
     >
       <div className="w-full max-w-2xl card p-5 shadow-xl max-h-[90vh] overflow-y-auto space-y-3">
@@ -1900,7 +2050,7 @@ function CoEmailModal({
           <h3 className="section-title">Email CO-{co.co_number} to client</h3>
           <button
             className="text-sm text-brand-lightgray transition hover:text-brand-red"
-            onClick={onClose}
+            onClick={() => void requestClose()}
           >
             ✕
           </button>
@@ -1908,16 +2058,21 @@ function CoEmailModal({
 
         {contacts.length > 0 && (
           <div className="text-xs">
-            <span className="text-brand-gray">Portfolio contacts: </span>
+            <span className="text-brand-gray">
+              Meeting roster — check the organization before adding:{" "}
+            </span>
             {contacts.map((c) => (
               <button
                 key={c.email}
                 type="button"
                 className="mb-1 mr-1 inline-block rounded-full border border-surface-border px-2.5 py-0.5 text-brand-gray transition hover:border-brand-red hover:text-brand-red"
                 onClick={() => addTo(c.email)}
-                title={`Add ${c.email}`}
+                title={`Add ${c.email}${c.org ? ` · ${c.org}` : ""}`}
               >
                 + {c.name}
+                {c.org && (
+                  <span className="ml-1 text-brand-lightgray">· {c.org}</span>
+                )}
               </button>
             ))}
           </div>
@@ -1957,7 +2112,36 @@ function CoEmailModal({
           📎 {filename} (the branded PDF) is attached automatically.
         </div>
 
-        {error && (
+        {/* Delivered, not recorded. The old code called this "Send failed",
+            which is a lie that gets the client a second copy: the PM re-sends
+            because the app told them the first one did not go. */}
+        {delivered && !ok && (
+          <div className="rounded-lg border border-status-pending-border bg-status-pending-bg px-3 py-2.5 text-sm text-status-pending-text">
+            <div className="font-semibold">
+              CO-{co.co_number} was delivered — but it is not recorded here yet.
+            </div>
+            <div className="mt-1">
+              The email went out to {recipients()} with the PDF attached. What
+              failed was writing the send to this change order, so it still
+              shows as unsent — and anyone working the to-send queue will email
+              the client a second copy. Record it now.
+            </div>
+            {error && <div className="mt-1 text-xs opacity-80">Reason: {error}</div>}
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                className="btn-primary px-3 py-1.5 text-xs"
+                onClick={() => void recordSent("graph")}
+                disabled={sending}
+              >
+                {sending ? "Recording…" : "Record as sent"}
+              </button>
+              <span className="text-xs">
+                Updates the record only — it does not email the client again.
+              </span>
+            </div>
+          </div>
+        )}
+        {error && !delivered && (
           <div className="rounded-lg border border-status-open-border bg-status-open-bg px-3 py-2 text-sm text-status-open-text">
             {error}
           </div>
@@ -1967,7 +2151,7 @@ function CoEmailModal({
             ✓ Sent — check your Outlook Sent Items.
           </div>
         )}
-        {askOutlook && !ok && (
+        {askOutlook && !ok && !delivered && (
           <div className="rounded-lg border border-status-pending-border bg-status-pending-bg px-3 py-2.5 text-sm text-status-pending-text">
             <div>
               Outlook opened with the draft. Mark CO-{co.co_number} as sent?
@@ -1975,7 +2159,7 @@ function CoEmailModal({
             <div className="mt-2 flex items-center gap-2">
               <button
                 className="btn-primary px-3 py-1.5 text-xs"
-                onClick={() => void confirmOutlookSent()}
+                onClick={() => void recordSent("outlook")}
                 disabled={sending}
               >
                 {sending ? "Recording…" : "Yes, mark as sent"}
@@ -1991,11 +2175,14 @@ function CoEmailModal({
           </div>
         )}
 
+        {/* Both send paths go dead once Graph has accepted the mail — from here
+            the only outstanding work is recording it, and re-arming either
+            button would hand the client a second copy from the same dialog. */}
         <div className="flex items-center justify-end gap-2 pt-1">
           <button
             className="btn-ghost"
-            onClick={mailtoFallback}
-            disabled={!to.trim()}
+            onClick={() => void mailtoFallback()}
+            disabled={sending || delivered || !to.trim()}
             title="Opens your mail client; the PDF opens in a new tab to attach manually."
           >
             ✉ Open in Outlook
@@ -2003,7 +2190,7 @@ function CoEmailModal({
           <button
             className="btn-primary"
             onClick={() => void send()}
-            disabled={sending || !to.trim() || !isAuthenticated}
+            disabled={sending || delivered || !to.trim() || !isAuthenticated}
             title={
               isAuthenticated
                 ? "Send via Microsoft Graph from your mailbox — PDF attached."

@@ -181,37 +181,33 @@ def effective_permissions(user) -> dict[str, bool]:
 
 
 def is_portfolio_member(db, user, project_id: int) -> bool:
-    """The WHERE half. Admins bypass, matching read filtering."""
-    # Reuses the exact predicate the read side filters on, so a user can never
-    # be shown a portfolio they would be refused a write on for a reason other
-    # than the permission itself.
-    from db.models import ProjectMember
-    from db.repository import user_can_access_project
+    """The WHERE half — DELIBERATELY DISABLED. Every PM reaches every portfolio.
 
-    if user is None:
-        return False
-    if user_can_access_project(db, user.id, project_id):
-        return True
-    # A portfolio nobody has been assigned to is UNOWNED, and an unowned
-    # portfolio scopes to nothing — the permission alone governs it.
-    #
-    # This is not a softening of the model, it is what stops the model being a
-    # company-wide outage on the day it ships. project_members had only ever
-    # filtered READS, and the read path defaults to my_only=false, so nothing
-    # ever forced anyone to populate it: production carried 42 imported
-    # portfolios with no membership rows between them. Making membership
-    # authoritative for writes turned that empty table into "no non-admin may
-    # save anything, anywhere" — and the only route that could fix it,
-    # POST /projects/{id}/members, needs user_mgmt, which backfills FALSE.
-    #
-    # So scoping is opt-in per portfolio and self-healing: assign one person
-    # and that portfolio is scoped from then on, with no code change. The
-    # permission half still applies everywhere, which is the half an admin
-    # actually manages from the grid.
-    return (
-        db.query(ProjectMember).filter_by(project_id=project_id).first()
-        is None
-    )
+    Castillo's rule, handed down after this shipped: a PM has access to all
+    portfolios, not only the ones they are assigned to. So permissions are
+    company-wide. The eight grants still decide WHAT somebody may do; nothing
+    decides WHERE, because the business does not want that line drawn.
+
+    Kept as a function rather than deleted at the two call sites, so the WHERE
+    half is one obvious switch if that rule is ever revisited — and so nobody
+    reading `require_project(...)` in a route concludes a check is happening
+    that is not.
+
+    It is worth recording why this is also the safer shape. Scoping writes to
+    `project_members` took production down the morning it shipped: that table
+    had only ever filtered READS, the read path defaults to my_only=false, and
+    so nothing had ever forced anyone to populate it — 42 imported portfolios,
+    zero membership rows between them. Every non-admin could read everything
+    and save nothing, and the one route that could have fixed it needed a
+    permission the same migration had just set to FALSE. An authorization rule
+    whose data nobody maintains is not a control, it is an outage waiting for a
+    deploy.
+
+    `ProjectMember` is untouched and still does its real jobs: the Mine/all
+    filter, the dashboard scope toggle, and Manage Team. Assignment now means
+    "this is my portfolio", not "this is the only portfolio I may write to".
+    """
+    return user is not None
 
 
 # ============================================================

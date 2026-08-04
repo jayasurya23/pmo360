@@ -30,6 +30,11 @@ import type {
   MeResponse,
   AdminUser,
   AdminUserGrid,
+  AdminBulkMembershipRequest,
+  AdminBulkMembershipResult,
+  AdminBulkPermissionsRequest,
+  AdminBulkRefusal,
+  ProvisionUserRequest,
   UserPermissionsPatch,
   PortfolioProject,
   ProjectMember,
@@ -46,6 +51,10 @@ import type {
   ProposalTimelineOrphan,
   ChangeOrder,
   ChangeOrderLineItem,
+  ChangeOrderSendCheck,
+  ClientContact,
+  ClientContactInput,
+  ClientContactImportResult,
 } from "./types";
 
 // Honor VITE_API_BASE at build-time so the same artefact can talk to
@@ -77,7 +86,13 @@ apiClient.interceptors.response.use(
   (r) => r,
   (err) => {
     const status: number = err?.response?.status ?? 0;
-    const detail = err?.response?.data?.detail;
+    const body = err?.response?.data;
+    // A `responseType: "blob"` request parses its ERROR body as a Blob as well,
+    // so the server's sentence is sealed inside it and `.detail` is undefined —
+    // which is how a carefully worded 403 reaches the user as "Request failed
+    // with status code 403". Carry the Blob through so `readBlobDetail()` can
+    // open it. It was dropped before, so nothing can depend on the old value.
+    const detail = body instanceof Blob ? body : body?.detail;
     // detail can be either a string (FastAPI's default) or a dict (our 409
     // payload). Surface a readable message either way.
     let message: string;
@@ -973,6 +988,107 @@ export const updateAdminUser = (
     .patch<AdminUser>(`/admin/users/${userId}`, payload)
     .then((r) => r.data);
 
+/**
+ * Tick one permission for several people at once — the whole point of the
+ * select-rows-then-act bar.
+ *
+ * ALL-OR-NOTHING on the server. A permission change has to have one answer to
+ * "did that land?", and "for five of them" is not an answer anyone can act on
+ * without re-reading the grid row by row, which is the work this route exists
+ * to remove. So a batch containing even one untouchable person (an admin, an
+ * ADMIN_EMAILS floor admin, yourself) writes nothing and comes back 409 —
+ * carrying EVERY refusal, not just the first, so retrying isn't whack-a-mole.
+ * Read them with `bulkPermissionRefusals()`; `ApiError.message` already
+ * carries the human sentence.
+ *
+ * Only permissions. `is_admin` and `is_active` stay per-row on purpose:
+ * minting an administrator deserves a look, and bulk offboarding is how a
+ * whole team vanishes in one mis-click.
+ *
+ * Returns the updated rows in the grid's own shape, so the caller splices them
+ * in instead of refetching the table.
+ */
+export const bulkUpdatePermissions = (
+  userIds: number[],
+  permissions: UserPermissionsPatch,
+) => {
+  const body: AdminBulkPermissionsRequest = {
+    user_ids: userIds,
+    permissions,
+  };
+  return apiClient
+    .post<AdminUser[]>("/admin/users/bulk", body)
+    .then((r) => r.data);
+};
+
+/** The per-person refusals inside a rejected `bulkUpdatePermissions()` call,
+ *  so the grid can mark the exact rows rather than making the admin match
+ *  names out of a sentence. Returns `[]` for any other failure — a network
+ *  drop is not a refusal, and treating it as "nobody was blocked" is the safe
+ *  reading. */
+export function bulkPermissionRefusals(e: unknown): AdminBulkRefusal[] {
+  if (!(e instanceof ApiError) || e.status !== 409) return [];
+  const detail = e.detail as { error?: string; refusals?: unknown } | null;
+  if (!detail || typeof detail !== "object") return [];
+  if (detail.error !== "bulk_refused") return [];
+  const rows = Array.isArray(detail.refusals) ? detail.refusals : [];
+  return rows.filter(
+    (r): r is AdminBulkRefusal =>
+      !!r && typeof r === "object" && typeof (r as AdminBulkRefusal).user_id === "number",
+  );
+}
+
+/**
+ * Create the PMO 360 row for a Castillo colleague who has never signed in, so
+ * they can be set up before their first day.
+ *
+ * `oid` MUST be the Entra directory GUID — Graph's `/users` `id`, which is
+ * what the directory picker hands over. The sign-in path matches on that and
+ * nothing else, so any other value creates a row the person will never
+ * authenticate into while a second one silently takes their place. The server
+ * refuses a non-GUID with a 422 rather than accepting an invisible mistake.
+ *
+ * 409 means they are already here — same object id, or the same email under a
+ * different one. Surface it; the fix is to edit (or reactivate) the existing
+ * row, never to add a second.
+ *
+ * The new row starts with the same default grants a self-signup would get, so
+ * provisioning changes *when* the account exists, not *what* it can do.
+ */
+export const provisionUser = (payload: ProvisionUserRequest) =>
+  apiClient
+    .post<AdminUser>("/admin/users/provision", payload)
+    .then((r) => r.data);
+
+/**
+ * Assign or unassign several people across several portfolios in one act.
+ *
+ * Idempotent by design: re-adding an existing assignment or removing one that
+ * was never there is counted in `skipped`, not an error, so the caller can
+ * offer 8 people × 6 portfolios without first working out which of the 48
+ * pairs already exist.
+ *
+ * `flipped` IS A VISIBILITY REPORT, NOT A SECURITY ONE — read the note on
+ * `MembershipFlip` before writing UI copy from it. Portfolio scoping is off
+ * (auth/permissions.py::is_portfolio_member returns true for any signed-in
+ * user), so an assignment changes whose Mine/dashboard a portfolio appears on
+ * and nothing else. It never limits who may write there.
+ */
+export const bulkAssignMemberships = (
+  userIds: number[],
+  projectIds: number[],
+  action: "add" | "remove",
+) => {
+  const body: AdminBulkMembershipRequest = {
+    user_ids: userIds,
+    project_ids: projectIds,
+    action,
+  };
+  return apiClient
+    .post<AdminBulkMembershipResult>("/admin/memberships/bulk", body)
+    .then((r) => r.data);
+};
+
 // ---------- calendar sync ----------
 /** Raw event-summary the calendar match endpoint accepts. ``key`` is whatever
  *  identifier the caller wants echoed back in the response (we always pass
@@ -1253,3 +1369,152 @@ export const fetchChangeOrderPdfBlob = async (id: number) => {
   });
   return res.data as Blob;
 };
+
+/**
+ * "May I send this, and has it already gone out?" — ASK BEFORE emailing.
+ *
+ * The send itself is client-side: the PM's own delegated Mail.Send, straight
+ * from the browser, which the server never sees and cannot stop. So this is the
+ * only place a refusal can happen in time to matter, and it only works if the
+ * caller asks FIRST. Await it, and email nothing until it resolves.
+ *
+ * It replaces an ordering bug worth remembering: the dialog fetched the PDF,
+ * called Graph, and only then called mark-sent — which is gated on CO_APPROVAL.
+ * A PM holding only CO_CREATION therefore delivered the change order to the
+ * client, got a permission error that read like "the send failed", and left
+ * `sent_at` NULL. The CO stayed in the to-send queue and the next person sent
+ * it again, so the client received the same priced change order twice.
+ *
+ * THROWS on refusal rather than returning a flag — 403 for a missing
+ * CO_APPROVAL permission, 409 for a CO that is not approved yet. Both carry the
+ * server's own sentence in `ApiError.message`, which names the permission or
+ * the status; show it rather than a generic failure, and distinguish the two by
+ * `ApiError.status` if the dialog needs to. Resolving at all IS the yes.
+ *
+ * A resolved result with a non-null `already_sent_at` is the duplicate warning:
+ * it has reached the client once already. Not a refusal — a genuine re-send to
+ * a new recipient is legitimate — so confirm with the PM before continuing.
+ */
+export const checkChangeOrderSendable = (coId: number) =>
+  apiClient
+    .post<ChangeOrderSendCheck>(`/change-orders/${coId}/send-check`)
+    .then((r) => r.data);
+
+/**
+ * Render the CO exactly as the client will receive it, from the UNSAVED form.
+ *
+ * Takes the create payload rather than an id because the Create tab has none
+ * until the first save, and saving a draft just to look at it would drop a
+ * half-finished change order into the In-flight rail every time somebody wanted
+ * to sanity-check a total. The server persists nothing — not the CO, not the
+ * number it shows.
+ *
+ * The bytes are identical to the issued document, so the FILENAME carries
+ * "-PREVIEW" as the only thing standing between this and someone downloading it
+ * from the viewer and emailing a change order that was never approved. Keep
+ * that marker on anything the caller saves or names.
+ *
+ * Gated on CO_CREATION, same as create: it composes a Castillo-branded,
+ * client-facing document out of caller-supplied text.
+ */
+export const previewChangeOrderPdfBlob = async (payload: ChangeOrderCreate) => {
+  try {
+    const res = await apiClient.post("/change-orders/preview", payload, {
+      responseType: "blob",
+    });
+    return res.data as Blob;
+  } catch (e) {
+    throw await readBlobDetail(e);
+  }
+};
+
+/** Reopen the JSON error body that `responseType: "blob"` sealed into a Blob,
+ *  and rebuild the ApiError around the server's actual message.
+ *
+ *  Without this, every refusal on a blob route reads "Request failed with
+ *  status code 403" — and the sentence this app's permission layer goes to the
+ *  trouble of writing (it names the missing permission and where to ask for it)
+ *  is thrown away at the one moment it would have helped. Returns the original
+ *  error untouched when the body is not JSON, which is the real-PDF-that-died
+ *  case. */
+async function readBlobDetail(e: unknown): Promise<unknown> {
+  if (!(e instanceof ApiError) || !(e.detail instanceof Blob)) return e;
+  try {
+    const detail = JSON.parse(await e.detail.text())?.detail;
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail && typeof detail === "object" && "message" in detail
+          ? String((detail as { message: unknown }).message)
+          : null;
+    return message ? new ApiError(message, e.status, detail) : e;
+  } catch {
+    return e;
+  }
+}
+
+// ---------- client contacts (Settings -> Clients) ----------
+/** Everyone we know on the client side. Omit `clientId` for the whole
+ *  directory — which is also the ONLY way to reach the unfiled rows, since a
+ *  contact with no client cannot be found by filtering on one. Open like every
+ *  other GET in this module. */
+export const listClientContacts = (clientId?: number) =>
+  apiClient
+    .get<ClientContact[]>("/client-contacts", {
+      params: clientId != null ? { client_id: clientId } : {},
+    })
+    .then((r) => r.data);
+
+/** Needs `client_mgmt`, as do patch/delete/import below. */
+export const createClientContact = (payload: ClientContactInput) =>
+  apiClient.post<ClientContact>("/client-contacts", payload).then((r) => r.data);
+
+/** Partial by design: omitted keys are left alone server-side, so two fields
+ *  edited a moment apart can't clobber each other with a whole-row write.
+ *  Sending `client_id: null` is the deliberate "unfile this one" — distinct
+ *  from omitting the key, which changes nothing. */
+export const updateClientContact = (
+  id: number,
+  payload: Partial<ClientContactInput>,
+) =>
+  apiClient
+    .patch<ClientContact>(`/client-contacts/${id}`, payload)
+    .then((r) => r.data);
+
+export const deleteClientContact = (id: number) =>
+  apiClient.delete(`/client-contacts/${id}`);
+
+/** Sweep the addresses the app has already collected into the directory.
+ *
+ *  Takes no argument: the source is server-side, and re-runnable — a second
+ *  pass counts known contacts in `skipped` rather than duplicating them, so
+ *  the button is safe to press twice.
+ *
+ *  Contacts whose domain matches no client are IMPORTED UNFILED, not rejected,
+ *  and named in `unmatched` so the tab can send an admin straight to them. */
+export const importClientContacts = () =>
+  apiClient
+    .post<unknown>("/client-contacts/import")
+    .then((r) => toImportResult(r.data));
+
+/** Normalise the import result instead of trusting the cast.
+ *
+ *  This is the one route in the contract with no sibling to copy, so `unmatched`
+ *  is the likeliest field to come back as objects rather than the strings this
+ *  module promises — and an admin reading a list of "[object Object]" is a worse
+ *  outcome than a slightly lossy label. Cheap insurance at exactly one seam;
+ *  delete it once the server side is pinned down. */
+function toImportResult(raw: unknown): ClientContactImportResult {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const rows = Array.isArray(r.unmatched) ? r.unmatched : [];
+  return {
+    imported: typeof r.imported === "number" ? r.imported : 0,
+    skipped: typeof r.skipped === "number" ? r.skipped : 0,
+    unmatched: rows.map((v) => {
+      if (typeof v === "string") return v;
+      const o = (v ?? {}) as Record<string, unknown>;
+      const label = o.email ?? o.domain ?? o.name;
+      return typeof label === "string" ? label : String(v);
+    }),
+  };
+}

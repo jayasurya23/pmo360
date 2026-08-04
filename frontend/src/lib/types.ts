@@ -135,6 +135,100 @@ export interface AdminUserGrid {
   users: AdminUser[];
 }
 
+/* ---------- Admin console: bulk edits ----------
+ * These mirror `backend/schemas/common.py` field for field. They are an
+ * INDEPENDENT copy of the wire contract, not a generated one: a rename on
+ * either side type-checks clean here and fails at runtime, so change both
+ * together or not at all.
+ */
+
+/** `POST /api/admin/users/bulk` — apply one grant/revoke across many rows.
+ *
+ *  No `is_admin` / `is_active`, matching the server: minting an administrator
+ *  is a look-at-what-you-are-doing act, and offboarding in bulk is how a whole
+ *  team disappears from one mis-click. Both stay per-row in the grid. */
+export interface AdminBulkPermissionsRequest {
+  user_ids: number[];
+  permissions: UserPermissionsPatch;
+}
+
+/** One target the server refused, and why.
+ *
+ *  The bulk permission route is all-or-nothing and every refusal in the console
+ *  is deterministic, so a rejected batch names EVERY blocked person at once —
+ *  refusing on the first would have an admin untick one row, retry, and be
+ *  refused again on the next. These arrive in the error body, not the success
+ *  body; `bulkPermissionRefusals()` in lib/api.ts reads them back out. */
+export interface AdminBulkRefusal {
+  user_id: number;
+  label: string;
+  reason: string;
+}
+
+/** `POST /api/admin/users/provision` — create the row for a colleague who has
+ *  never signed in, so they can be set up before day one.
+ *
+ *  `oid` is the Entra object id and it is the whole point of the shape: the
+ *  sign-in upsert matches on `oid` and nothing else, so a row provisioned under
+ *  any other key becomes a ghost — the real sign-in inserts a SECOND row and
+ *  the permissions an admin carefully set sit on one that never authenticates.
+ *  Microsoft Graph's `/users` `id` IS that object id, which is why this can
+ *  only be driven from the directory picker and never from a typed email. */
+export interface ProvisionUserRequest {
+  oid: string;
+  email: string;
+  name: string;
+  title?: string | null;
+  department?: string | null;
+}
+
+/** `POST /api/admin/memberships/bulk` — assign or unassign several people
+ *  across several portfolios in one act. */
+export interface AdminBulkMembershipRequest {
+  user_ids: number[];
+  project_ids: number[];
+  action: "add" | "remove";
+}
+
+/** A portfolio that crossed the zero-members line, in either direction.
+ *
+ *  A VISIBILITY report, not a security one — do not write access-control copy
+ *  from it. It was added when zero members meant "unowned" and the permission
+ *  alone governed writes there, so crossing zero silently granted or revoked
+ *  write access for everyone else. That rule is gone: Castillo's instruction is
+ *  that every PM reaches every portfolio, so
+ *  `auth/permissions.py::is_portfolio_member` returns true for any signed-in
+ *  user and membership decides no authorization question at all. It still
+ *  drives the Mine/all filter, the dashboard scope toggle and Manage Team,
+ *  which is why a portfolio going from nobody's to somebody's is worth
+ *  reporting — it changes whose dashboard it shows up on. 3 members going to 4
+ *  changes nothing and is not reported.
+ *
+ *  The field names are the server's and stay as they are: renaming a wire key
+ *  to match new prose is how two hand-kept copies of a contract drift apart. */
+export interface MembershipFlip {
+  project_id: number;
+  project_name: string;
+  client_name?: string | null;
+  members_before: number;
+  members_after: number;
+  /** 0 -> >0. Now appears under "Mine" for the listed people, and nobody else. */
+  became_scoped: boolean;
+  /** >0 -> 0. Belongs to nobody, so it surfaces only in the all-portfolios views. */
+  became_unowned: boolean;
+}
+
+/** What the membership batch actually did. `skipped` is the idempotent half —
+ *  re-adding an existing assignment, or removing one that was never there —
+ *  so the panel can offer 8 people × 6 portfolios without the admin first
+ *  working out which of the 48 pairs already exist. */
+export interface AdminBulkMembershipResult {
+  added: number;
+  removed: number;
+  skipped: number;
+  flipped: MembershipFlip[];
+}
+
 export interface Client {
   id: number;
   name: string;
@@ -925,4 +1019,89 @@ export interface ChangeOrder {
   created_at?: string;
   updated_at?: string;
   project_name?: string | null;
+}
+
+/** The pre-flight answer from `POST /api/change-orders/{id}/send-check`.
+ *
+ *  `ok` IS ALWAYS TRUE WHEN YOU HOLD THIS OBJECT. A refusal is an HTTP error,
+ *  never `ok: false` — no permission is a 403, an unapproved CO is a 409 — so a
+ *  caller that branches on `ok` instead of catching has no guard at all. The
+ *  field exists because the server's response model declares it; treat reaching
+ *  the `.then()` as the yes.
+ *
+ *  The three `already_*` fields are the duplicate-send warning: non-null means
+ *  this change order has already reached the client once, and sending again
+ *  puts a second copy of the same priced document in their inbox. They are a
+ *  warning rather than a refusal on purpose — a genuine re-send to a new
+ *  recipient is legitimate, and the server records it by appending. */
+export interface ChangeOrderSendCheck {
+  ok: boolean;
+  /** ISO timestamp of the FIRST delivery, kept across re-sends so the record of
+   *  when the client actually received it survives. */
+  already_sent_at?: string | null;
+  already_sent_to?: string | null;
+  /** "graph" | "outlook" | "manual", or null on rows predating the tracking. */
+  already_sent_method?: string | null;
+}
+
+/* ---------- Client contacts (Settings -> Clients) ----------
+ * The directory of the people on the CLIENT side of a meeting. Deliberately its
+ * own table rather than a flag on something existing: `User` is Castillo staff
+ * who sign in, and `Attendee` records who was in one room on one day, so
+ * neither can answer "who do we know at this client, and how do we reach them".
+ *
+ * Same warning as the admin block above — these mirror the backend schemas by
+ * hand, so a rename on one side type-checks clean here and fails at runtime.
+ * Change both or neither.
+ */
+
+/** One client-side contact. */
+export interface ClientContact {
+  id: number;
+  /** NULLABLE ON PURPOSE, and the import is why: a contact whose domain matches
+   *  no client still lands, unfiled, instead of being dropped. An unfiled row an
+   *  admin can assign from the Clients tab beats one that has to be retyped out
+   *  of somebody's inbox. Render null as "Unassigned", not as an error. */
+  client_id?: number | null;
+  /** ALL THREE ARE NULLABLE, and the imported data really does contain nulls:
+   *  16 of 118 rows from the live roster have no last name (split_display_name
+   *  on a single-token entry like "Ana"), and 25 have no email at all. Typing
+   *  them as plain `string` here does not make them strings — it only stops
+   *  TypeScript warning about the null, which is how `last_name.localeCompare`
+   *  shipped and took the whole SPA down on the first import. */
+  first_name: string | null;
+  last_name: string | null;
+  title?: string | null;
+  email: string | null;
+  /** The mail domain. Stored on the row rather than derived from `email` when
+   *  read, because it is what the importer matches against
+   *  `clients.email_domain` — so it has to be a thing an admin can actually see
+   *  and correct. Tolerates null: the rows most likely to have no usable domain
+   *  are exactly the unmatched ones this tab exists to clean up. */
+  domain?: string | null;
+  created_at?: string;
+}
+
+/** Create body, and (partially) the patch body. `domain` is optional because
+ *  the server derives it from `email` when omitted — the form asks for an
+ *  address, not for both halves of one. */
+export interface ClientContactInput {
+  client_id?: number | null;
+  first_name: string;
+  last_name: string;
+  title?: string | null;
+  email: string;
+  domain?: string | null;
+}
+
+/** What `POST /api/client-contacts/import` did. */
+export interface ClientContactImportResult {
+  imported: number;
+  /** Already on file — the import is re-runnable, so a second pass over the same
+   *  source is a no-op rather than a pile of duplicate contacts. */
+  skipped: number;
+  /** The ones that landed with NO client attached, so the Clients tab can point
+   *  an admin straight at the rows needing a home. These were still imported —
+   *  they are counted in `imported`, not instead of it. */
+  unmatched: string[];
 }

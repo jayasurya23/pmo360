@@ -1,10 +1,11 @@
 /**
  * User Management — the people half of the admin console on Settings.
  *
- * One row per person: First name, Last name, Title, Department, then the eight
- * permission checkboxes under a spanning "Access" header, then role/status and
- * the role buttons. A slim second line under each person carries their
- * portfolios, last-seen and any server message.
+ * ONE LINE PER PERSON. Identity (avatar + name + email) in a single cell, then
+ * the eight permission checkboxes, then a portfolio count, then a disclosure
+ * for the rare heavy edits. Eight people fit on a laptop screen without
+ * scrolling in either direction, which is the point of a permission matrix:
+ * you are comparing rows, and you cannot compare what you cannot see at once.
  *
  * Three things this component deliberately does NOT do:
  *
@@ -27,13 +28,16 @@
  *     row is already all-true. Recomputing that here would be a second copy of
  *     an authorization rule.
  *
- * Width. Settings renders at max-w-narrow, and a fourteen-column grid does not
- * fit in it. Rather than widen the page or shrink the header into codes, the
- * table declares its own column budget (see the colgroup) and scrolls inside
- * the card — the Settings page itself never scrolls sideways — with the two
- * name columns pinned, so you can never be ticking a box against a row whose
- * owner has scrolled out of sight. The moment the page gets wider the budget
- * simply fits and the scroll disappears.
+ * WIDTH — the reason the layout is what it is. Settings renders at
+ * max-w-narrow (860px) with the shell's px-9 gutters and the card's 1px
+ * border, which leaves 786px of table. The budget in the colgroup below sums
+ * every fixed column to 576px and hands the remaining 210px to the identity
+ * cell, so all eight permissions fit at their natural 3.5rem with no
+ * horizontal scroll and no abbreviated headers. That fit is what removed the
+ * old First name / Last name pair and the Title / Department columns: two
+ * names that were one name, and two fields edited about once a year, were
+ * costing 30rem of the very budget the Access band needed. Both survive — the
+ * name as the identity cell, title and department inside the row's disclosure.
  *
  * Saving is per control, immediately, with no Save button. A checkbox carries
  * exactly one bit of intent, and a Save button over eight boxes × N people
@@ -53,23 +57,21 @@ import {
   AccessGroupHead,
   AccessHeadCells,
   FALLBACK_PERMISSION_DEFS,
-  hasDeadPortfolioGrants,
 } from "./PermissionGrid";
+import AddPersonDialog from "./AddPersonDialog";
+import PortfolioAssignPanel from "./PortfolioAssignPanel";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
 import {
-  addProjectMember,
+  bulkPermissionRefusals,
+  bulkUpdatePermissions,
   listAdminUsers,
-  listAllPortfolios,
-  removeProjectMember,
   updateAdminUser,
 } from "@/lib/api";
 import type {
   AdminUser,
-  AdminUserPortfolio,
   PermissionDef,
   PermissionName,
-  Project,
   UserPermissionsPatch,
 } from "@/lib/types";
 
@@ -77,24 +79,48 @@ import type {
  *  notice after a click, short enough not to pile up while ticking a row. */
 const SAVED_MS = 2400;
 
+/** What a finished bulk action left behind. Kept after the selection clears so
+ *  the tick marks vanishing is explained rather than merely observed — and so
+ *  `ids` can put the same group back for a second grant. */
+type BulkOutcome = { text: string; ids: number[] };
+
 export default function AdminUsersCard() {
-  const { clients, me } = useApp();
+  const { me } = useApp();
   const confirm = useConfirm();
 
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [permissionDefs, setPermissionDefs] = useState<PermissionDef[]>([]);
-  const [portfolios, setPortfolios] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  /** Row currently mid-request for a whole-row change (admin / active /
-   *  membership) — disables that user's controls only, so one slow call
-   *  doesn't freeze the whole table. */
+  /** Row currently mid-request for a whole-row change (admin / active) —
+   *  disables that user's controls only, so one slow call doesn't freeze the
+   *  whole table. */
   const [busyId, setBusyId] = useState<number | null>(null);
   /** `${userId}:${field}` for the field-level saves, so ticking one box
    *  doesn't grey out the other seven. */
   const [pending, setPending] = useState<Set<string>>(new Set());
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
   const [savedIds, setSavedIds] = useState<Record<number, true>>({});
+
+  /** Ticked rows, by user id. Deliberately untouched by any save path: a
+   *  refresh after toggling one person's box must not throw away the group you
+   *  spent six clicks assembling. Stale ids are harmless — every read of this
+   *  goes through `selectedUsers`, which intersects it with the live list. */
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  /** Which row has its title/department/account disclosure open. One at a
+   *  time: the whole point of the rebuild is that the list stays short. */
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  const [bulkPerm, setBulkPerm] = useState<PermissionName | "">("");
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkOutcome, setBulkOutcome] = useState<BulkOutcome | null>(null);
+
+  const [addOpen, setAddOpen] = useState(false);
+  /** Whose portfolios the assign panel is editing — a snapshot, not a live
+   *  read of `selected`, so clearing the selection underneath it can't change
+   *  who the open panel is about. `null` means closed. */
+  const [assignFor, setAssignFor] = useState<number[] | null>(null);
 
   // Timers for the "Saved" flags. Held in a ref so unmounting mid-save can't
   // set state on a dead component.
@@ -123,32 +149,75 @@ export default function AdminUsersCard() {
 
   useEffect(() => {
     void refresh();
-    // Every portfolio across every client — the membership picker has to
-    // offer portfolios outside whichever client the header happens to be on.
-    listAllPortfolios(false)
-      .then(setPortfolios)
-      .catch(() => setPortfolios([]));
   }, [refresh]);
 
   const defs = permissionDefs.length ? permissionDefs : FALLBACK_PERMISSION_DEFS;
 
-  const clientNameById = useMemo(() => {
-    const m = new Map<number, string>();
-    for (const c of clients) m.set(c.id, c.name);
-    return m;
-  }, [clients]);
-
-  const portfolioLabel = useCallback(
-    (p: Project) => {
-      const client = clientNameById.get(p.client_id);
-      return client ? `${client} · ${p.name}` : p.name;
-    },
-    [clientNameById],
-  );
+  // Default the bulk picker once the real column list lands, so the bar opens
+  // ready to act instead of on a "choose one" placeholder.
+  useEffect(() => {
+    if (!bulkPerm && defs.length) setBulkPerm(defs[0].name);
+  }, [defs, bulkPerm]);
 
   /** Am I a full admin, or a `user_mgmt` holder running the console? The
    *  server enforces the difference; this only decides what to grey out. */
   const iAmAdmin = !!me?.is_admin;
+
+  /** A `user_mgmt` holder who isn't an admin may not touch an admin at all —
+   *  the server 403s the whole PATCH, so the row is not offerable in bulk
+   *  either. The only refusal we pre-empt, because it is the only one that is
+   *  permanent for this operator regardless of what they click. */
+  const outranksMe = useCallback(
+    (u: AdminUser) => u.is_admin && !iAmAdmin,
+    [iAmAdmin],
+  );
+
+  const selectableUsers = useMemo(
+    () => users.filter((u) => !outranksMe(u)),
+    [users, outranksMe],
+  );
+  const selectedUsers = useMemo(
+    () => selectableUsers.filter((u) => selected.has(u.id)),
+    [selectableUsers, selected],
+  );
+  /**
+   * Selected rows the permission batch is going to refuse.
+   *
+   * `POST /admin/users/bulk` is ALL-OR-NOTHING (see lib/api.ts): one
+   * untouchable person and nothing is written. These three conditions are the
+   * ones the server hands us per row — `is_admin`, `is_env_admin`, and the id
+   * we know is ours — so they are deterministic here rather than re-derived,
+   * and naming them up front beats walking an admin to a guaranteed 409 whose
+   * only content is a list of rows they can see. Everything else stays the
+   * server's to refuse; the 409 handler marks whatever we didn't predict.
+   */
+  const bulkBlocked = useMemo(
+    () =>
+      selectedUsers.filter(
+        (u) => u.is_admin || u.is_env_admin || me?.id === u.id,
+      ),
+    [selectedUsers, me?.id],
+  );
+  const allSelected =
+    selectableUsers.length > 0 && selectedUsers.length === selectableUsers.length;
+
+  function toggleSelected(userId: number, next: boolean) {
+    // Touching the selection starts a new intent, so the previous action's
+    // receipt stops being the thing on screen.
+    setBulkOutcome(null);
+    setSelected((prev) => {
+      const s = new Set(prev);
+      if (next) s.add(userId);
+      else s.delete(userId);
+      return s;
+    });
+  }
+
+  function clearSelection() {
+    setSelected(new Set());
+    setBulkError(null);
+    setBulkOutcome(null);
+  }
 
   function clearRowError(userId: number) {
     setRowErrors((e) => {
@@ -278,18 +347,76 @@ export default function AdminUsersCard() {
     await run(u.id, () => updateAdminUser(u.id, { is_active: !u.is_active }));
   }
 
-  async function addMembership(u: AdminUser, projectId: number) {
-    await run(u.id, () => addProjectMember(projectId, { user_id: u.id }));
+  /**
+   * Grant or revoke one permission across the whole selection.
+   *
+   * Splices the response rather than refetching: the route only ever writes
+   * permissions, and it refuses admins outright, so nothing it can do changes
+   * a row we didn't send — unlike `is_admin`, which moves the last-admin
+   * goalposts for everyone and stays per-row for that reason.
+   */
+  async function applyBulkPermission(next: boolean) {
+    const ids = selectedUsers.map((u) => u.id);
+    const def = defs.find((d) => d.name === bulkPerm);
+    if (!ids.length || !def) return;
+    setBulkBusy(true);
+    setBulkError(null);
+    setBulkOutcome(null);
+    setRowErrors({});
+    try {
+      const patch: UserPermissionsPatch = { [def.name]: next };
+      const updated = await bulkUpdatePermissions(ids, patch);
+      const byId = new Map(updated.map((row) => [row.id, row]));
+      setUsers((list) => list.map((u) => byId.get(u.id) ?? u));
+      for (const id of ids) markSaved(id);
+      // Clearing is the safe direction: leaving rows ticked after they have
+      // already been acted on is how the *next* action hits the wrong people.
+      // The outcome line below carries the group back if it was wanted twice.
+      setSelected(new Set());
+      setBulkOutcome({
+        text: `${next ? "Granted" : "Revoked"} ${def.label} ${
+          next ? "to" : "from"
+        } ${peopleCount(ids.length)}.`,
+        ids,
+      });
+    } catch (e: any) {
+      // Selection survives a refusal — you fix the cause and press it again.
+      // A 409 names every blocked person, so mark their rows instead of making
+      // the admin match names out of one long sentence.
+      const refusals = bulkPermissionRefusals(e);
+      if (refusals.length) {
+        setRowErrors(
+          Object.fromEntries(refusals.map((r) => [r.user_id, r.reason])),
+        );
+      }
+      setBulkError(e?.message || "The server rejected that change.");
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
-  async function removeMembership(u: AdminUser, m: AdminUserPortfolio) {
-    await run(u.id, () => removeProjectMember(m.member_id));
-  }
+  const openAssign = useCallback((ids: number[]) => {
+    setBulkError(null);
+    setBulkOutcome(null);
+    setAssignFor(ids);
+  }, []);
+
+  const totalCols = 2 + defs.length + 2;
 
   return (
     <AdminSection
       title="User Management"
-      hint={loading ? "loading…" : `${users.length} in the directory`}
+      hint={loading ? "loading…" : peopleCount(users.length)}
+      actions={
+        <button
+          type="button"
+          onClick={() => setAddOpen(true)}
+          className="rounded-md border border-surface-ghost bg-surface-card px-2.5 py-1 text-[12px] font-semibold text-brand-gray transition hover:border-brand-red hover:text-brand-red"
+          title="Set up a Castillo colleague before their first sign-in — permissions and portfolios can be ready on day one."
+        >
+          + Add person
+        </button>
+      }
     >
       {loadError ? (
         <p className="px-5 py-4 text-sm text-status-open-text">{loadError}</p>
@@ -297,362 +424,597 @@ export default function AdminUsersCard() {
         <p className="px-5 py-4 text-sm text-brand-gray">Loading users…</p>
       ) : users.length === 0 ? (
         <p className="px-5 py-4 text-sm text-brand-gray">
-          Nobody has signed into PMO 360 yet. A user row appears the first time
-          someone signs in.
+          Nobody is in the directory yet. A row appears the first time someone
+          signs in — or use <strong>Add person</strong> to set a colleague up
+          before that.
         </p>
       ) : (
-        // The scroll lives here, inside the card, so the Settings page never
-        // gains a horizontal scrollbar of its own.
-        <div className="overflow-x-auto">
-          <table className="w-[72rem] min-w-full table-fixed text-[13px]">
-            {/* Column budget — declared, not content-derived, because the two
-                name columns are position:sticky and their offsets below have to
-                match these widths exactly. Sums to 72rem; `min-w-full` lets the
-                table use anything more the card is ever given. */}
-            <colgroup>
-              <col style={{ width: NAME_W }} />
-              <col style={{ width: SURNAME_W }} />
-              {/* Title / Department: ~13 characters before truncation, which
-                  covers "Project Manager" and "Electrical". */}
-              <col style={{ width: "7.5rem" }} />
-              <col style={{ width: "7rem" }} />
-              <AccessCols defs={defs} />
-              {/* Account: floor is the "Deactivated" pill. */}
-              <col style={{ width: "6.5rem" }} />
-              {/* Actions: floor is the "Remove admin" button. Last column, so
-                  anything that outgrows this widens the whole table. */}
-              <col style={{ width: "6.5rem" }} />
-            </colgroup>
+        <>
+          {/* The bulk bar sits ABOVE the table, in the flow, never floating.
+              A docked bar is the usual answer, and it is the wrong one here:
+              the whole roster now fits on one screen, so a bar pinned to the
+              bottom of the viewport would cover the very rows it acts on, and
+              one pinned to the top would cover them on the way past. Static
+              also puts it beside the select-all box it belongs to. */}
+          {(selectedUsers.length > 0 || bulkOutcome) && (
+            <div className="border-b border-surface-hairline bg-surface-mute px-5 py-2.5">
+              {selectedUsers.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <span className="text-[13px] font-semibold text-brand-black">
+                    {peopleCount(selectedUsers.length)} selected
+                  </span>
+                  <button
+                    type="button"
+                    onClick={clearSelection}
+                    className="text-[12px] text-brand-gray underline underline-offset-2 hover:text-brand-red"
+                  >
+                    Clear
+                  </button>
 
-            <thead>
-              <tr className="text-left text-[11px] uppercase tracking-[0.08em] text-brand-gray font-semibold">
-                <th
-                  scope="col"
-                  rowSpan={2}
-                  className="sticky left-0 z-10 bg-surface-card px-5 py-2 align-bottom font-semibold"
-                >
-                  First name
-                </th>
-                <th
-                  scope="col"
-                  rowSpan={2}
-                  style={{ left: NAME_W }}
-                  className="sticky z-10 bg-surface-card border-r border-surface-hairline px-3 py-2 align-bottom font-semibold"
-                >
-                  Last name
-                </th>
-                <th scope="col" rowSpan={2} className="px-3 py-2 align-bottom font-semibold">
-                  Title
-                </th>
-                <th scope="col" rowSpan={2} className="px-3 py-2 align-bottom font-semibold">
-                  Dept
-                </th>
-                <AccessGroupHead defs={defs} />
-                <th scope="col" rowSpan={2} className="px-3 py-2 align-bottom font-semibold">
-                  Account
-                </th>
-                <th scope="col" rowSpan={2} className="px-5 py-2 align-bottom font-semibold">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-              <tr>
-                <AccessHeadCells defs={defs} />
-              </tr>
-            </thead>
+                  <span className="h-4 w-px bg-surface-border" />
 
-            <tbody>
-              {users.map((u) => {
-                const assignments = u.portfolios ?? [];
-                const assigned = new Set(assignments.map((m) => m.project_id));
-                const addable = portfolios.filter((p) => !assigned.has(p.id));
-                const isSelf = me?.id === u.id;
-                const busy = busyId === u.id;
-                const error = rowErrors[u.id];
-                // Both role buttons are dead ends for an env-floor admin —
-                // the server refuses either until ADMIN_EMAILS changes.
-                const envLocked = u.is_env_admin;
-                // A user_mgmt holder who isn't an admin may not touch an admin
-                // at all; the server 403s the whole PATCH.
-                const outranksMe = u.is_admin && !iAmAdmin;
-                const rowLockReason = outranksMe ? OUTRANKED_HINT : undefined;
-                const pendingHere = new Set(
-                  defs
-                    .map((d) => d.name)
-                    .filter((n) => pending.has(`${u.id}:${n}`)),
-                );
-                // A sticky cell scrolls over its neighbours, so it needs its own
-                // opaque fill and its own copy of the row's hover — the <tr>
-                // background sits behind it and would show through.
-                const stickyBg = u.is_active
-                  ? "bg-surface-card group-hover/row:bg-surface-rowhover transition"
-                  : // Deactivated rows recede: dimmed, on the muted surface,
-                    // and carrying a dashed avatar + an explicit "Deactivated"
-                    // pill so the state reads without relying on colour.
-                    "bg-surface-mute";
-                return (
-                  <Fragment key={u.id}>
-                    <tr
-                      className={clsx(
-                        "group/row border-t border-surface-page align-middle",
-                        u.is_active
-                          ? "hover:bg-surface-rowhover transition"
-                          : "bg-surface-mute/50 opacity-75",
-                      )}
+                  <select
+                    aria-label="Permission to grant or revoke"
+                    value={bulkPerm}
+                    disabled={bulkBusy}
+                    onChange={(e) =>
+                      setBulkPerm(e.target.value as PermissionName)
+                    }
+                    className="rounded-md border border-surface-border bg-surface-card px-2 py-1 text-[12px] text-brand-black focus:border-brand-red focus:outline-none disabled:opacity-50"
+                  >
+                    {defs.map((d) => (
+                      <option key={d.name} value={d.name}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                  <BarButton
+                    onClick={() => void applyBulkPermission(true)}
+                    disabled={bulkBusy || bulkBlocked.length > 0}
+                    title={bulkBlocked.length ? BULK_BLOCKED_HINT : undefined}
+                  >
+                    Grant
+                  </BarButton>
+                  <BarButton
+                    onClick={() => void applyBulkPermission(false)}
+                    disabled={bulkBusy || bulkBlocked.length > 0}
+                    title={bulkBlocked.length ? BULK_BLOCKED_HINT : undefined}
+                    danger
+                  >
+                    Revoke
+                  </BarButton>
+
+                  <span className="h-4 w-px bg-surface-border" />
+
+                  {/* "Edit", not "Add to": the same panel stages removals, and
+                      a button that under-promises is how an admin misses that
+                      they just unassigned six people. */}
+                  <BarButton
+                    onClick={() => openAssign(selectedUsers.map((u) => u.id))}
+                    disabled={bulkBusy}
+                  >
+                    Edit portfolios…
+                  </BarButton>
+
+                  {bulkBlocked.length > 0 && (
+                    <span className="basis-full text-[11px] text-status-pending-text">
+                      Grant and Revoke are off: {peopleCount(bulkBlocked.length)}{" "}
+                      here {bulkBlocked.length === 1 ? "is" : "are"} an
+                      administrator or your own row, and the batch is
+                      all-or-nothing — one refusal writes nothing for anybody.
+                      Portfolios can still be assigned to them.{" "}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSelected((prev) => {
+                            const s = new Set(prev);
+                            for (const u of bulkBlocked) s.delete(u.id);
+                            return s;
+                          })
+                        }
+                        className="font-semibold underline underline-offset-2"
+                      >
+                        Deselect {bulkBlocked.length === 1 ? "them" : `those ${bulkBlocked.length}`}
+                      </button>
+                    </span>
+                  )}
+                  {bulkError && (
+                    <div className="basis-full">
+                      <RowMessage>{bulkError}</RowMessage>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                bulkOutcome && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+                    <span className="font-semibold text-brand-green">
+                      ✓ {bulkOutcome.text}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelected(new Set(bulkOutcome.ids))}
+                      className="text-brand-gray underline underline-offset-2 hover:text-brand-red"
                     >
-                      <Td className={clsx("sticky left-0 z-[1] px-5", stickyBg)}>
-                        <div className="flex items-center gap-2">
-                          <Avatar name={displayName(u)} muted={!u.is_active} />
-                          <span
-                            className="min-w-0 truncate font-semibold text-brand-black"
-                            title={`${displayName(u)}${u.email ? ` · ${u.email}` : ""}`}
-                          >
-                            {u.first_name || displayName(u)}
-                          </span>
-                        </div>
-                      </Td>
-                      <Td
-                        style={{ left: NAME_W }}
+                      Select those {bulkOutcome.ids.length} again
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBulkOutcome(null)}
+                      className="ml-auto text-brand-lightgray hover:text-brand-red"
+                      aria-label="Dismiss"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )
+              )}
+            </div>
+          )}
+
+          {/* Nothing scrolls sideways at the width Settings actually renders
+              at — see the budget below. The wrapper is the escape hatch for a
+              phone, where 786px of card simply does not exist. */}
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[45rem] table-fixed text-[13px]">
+              {/* COLUMN BUDGET. Settings is max-w-narrow (860px) less the
+                  shell's px-9 gutters (72px) less the card's 1px borders =
+                  786px of table.
+
+                    select        2rem      32px
+                    Access   8 × 3.5rem    448px
+                    Portfolios   3.5rem     56px
+                    Manage      2.75rem     44px
+                                          -----
+                    fixed                  580px
+                    identity (remainder)   206px   at 786px of card
+
+                  206px carries a 32px avatar, an 8px gap and 20px of padding,
+                  leaving ~146px of text — about 23 characters of name at 13px,
+                  with a title attribute for the rest. Every fixed column is
+                  sized to its longest HEADER word, not its content, because
+                  the header is what wrapped in the version this replaces.
+                  `min-w-[45rem]` (720px) is the floor: below it the wrapper
+                  scrolls rather than crushing the identity cell to nothing,
+                  which is only ever reached on a phone. */}
+              <colgroup>
+                <col style={{ width: "2rem" }} />
+                {/* No width: table-fixed hands this column whatever the eight
+                    Access columns and their three neighbours leave over. */}
+                <col />
+                <AccessCols defs={defs} />
+                <col style={{ width: "3.5rem" }} />
+                <col style={{ width: "2.75rem" }} />
+              </colgroup>
+
+              <thead>
+                <tr className="text-left text-[11px] uppercase tracking-[0.08em] text-brand-gray font-semibold">
+                  <th scope="col" rowSpan={2} className="px-[9px] py-2 align-bottom">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 accent-brand-red align-middle"
+                      checked={allSelected}
+                      // Partial selection is a third state, and rendering it as
+                      // "off" would make the header lie about the group below.
+                      ref={(el) => {
+                        if (el)
+                          el.indeterminate =
+                            selectedUsers.length > 0 && !allSelected;
+                      }}
+                      disabled={selectableUsers.length === 0}
+                      aria-label="Select all people"
+                      title="Select everyone you can edit"
+                      onChange={(e) =>
+                        setSelected(
+                          e.target.checked
+                            ? new Set(selectableUsers.map((u) => u.id))
+                            : new Set(),
+                        )
+                      }
+                    />
+                  </th>
+                  <th scope="col" rowSpan={2} className="pl-3 pr-2 py-2 align-bottom font-semibold">
+                    Person
+                  </th>
+                  <AccessGroupHead defs={defs} />
+                  <th
+                    scope="col"
+                    rowSpan={2}
+                    className="px-1 py-2 align-bottom text-center font-semibold"
+                    title="How many portfolios this person is assigned to. Assignment is what their Mine filter, dashboard scope and Manage Team roster follow — it does not gate what they may edit. Click a count to change it."
+                  >
+                    <span className="block whitespace-nowrap normal-case tracking-normal text-[10px]">
+                      Portfolios
+                    </span>
+                  </th>
+                  {/* Labelled, not sr-only: a bare chevron is where an admin
+                      would never think to look for "deactivate". */}
+                  <th
+                    scope="col"
+                    rowSpan={2}
+                    className="px-1 py-2 align-bottom text-center font-semibold"
+                    title="Title, department, admin and deactivate — one row at a time."
+                  >
+                    <span className="block whitespace-nowrap normal-case tracking-normal text-[10px]">
+                      Manage
+                    </span>
+                  </th>
+                </tr>
+                <tr>
+                  <AccessHeadCells defs={defs} />
+                </tr>
+              </thead>
+
+              <tbody>
+                {users.map((u) => {
+                  const who = displayName(u);
+                  const isSelf = me?.id === u.id;
+                  const busy = busyId === u.id;
+                  const error = rowErrors[u.id];
+                  // Both role buttons are dead ends for an env-floor admin —
+                  // the server refuses either until ADMIN_EMAILS changes.
+                  const envLocked = u.is_env_admin;
+                  const locked = outranksMe(u);
+                  const rowLockReason = locked ? OUTRANKED_HINT : undefined;
+                  const expanded = expandedId === u.id;
+                  const portfolioCount = (u.portfolios ?? []).length;
+                  const pendingHere = new Set(
+                    defs
+                      .map((d) => d.name)
+                      .filter((n) => pending.has(`${u.id}:${n}`)),
+                  );
+                  return (
+                    <Fragment key={u.id}>
+                      <tr
                         className={clsx(
-                          "sticky z-[1] border-r border-surface-hairline px-3",
-                          stickyBg,
+                          "border-t border-surface-page align-middle",
+                          u.is_active
+                            ? // Selected rows hold the hover tint rather than
+                              // stacking a second background on it: two
+                              // competing `bg-` utilities resolve by stylesheet
+                              // order, not by class order, so the winner would
+                              // be whichever Tailwind happened to emit last.
+                              selected.has(u.id)
+                              ? "bg-surface-rowhover"
+                              : "hover:bg-surface-rowhover transition"
+                            : // Deactivated rows recede: dimmed, on the muted
+                              // surface, and carrying a dashed avatar plus an
+                              // explicit tag so the state reads without colour.
+                              "bg-surface-mute/50 opacity-75",
                         )}
                       >
-                        <div className="truncate font-semibold text-brand-black">
-                          {u.last_name || "—"}
-                        </div>
-                        {isSelf && (
-                          <div className="text-[10px] font-semibold uppercase tracking-wider text-brand-lightgray">
-                            you
-                          </div>
-                        )}
-                      </Td>
+                        <Td className="px-[9px]">
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 accent-brand-red align-middle disabled:cursor-not-allowed disabled:opacity-40"
+                            checked={selected.has(u.id)}
+                            disabled={locked}
+                            title={locked ? OUTRANKED_HINT : undefined}
+                            aria-label={`Select ${who}`}
+                            onChange={(e) =>
+                              toggleSelected(u.id, e.target.checked)
+                            }
+                          />
+                        </Td>
 
-                      <Td className="px-3">
-                        <TextCell
-                          value={u.title}
-                          placeholder="—"
-                          ariaLabel={`Job title for ${displayName(u)}`}
-                          disabled={busy || outranksMe}
+                        <Td className="pl-3 pr-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <Avatar name={who} muted={!u.is_active} />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex min-w-0 items-center gap-1">
+                                <span
+                                  className="min-w-0 truncate font-semibold text-brand-black"
+                                  title={who}
+                                >
+                                  {who}
+                                </span>
+                                {u.is_admin && (
+                                  <Tag
+                                    tone="admin"
+                                    title={
+                                      envLocked
+                                        ? "Administrator, and listed in ADMIN_EMAILS — the permanent admin floor."
+                                        : "Administrator — implicitly holds every permission, and can edit other admins."
+                                    }
+                                  >
+                                    admin
+                                  </Tag>
+                                )}
+                                {!u.is_active && (
+                                  <Tag tone="off" title="Deactivated — refused on their next request. Nothing they authored is deleted.">
+                                    off
+                                  </Tag>
+                                )}
+                                {isSelf && <Tag tone="quiet">you</Tag>}
+                              </div>
+                              {/* Second line doubles as the row's save
+                                  acknowledgement: it is the only text that is
+                                  guaranteed on screen next to the box that
+                                  just moved. Refusals are longer than 150px,
+                                  so those get their own row below. */}
+                              {savedIds[u.id] ? (
+                                <div className="truncate text-[10.5px] font-semibold leading-tight text-brand-green">
+                                  ✓ Saved
+                                </div>
+                              ) : (
+                                <div
+                                  className="truncate text-[10.5px] leading-tight text-brand-gray"
+                                  title={u.email || undefined}
+                                >
+                                  {u.email || "no email on file"}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </Td>
+
+                        <AccessCells
+                          defs={defs}
+                          user={u}
+                          pending={pendingHere}
+                          disabled={busy || locked}
                           disabledReason={rowLockReason}
-                          saving={pending.has(`${u.id}:title`)}
-                          onCommit={(v) => saveTitle(u, v)}
+                          onToggle={(name, next) =>
+                            togglePermission(u, name, next)
+                          }
                         />
-                      </Td>
-                      <Td className="px-3">
-                        <TextCell
-                          value={u.department}
-                          placeholder="—"
-                          ariaLabel={`Department for ${displayName(u)}`}
-                          disabled={busy || outranksMe}
-                          disabledReason={rowLockReason}
-                          saving={pending.has(`${u.id}:department`)}
-                          onCommit={(v) => saveDepartment(u, v)}
-                        />
-                      </Td>
 
-                      <AccessCells
-                        defs={defs}
-                        user={u}
-                        pending={pendingHere}
-                        disabled={busy || outranksMe}
-                        disabledReason={rowLockReason}
-                        onToggle={(name, next) => togglePermission(u, name, next)}
-                      />
-
-                      <Td className="px-3">
-                        {/* Same red-outline "admin" badge the Lead dashboard
-                            uses, so the role reads identically in both places. */}
-                        {u.is_admin ? (
-                          <span className="pill border-brand-red text-brand-red">
-                            Admin
-                          </span>
-                        ) : (
-                          <span className="text-[12px] text-brand-gray">PM</span>
-                        )}
-                        {u.is_env_admin && (
-                          <div
-                            className="mt-0.5 text-[10px] uppercase tracking-wider text-brand-lightgray"
-                            title="Listed in ADMIN_EMAILS — admin here is permanent until that env var changes"
+                        <Td className="px-1 text-center">
+                          <button
+                            type="button"
+                            onClick={() => openAssign([u.id])}
+                            disabled={busy}
+                            aria-label={`Portfolios for ${who} — ${portfolioCount} assigned. Edit.`}
+                            title={`On ${portfolioCount} ${
+                              portfolioCount === 1 ? "portfolio" : "portfolios"
+                            }. Assignment decides whose Mine filter and dashboard a portfolio shows up on, and who appears on its Manage Team roster — never who may edit it.${
+                              u.is_admin
+                                ? " An admin's Mine view shows every portfolio regardless; assign them to put them on the roster."
+                                : ""
+                            } Click to add or remove.`}
+                            // No warning state. There is no combination of
+                            // count and permissions that means anything about
+                            // access — the count is a visibility setting.
+                            className="inline-flex min-w-[2.25rem] items-center justify-center rounded-full border border-surface-border bg-surface-card px-2 py-0.5 text-[11px] font-semibold text-brand-black transition hover:border-brand-red hover:text-brand-red disabled:opacity-40"
                           >
-                            env floor
-                          </div>
-                        )}
-                        <div className="mt-1">
-                          {u.is_active ? (
-                            <span className="pill-completed">Active</span>
-                          ) : (
-                            <span className="pill-cancelled">Deactivated</span>
-                          )}
-                        </div>
-                      </Td>
+                            {portfolioCount}
+                          </button>
+                        </Td>
 
-                      <Td className="px-5">
-                        <div className="flex flex-col items-stretch gap-1.5">
-                          <RowButton
-                            onClick={() => void toggleAdmin(u)}
-                            disabled={busy || !iAmAdmin || (envLocked && u.is_admin)}
-                            title={
-                              !iAmAdmin
-                                ? ADMIN_ONLY_HINT
-                                : ENV_LOCK_HINT(envLocked && u.is_admin)
+                        <Td className="px-1 text-center">
+                          {/* One disclosure instead of two permanent buttons.
+                              Make admin and Deactivate are rare and heavy; a
+                              pair of them in every row was more furniture than
+                              the eight permissions it sat beside. One click
+                              still reaches them, and the chevron is in every
+                              row rather than hidden behind a hover. */}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedId(expanded ? null : u.id)
                             }
+                            aria-expanded={expanded}
+                            aria-label={`Manage ${who}`}
+                            title={`Title, department, admin and deactivate for ${who}`}
+                            className="rounded-md p-1 text-brand-lightgray transition hover:bg-surface-ghost hover:text-brand-red"
                           >
-                            {u.is_admin ? "Remove admin" : "Make admin"}
-                          </RowButton>
-                          <RowButton
-                            onClick={() => void toggleActive(u)}
-                            disabled={
-                              busy || outranksMe || (envLocked && u.is_active)
-                            }
-                            danger={u.is_active}
-                            title={
-                              outranksMe
-                                ? OUTRANKED_HINT
-                                : ENV_LOCK_HINT(envLocked && u.is_active)
-                            }
+                            <svg
+                              viewBox="0 0 20 20"
+                              className={clsx(
+                                "h-4 w-4 transition-transform",
+                                expanded && "rotate-180",
+                              )}
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              aria-hidden="true"
+                            >
+                              <path
+                                d="M5 8l5 5 5-5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </button>
+                        </Td>
+                      </tr>
+
+                      {expanded && (
+                        <tr className={clsx(!u.is_active && "opacity-75")}>
+                          <td
+                            colSpan={totalCols}
+                            className="border-t border-surface-hairline bg-surface-mute px-5 py-3"
                           >
-                            {u.is_active ? "Deactivate" : "Reactivate"}
-                          </RowButton>
-                        </div>
-                      </Td>
-                    </tr>
+                            <div className="space-y-3">
+                              <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+                                <Field label="Title">
+                                  <TextCell
+                                    value={u.title}
+                                    placeholder="e.g. Project Manager"
+                                    ariaLabel={`Job title for ${who}`}
+                                    disabled={busy || locked}
+                                    disabledReason={rowLockReason}
+                                    saving={pending.has(`${u.id}:title`)}
+                                    onCommit={(v) => saveTitle(u, v)}
+                                  />
+                                </Field>
+                                <Field label="Department">
+                                  <TextCell
+                                    value={u.department}
+                                    placeholder="e.g. Electrical"
+                                    ariaLabel={`Department for ${who}`}
+                                    disabled={busy || locked}
+                                    disabledReason={rowLockReason}
+                                    saving={pending.has(`${u.id}:department`)}
+                                    onCommit={(v) => saveDepartment(u, v)}
+                                  />
+                                </Field>
+                                <div className="flex-1" />
+                                <div className="flex items-center gap-1.5">
+                                  <RowButton
+                                    onClick={() => void toggleAdmin(u)}
+                                    disabled={
+                                      busy || !iAmAdmin || (envLocked && u.is_admin)
+                                    }
+                                    title={
+                                      !iAmAdmin
+                                        ? ADMIN_ONLY_HINT
+                                        : ENV_LOCK_HINT(envLocked && u.is_admin)
+                                    }
+                                  >
+                                    {u.is_admin ? "Remove admin" : "Make admin"}
+                                  </RowButton>
+                                  <RowButton
+                                    onClick={() => void toggleActive(u)}
+                                    disabled={
+                                      busy || locked || (envLocked && u.is_active)
+                                    }
+                                    danger={u.is_active}
+                                    title={
+                                      locked
+                                        ? OUTRANKED_HINT
+                                        : ENV_LOCK_HINT(envLocked && u.is_active)
+                                    }
+                                  >
+                                    {u.is_active ? "Deactivate" : "Reactivate"}
+                                  </RowButton>
+                                </div>
+                              </div>
 
-                    {/* Detail line. Everything here is either reference (email,
-                        last seen) or full-width by nature (portfolio chips, a
-                        server message), and none of it wants a 3.5rem column.
-                        Pinned to the left edge so it stays readable while the
-                        Access band is scrolled. */}
-                    <tr
-                      className={clsx(
-                        !u.is_active && "bg-surface-mute/50 opacity-75",
-                      )}
-                    >
-                      <td colSpan={4 + defs.length + 2} className="px-5 pb-3 pt-0">
-                        <div className="sticky left-5 w-max max-w-[44rem] space-y-1.5">
-                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-brand-gray">
-                            <span className="truncate">
-                              {u.email || "no email on file"}
-                            </span>
-                            <span className="text-brand-lightgray">·</span>
-                            <span>Last seen {formatDay(u.last_seen_at)}</span>
-                            {savedIds[u.id] && (
-                              <span className="font-semibold text-brand-green">
-                                ✓ Saved
-                              </span>
-                            )}
-                          </div>
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-brand-gray">
+                                <span>{u.email || "no email on file"}</span>
+                                <span className="text-brand-lightgray">·</span>
+                                <span>Last seen {formatDay(u.last_seen_at)}</span>
+                                {u.is_env_admin && (
+                                  <>
+                                    <span className="text-brand-lightgray">·</span>
+                                    <span title="Listed in ADMIN_EMAILS — admin here is permanent until that env var changes">
+                                      env floor admin
+                                    </span>
+                                  </>
+                                )}
+                              </div>
 
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            {assignments.length === 0 && (
-                              <span className="text-[11px] text-brand-lightgray">
-                                No portfolios
-                              </span>
-                            )}
-                            {assignments.map((m) => (
-                              <span
-                                key={m.member_id}
-                                className="inline-flex items-center gap-1 rounded-full border border-surface-border bg-surface-card px-2 py-px text-[11px] text-brand-black"
-                              >
-                                {m.client_name
-                                  ? `${m.client_name} · ${m.project_name}`
-                                  : m.project_name}
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span
+                                  className="text-[11px] text-brand-gray"
+                                  title="Where this person's Mine filter and dashboard look, and whose Manage Team roster they appear on. Not a limit on what they may edit."
+                                >
+                                  Portfolios:
+                                </span>
+                                {portfolioCount === 0 ? (
+                                  <span className="text-[11px] text-brand-lightgray">
+                                    none
+                                  </span>
+                                ) : (
+                                  (u.portfolios ?? []).map((m) => (
+                                    <span
+                                      key={m.member_id}
+                                      className="rounded-full border border-surface-border bg-surface-card px-2 py-px text-[11px] text-brand-black"
+                                    >
+                                      {m.client_name
+                                        ? `${m.client_name} · ${m.project_name}`
+                                        : m.project_name}
+                                    </span>
+                                  ))
+                                )}
                                 <button
                                   type="button"
-                                  onClick={() => void removeMembership(u, m)}
-                                  disabled={busy}
-                                  title={`Remove from ${m.project_name}`}
-                                  aria-label={`Remove ${displayName(u)} from ${m.project_name}`}
-                                  className="text-brand-lightgray hover:text-brand-brightred disabled:opacity-40"
+                                  onClick={() => openAssign([u.id])}
+                                  className="rounded-md border border-dashed border-surface-border px-2 py-px text-[11px] text-brand-gray transition hover:border-brand-red hover:text-brand-red"
                                 >
-                                  ✕
+                                  Edit portfolios
                                 </button>
-                              </span>
-                            ))}
-                            {addable.length > 0 && (
-                              <select
-                                aria-label={`Add ${displayName(u)} to a portfolio`}
-                                title={
-                                  u.is_active
-                                    ? undefined
-                                    : "Deactivated users cannot be assigned to a portfolio. Reactivate them first."
-                                }
-                                value=""
-                                // Same rule as the env-locked buttons above:
-                                // the server refuses this outright, so offer
-                                // the reason rather than a guaranteed 409.
-                                disabled={busy || !u.is_active}
-                                onChange={(e) => {
-                                  const id = Number(e.target.value);
-                                  if (id) void addMembership(u, id);
-                                  e.target.value = "";
-                                }}
-                                className="rounded-md border border-dashed border-surface-border bg-surface-card px-2 py-px text-[11px] text-brand-gray hover:border-brand-red hover:text-brand-red focus:outline-none focus:border-brand-red disabled:opacity-40"
-                              >
-                                <option value="">+ portfolio</option>
-                                {addable.map((p) => (
-                                  <option key={p.id} value={p.id}>
-                                    {portfolioLabel(p)}
-                                  </option>
-                                ))}
-                              </select>
-                            )}
-                          </div>
+                              </div>
 
-                          {u.is_admin && (
-                            <p className="text-[11px] text-brand-lightgray">
-                              Admin — holds every permission on every portfolio.
-                              The ticks above come from the role, not from
-                              stored grants.
-                            </p>
-                          )}
+                              {u.is_admin && (
+                                <p className="text-[11px] text-brand-lightgray">
+                                  Admin — implicitly holds every permission. The
+                                  ticks above come from the role, not from
+                                  stored grants.
+                                </p>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
 
-                          {hasDeadPortfolioGrants(u, defs) && (
-                            <p className="text-[11px] text-status-pending-text">
-                              On no portfolios, so the portfolio permissions
-                              ticked above currently do nothing. Add a portfolio
-                              to make them apply.
-                            </p>
-                          )}
-
-                          {error && <RowMessage>{error}</RowMessage>}
-                        </div>
-                      </td>
-                    </tr>
-                  </Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      {/* Refusals get their own full-width row rather than the
+                          identity cell: the server's sentences name the rule
+                          and the fix, and 150px would truncate both. */}
+                      {error && (
+                        <tr>
+                          <td colSpan={totalCols} className="px-5 pb-2.5 pt-0">
+                            <RowMessage>{error}</RowMessage>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
 
       <div className="space-y-1 border-t border-surface-hairline px-5 py-3 text-xs text-brand-lightgray">
         <p>
-          Access controls <strong>edits</strong> only — everyone can still read
-          what their portfolios already show them, so unticking a box never
-          hides a screen. The six portfolio permissions apply only where the
-          person is a member; <strong>User Mgmt</strong> and{" "}
-          <strong>Client Mgmt</strong> are global.
+          Access controls <strong>edits</strong> only — everyone can read
+          everything the app holds, so unticking a box never hides a screen or a
+          nav tab. The two groups say what a box unlocks, not where: a ticked
+          box applies <strong>everywhere</strong>.
+        </p>
+        {/* This paragraph is the console's statement of the access model, so it
+            has to track auth/permissions.py::is_portfolio_member — which is
+            disabled and returns true for anyone signed in. The console said the
+            opposite for one release; an admin who learns the model here and
+            staffs portfolios accordingly is the person that misleads. */}
+        <p>
+          Every permission is <strong>company-wide</strong>. A PM reaches every
+          portfolio, so the eight boxes are the whole rule — there is no second,
+          per-portfolio half. <strong>Assigning portfolios</strong> decides
+          whose <em>Mine</em> filter and dashboard a portfolio appears on, and
+          who shows up under Manage Team. It grants and revokes nothing, so
+          leaving somebody on no portfolios does not restrict them.
         </p>
         <p>
           CO Creation and CO Approval are separate on purpose: whoever raises a
           change order cannot approve it. Deactivating locks a person out on
-          their next request but keeps everything they authored. Users appear
-          here after their first sign-in.
+          their next request but keeps everything they authored.
         </p>
       </div>
+
+      <AddPersonDialog
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        onAdded={() => {
+          void refresh();
+        }}
+      />
+      <PortfolioAssignPanel
+        open={assignFor !== null}
+        userIds={assignFor ?? []}
+        onClose={() => setAssignFor(null)}
+        onDone={() => {
+          void refresh();
+          // A bulk staffing pass is finished business; leaving the group ticked
+          // is how the next click lands on people you thought you were done
+          // with. One person at a time never had a selection to clear.
+          if ((assignFor?.length ?? 0) > 1) setSelected(new Set());
+        }}
+      />
     </AdminSection>
   );
 }
 
-/* Width of the two pinned name columns. Declared once because the colgroup and
-   the `left` offsets of the sticky cells must agree — if they drift, the
-   surname column slides under the first name instead of beside it. */
-const NAME_W = "9.5rem";
-const SURNAME_W = "7rem";
-
 function displayName(u: AdminUser): string {
   return u.name || u.email || `User #${u.id}`;
+}
+
+/** "1 person" / "7 people" — the bulk bar's count has to be unambiguous, and
+ *  a bare number beside a permission name reads as a permission count. */
+function peopleCount(n: number): string {
+  return `${n} ${n === 1 ? "person" : "people"}`;
 }
 
 /** Tooltip for the two buttons an ADMIN_EMAILS floor admin can't be the
@@ -670,6 +1032,11 @@ const OUTRANKED_HINT =
 const ADMIN_ONLY_HINT =
   "Only an administrator can grant or revoke admin. You can still edit permissions, title and department.";
 
+/** Why the bulk Grant/Revoke pair is greyed out. Names the fix, not just the
+ *  fact, because the fix is one click away in the bar itself. */
+const BULK_BLOCKED_HINT =
+  "The selection includes an administrator or your own row. The permission batch is all-or-nothing, so it would write nothing for anybody — deselect them and press again.";
+
 /** `last_seen_at` is an ISO timestamp; anything unparseable degrades to a
  *  dash rather than throwing inside the row. */
 function formatDay(value?: string | null): string {
@@ -679,6 +1046,49 @@ function formatDay(value?: string | null): string {
   } catch {
     return "—";
   }
+}
+
+/** Row-level state marker. Smaller than `.pill`, which is sized for a status
+ *  column and would push the name into truncation on every admin's row. */
+function Tag({
+  tone,
+  title,
+  children,
+}: {
+  tone: "admin" | "off" | "quiet";
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span
+      title={title}
+      className={clsx(
+        "shrink-0 rounded border px-1 py-px text-[9px] font-semibold uppercase leading-none tracking-wide",
+        tone === "admin" && "border-brand-red text-brand-red",
+        tone === "off" && "border-brand-lightgray text-brand-gray",
+        tone === "quiet" && "border-surface-border text-brand-lightgray",
+      )}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-0.5 block text-[10px] font-semibold uppercase tracking-wider text-brand-gray">
+        {label}
+      </span>
+      <div className="w-[11rem]">{children}</div>
+    </label>
+  );
 }
 
 /**
@@ -739,9 +1149,9 @@ function TextCell({
         }
       }}
       className={clsx(
-        "w-full rounded-md border border-transparent bg-transparent px-1.5 py-1 text-[12.5px] text-brand-black",
-        "placeholder:text-brand-lightgray hover:border-surface-border",
-        "focus:outline-none focus:border-brand-red focus:bg-surface-card",
+        "w-full rounded-md border border-surface-border bg-surface-card px-1.5 py-1 text-[12.5px] text-brand-black",
+        "placeholder:text-brand-lightgray",
+        "focus:outline-none focus:border-brand-red",
         "disabled:cursor-not-allowed disabled:opacity-60",
         saving && "opacity-50",
       )}
@@ -780,21 +1190,48 @@ function RowButton({
   );
 }
 
-/* Body cells. Padding is passed in per column rather than baked in: the two
-   pinned columns take the card's 20px gutter, the inner ones sit tighter, and
-   the Access band sets its own (see PermissionGrid). */
+/** Bulk-bar control. Slightly larger than RowButton because these act on a
+ *  group and a mis-click costs more than one row. */
+function BarButton({
+  onClick,
+  disabled,
+  danger,
+  title,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={clsx(
+        "whitespace-nowrap rounded-md border bg-surface-card px-2.5 py-1 text-[12px] font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed",
+        danger
+          ? "border-surface-border text-brand-gray hover:border-brand-brightred hover:text-brand-brightred"
+          : "border-surface-border text-brand-black hover:border-brand-red hover:text-brand-red",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* Body cells. Padding is passed in per column rather than baked in: the
+   identity cell takes the card's gutter, the narrow ones sit tight, and the
+   Access band sets its own (see PermissionGrid). */
 function Td({
   children,
   className,
-  style,
 }: {
   children?: React.ReactNode;
   className?: string;
-  style?: React.CSSProperties;
 }) {
-  return (
-    <td className={clsx("py-2.5 align-middle", className)} style={style}>
-      {children}
-    </td>
-  );
+  return <td className={clsx("py-1.5 align-middle", className)}>{children}</td>;
 }
