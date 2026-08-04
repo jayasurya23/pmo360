@@ -328,22 +328,29 @@ export default function Settings() {
         </button>
       </div>
 
-      {/* ---------- Administration (admins only) ----------
-          Rendered off `me.is_admin` from /api/me, which is the DB flag. This
-          check hides the console; it does not protect it — every endpoint
-          underneath refuses a non-admin on its own. */}
-      {me?.is_admin && (
-        <div className="space-y-[18px] pt-6 mt-2 border-t border-surface-border">
-          <div>
-            <h2 className="kicker">Administration</h2>
-            <p className="mt-1 text-xs text-brand-lightgray">
-              Only admins see this section. Changes here affect everyone.
-            </p>
-          </div>
-          <AdminUsersCard />
-          <AdminClientsCard />
+      {/* ---------- Administration ----------
+          Split on purpose. Users is admin-only — it decides who can reach what.
+          Clients is open to every PM: registering the client you just won, or
+          fixing its name after a rebrand, is ordinary work, and routing it
+          through an admin only adds latency. Deleting a client is the one
+          destructive act (it cascades through every portfolio beneath it), so
+          that button alone stays admin-gated inside the card.
+
+          `me.is_admin` is the DB flag from /api/me. These checks HIDE things;
+          they do not protect them — every endpoint underneath refuses a
+          non-admin on its own. */}
+      <div className="space-y-[18px] pt-6 mt-2 border-t border-surface-border">
+        <div>
+          <h2 className="kicker">Administration</h2>
+          <p className="mt-1 text-xs text-brand-lightgray">
+            {me?.is_admin
+              ? "Changes here affect everyone."
+              : "Clients are shared across the team — renaming one relabels every portfolio beneath it."}
+          </p>
         </div>
-      )}
+        {me?.is_admin && <AdminUsersCard />}
+        <AdminClientsCard canDelete={!!me?.is_admin} />
+      </div>
     </div>
   );
 }

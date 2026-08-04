@@ -21,10 +21,11 @@ def get_clients(db: Session = Depends(get_db), _user=Depends(require_db_user)):
 
 
 @router.post("", response_model=ClientOut, status_code=201)
-def create_client(payload: ClientCreate, db: Session = Depends(get_db), _user=Depends(require_admin)):
-    """Admin-only — client management lives in Settings. A client is the top
-    of the Client → Portfolio → Project tree, so letting any signed-in PM
-    create or rename one lets them reshape everybody's navigation."""
+def create_client(payload: ClientCreate, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+    """Any PM. Winning new work is the job — a PM who cannot register the client
+    they just won is blocked on someone else for the most ordinary task there is.
+    Creating is additive and reversible by an admin; only DELETE is gated, since
+    that is the one that destroys everything underneath."""
     existing = db.query(Client).filter_by(name=payload.name).first()
     if existing:
         raise HTTPException(409, f"Client {payload.name!r} already exists")
@@ -37,10 +38,12 @@ def create_client(payload: ClientCreate, db: Session = Depends(get_db), _user=De
 @router.patch("/{client_id}", response_model=ClientOut)
 def update_client(
     client_id: int, payload: ClientUpdate, db: Session = Depends(get_db),
-    _user=Depends(require_admin),
+    _user=Depends(require_db_user),
 ):
-    """Admin-only, same reasoning as create_client — a rename here changes the
-    label on every portfolio, meeting and document underneath the client."""
+    """Any PM, same reasoning as create_client. A rename relabels everything
+    beneath the client, but a wrong label is a typo someone can correct — it
+    destroys nothing, and clients get renamed (acquisitions, rebrands) often
+    enough that routing it through an admin would just add latency."""
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(404, "Client not found")

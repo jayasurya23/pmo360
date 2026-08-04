@@ -1,14 +1,16 @@
 /**
- * Clients — the other half of the admin console on Settings.
+ * Clients — the second half of the Settings administration area.
  *
- * This used to live in the app shell's gear popover, where every signed-in PM
- * could rename or create a client. It moved here because client records are
- * the root of the whole hierarchy: a rename re-labels every portfolio,
- * meeting and document beneath it, and a delete takes all of them with it.
+ * This used to live in the app shell's gear popover. It moved here because a
+ * client record is the root of the whole hierarchy and its own screen sets the
+ * right expectation, not because PMs shouldn't touch it: creating the client you
+ * just won, and fixing its name after a rebrand, are ordinary work. Both stay
+ * open to every PM — additive and correctable.
  *
- * As with the Users section, rendering this for admins only is presentation.
- * The endpoints behind it are admin-gated, so the section being hidden is
- * never what stops a non-admin.
+ * DELETE is the exception (`canDelete`). It cascades through every portfolio,
+ * meeting and document beneath the client, so it is admin-only. As everywhere
+ * else, hiding the button is presentation — `DELETE /api/clients/{id}` refuses
+ * a non-admin on its own.
  */
 import { useState } from "react";
 import AdminSection, { RowMessage } from "./AdminSection";
@@ -23,7 +25,12 @@ interface Draft {
   email_domain: string;
 }
 
-export default function AdminClientsCard() {
+export default function AdminClientsCard({
+  canDelete,
+}: {
+  /** Admins only. Everything else in this card is open to every PM. */
+  canDelete: boolean;
+}) {
   const { clients, refreshClients, selectedClientId, setSelectedClientId } =
     useApp();
   const confirm = useConfirm();
@@ -169,14 +176,19 @@ export default function AdminClientsCard() {
                     >
                       {busy ? "Saving…" : "Save"}
                     </button>
-                    <button
-                      type="button"
-                      className="btn-danger h-[38px] py-0 text-xs"
-                      onClick={() => void remove(c)}
-                      disabled={busy}
-                    >
-                      Delete
-                    </button>
+                    {/* Admin-only: this cascades through every portfolio,
+                        meeting and document under the client. A PM who needs
+                        one gone asks — the endpoint refuses them anyway. */}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        className="btn-danger h-[38px] py-0 text-xs"
+                        onClick={() => void remove(c)}
+                        disabled={busy}
+                      >
+                        Delete
+                      </button>
+                    )}
                   </div>
                 </div>
                 {error && (
