@@ -28,7 +28,9 @@ from sqlalchemy.orm import Session
 from auth import require_db_user
 from auth.permissions import CLIENT_MGMT, require_permission
 from core.deps import get_db
-from db.models import Client, ClientContact, GlobalAttendee, ProjectAttendee
+from db.models import (
+    Client, ClientContact, GlobalAttendee, Project, ProjectAttendee,
+)
 from schemas.common import (
     ClientContactCreate,
     ClientContactImportOut,
@@ -386,11 +388,30 @@ def import_client_contacts(
             existing,
         )
 
-    sources = [
-        row for row in db.query(GlobalAttendee).order_by(GlobalAttendee.id).all()
+    # THE PORTFOLIO IS THE ANSWER, not a guess. A ProjectAttendee sits on a
+    # portfolio and a portfolio belongs to exactly one client, so for those rows
+    # we already KNOW the client and never have to look at an email domain.
+    #
+    # The first version matched on domain alone and left almost everybody
+    # unfiled, because most clients have no `email_domain` recorded and 25 of
+    # the roster rows carry no address at all. It called that "declining to
+    # guess" — but there was nothing to guess: the link was sitting in
+    # project_attendees.project_id the whole time. Domain matching survives as
+    # the fallback for GlobalAttendee, which is company-wide and genuinely has
+    # no portfolio to inherit from.
+    portfolio_client: dict[int, Optional[int]] = {
+        pid: cid
+        for pid, cid in db.query(Project.id, Project.client_id).all()
+    }
+
+    # (row, client_id known from its portfolio) — None means "ask the domain".
+    sources: list[tuple[object, Optional[int]]] = [
+        (row, None)
+        for row in db.query(GlobalAttendee).order_by(GlobalAttendee.id).all()
         if not _is_castillo(row.organization)
     ] + [
-        row for row in db.query(ProjectAttendee).order_by(ProjectAttendee.id).all()
+        (row, portfolio_client.get(row.project_id))
+        for row in db.query(ProjectAttendee).order_by(ProjectAttendee.id).all()
         if not _is_castillo(row.organization)
     ]
 
@@ -399,7 +420,7 @@ def import_client_contacts(
     # Identity, not equality — a freshly added contact has no id until flush.
     touched: dict[int, ClientContact] = {}
 
-    for row in sources:
+    for row, portfolio_client_id in sources:
         # Reused rather than re-implemented so the directory splits names the
         # same way the user grid does. It mishandles a space-separated suffix
         # ("Dee Vasquez PE" gives last="PE"); the comma forms it was written
@@ -418,10 +439,27 @@ def import_client_contacts(
             skipped += 1
             continue
 
-        client_id = domain_to_client.get(domain) if domain else None
+        # The portfolio wins. It is a fact about this row; the domain map is an
+        # inference from a field most clients never filled in.
+        client_id = portfolio_client_id or (
+            domain_to_client.get(domain) if domain else None
+        )
         key = _identity_key(client_id, first_name, last_name, email)
 
         seen = known.get(key)
+        if seen is None and client_id is not None and not email:
+            # An earlier run filed this person under NO client, and without an
+            # email their identity key includes the client — so the key we just
+            # built cannot find them and we would create a second copy of the
+            # same person. Look for the unplaced version and adopt it instead.
+            # This is what lets a re-run HEAL a directory imported before the
+            # portfolio link existed, rather than doubling it.
+            unplaced_key = _identity_key(None, first_name, last_name, email)
+            candidate = known.get(unplaced_key)
+            if candidate is not None and candidate.client_id is None:
+                seen = candidate
+                known[key] = candidate      # re-key so later rows find it here
+
         if seen is not None:
             # Fill a hole, never re-parent: only an unplaced contact is
             # adopted, and only when this row actually resolved a client.
