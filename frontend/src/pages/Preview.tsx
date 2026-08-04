@@ -6,7 +6,8 @@ import EmptyState from "@/components/EmptyState";
 import PageHeader from "@/components/PageHeader";
 import PdfPagePreview from "@/components/PdfPagePreview";
 import { useApp } from "@/lib/state";
-import { getMeeting, meetingDocUrl } from "@/lib/api";
+import { getMeeting } from "@/lib/api";
+import { saveMeetingDoc, useMeetingDocUrl } from "@/lib/documents";
 import type { MeetingDetail } from "@/lib/types";
 
 export default function Preview() {
@@ -20,7 +21,10 @@ export default function Preview() {
     void getMeeting(draftMeetingId).then(setMeeting);
   }, [draftMeetingId]);
 
-  const pdfUrl = meeting ? meetingDocUrl(meeting.id, "pdf") : null;
+  // An object URL from an authed fetch, not the API URL directly: the endpoint
+  // is behind require_db_user and pdf.js cannot attach the bearer token, which
+  // is what made this page answer 401. See lib/documents.ts.
+  const { url: pdfUrl, error: pdfError } = useMeetingDocUrl(meeting?.id, "pdf");
   const pages = useRenderedPdfPages(paperRef, pdfUrl);
   const activePage = useVisiblePage(pages);
 
@@ -38,10 +42,16 @@ export default function Preview() {
         }
       />
     );
-  if (!meeting || !pdfUrl)
+  if (!meeting)
     return <div className="card p-6 text-sm text-brand-gray">Loading meeting…</div>;
-
-  const docxUrl = meetingDocUrl(meeting.id, "docx");
+  if (pdfError)
+    return (
+      <div className="card p-6 text-sm text-status-open-text bg-status-open-bg border-l-[3px] border-l-brand-red">
+        Couldn't load the minutes PDF — {pdfError}
+      </div>
+    );
+  if (!pdfUrl)
+    return <div className="card p-6 text-sm text-brand-gray">Rendering PDF…</div>;
   const dateLabel = format(parseISO(meeting.meeting_date), "MMM d");
 
   return (
@@ -82,24 +92,23 @@ export default function Preview() {
               interactive AcroForm status dropdowns.
             </p>
             <div className="flex flex-col gap-2">
-              <a
+              {/* Buttons, not anchors: an href cannot carry the bearer token
+                  the document endpoint requires. saveMeetingDoc fetches
+                  through the authed client and saves the blob. */}
+              <button
+                type="button"
                 className="btn-ghost w-full"
-                href={pdfUrl}
-                target="_blank"
-                rel="noreferrer"
-                download
+                onClick={() => void saveMeetingDoc(meeting.id, "pdf")}
               >
                 ⬇ Draft PDF
-              </a>
-              <a
+              </button>
+              <button
+                type="button"
                 className="btn-ghost w-full"
-                href={docxUrl}
-                target="_blank"
-                rel="noreferrer"
-                download
+                onClick={() => void saveMeetingDoc(meeting.id, "docx")}
               >
                 ⬇ Draft Word
-              </a>
+              </button>
             </div>
           </section>
 

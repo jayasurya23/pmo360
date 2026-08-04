@@ -13,9 +13,9 @@ import {
   deleteMeeting,
   deleteAgenda,
   updateMeetingMeta,
-  meetingDocUrl,
   getMeeting,
 } from "@/lib/api";
+import { saveMeetingDoc } from "@/lib/documents";
 import type {
   Meeting,
   Agenda,
@@ -766,16 +766,21 @@ function DownloadMenu({ meetingId }: { meetingId: number }) {
       {open && (
         <span className="absolute right-0 top-full mt-1 z-20 block min-w-[200px] rounded-[7px] border border-surface-border bg-surface-card py-1 shadow-page">
           {items.map((it) => (
-            <a
+            // A button, not an anchor: the document endpoint is behind
+            // require_db_user and an href sends no Authorization header, so
+            // every one of these answered 401. See lib/documents.ts.
+            <button
               key={it.kind}
-              className="block px-3 py-1.5 text-xs text-brand-black hover:bg-surface-rowhover"
-              href={meetingDocUrl(meetingId, it.kind)}
-              target="_blank"
-              rel="noreferrer"
+              type="button"
+              className="block w-full text-left px-3 py-1.5 text-xs text-brand-black hover:bg-surface-rowhover"
+              onClick={() => {
+                setOpen(false);
+                void saveMeetingDoc(meetingId, it.kind);
+              }}
             >
               <span className="font-semibold">{it.label}</span>
               <span className="text-brand-lightgray"> · {it.hint}</span>
-            </a>
+            </button>
           ))}
         </span>
       )}
