@@ -29,7 +29,12 @@ def list_users(
         "Optional case-insensitive substring filter on name or email. "
         "Empty returns all users — fine for our small team size."
     )),
-    limit: int = Query(20, ge=1, le=200),
+    # The ceiling has to clear what the pickers actually ask for. OwnerPicker
+    # fetches the whole team once and filters client-side, so it requests 500;
+    # while this capped at 200 that request 422'd and the caller's .catch()
+    # swallowed it, leaving the User-table source silently empty in every
+    # picker on the app — no "PM" chip, and owner_user_id never populated.
+    limit: int = Query(20, ge=1, le=1000),
     include_inactive: bool = Query(False, description=(
         "Include deactivated users. Off by default so offboarded people stop "
         "being offered as action owners."

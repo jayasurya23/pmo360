@@ -17,6 +17,9 @@ The data page header carries Date / Version / Location / Client / State / Size M
 the body is a "Change Order Details" table (line details + cost) with a red
 "Total Proposal" bar, a two-party signature block, and a footer with the standard
 terms + hourly billing rates. The app-only "Internal Notes" never render here.
+Neither do the internal PMO/admin cost adders: they are marked into the printed
+line amounts via co_pricing.distribute_markup, so the lines still add up to the
+"Total Proposal" on their own and nothing on the page hints the markup exists.
 Jost font + brand red are reused from docgen.pdf_builder for consistency.
 """
 from io import BytesIO
@@ -31,8 +34,10 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_RIGHT, TA_CENTER, TA_LEFT
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, HRFlowable,
+    KeepTogether,
 )
 
+from co_pricing import distribute_markup
 from config import BrandColors
 from docgen.pdf_builder import PRIMARY_FONT, PRIMARY_BOLD, _LOGO_PATHS
 
@@ -230,10 +235,9 @@ def _build_data_page(co) -> bytes:
 
     # ---- Change Order Details table (details | $ | amount) ----
     col_d, col_s, col_a = 5.2 * inch, 0.4 * inch, _USABLE - 5.6 * inch
-    data = [[Paragraph("Change Order Details", S["bar"]), "", ""]]
     items = sorted(co.line_items, key=lambda li: (li.order_index or 0))
     hourly = (co.rate_type or "fixed") == "hourly"
-    running_total = 0.0
+    rendered = []   # (details html, base amount) per line, before any markup
     for li in items:
         details = (li.details or "").strip().replace("\n", "<br/>")
         allocs = (li.allocations or []) if hourly else []
@@ -258,17 +262,29 @@ def _build_data_page(co) -> bytes:
             line_total = _num(li.hourly_rate) * _num(li.hours)
         else:
             line_total = _num(li.cost)
-        running_total += line_total
+        rendered.append((details, line_total))
+
+    # The internal PMO/admin adders are absorbed INTO the printed line amounts.
+    # A separate markup row, or lines that fell a cent short of the total, would
+    # both hand the client the very number this is meant to keep private — so the
+    # apportionment lives in co_pricing (one implementation, largest-remainder)
+    # and the bar below prints the sum of exactly these lines, which is also what
+    # the API stores as total_amount.
+    shown = distribute_markup([amt for _, amt in rendered],
+                              _num(co.pmo_pct), _num(co.admin_pct))
+
+    data = [[Paragraph("Change Order Details", S["bar"]), "", ""]]
+    for (details, _), amount in zip(rendered, shown):
         data.append([
             Paragraph(details or "&nbsp;", S["td"]),
             Paragraph("$", S["td"]),
-            Paragraph(_amt(line_total), S["tdr"]),
+            Paragraph(_amt(amount), S["tdr"]),
         ])
     if not items:   # no lines -> keep a blank body row so the bars frame it
         data.append([Paragraph("&nbsp;", S["td"]), "", ""])
     # Print the sum of the rendered lines so the total always matches what's shown
     # (falls back to the stored total only when there are no lines).
-    grand_total = running_total if items else _num(co.total_amount)
+    grand_total = sum(shown) if items else _num(co.total_amount)
     data.append([Paragraph("Total Proposal", S["totk"]),
                  Paragraph("$", S["totv"]),
                  Paragraph(_amt(grand_total), S["totv"])])
@@ -300,6 +316,13 @@ def _build_data_page(co) -> bytes:
         return [Paragraph(value or "&nbsp;", S["sig_v"])]
 
     sig_date = _fmt_short_date(co.request_date)   # prepopulated document date
+    # `fields` is indexed by BOTH columns, so a row appended here appears on the
+    # Castillo AND the client side — left_vals/right_vals would have to be
+    # decoupled from it first. Deliberately left coupled: the client signatory's
+    # email/phone are captured for addressing the CO, not for printing. Castillo's
+    # own phone/email don't appear in this block either (they're on the back-cover
+    # PREPARED BY), and each extra row costs ~46pt = two line items off a page
+    # that only holds about ten.
     fields = ["Company Name", "Print Name", "Title", "Signature", "Date"]
     # Castillo dates the document on preparation; the client dates it when they
     # counter-sign, so leave the client Date line blank for wet-ink.
@@ -332,7 +355,10 @@ def _build_data_page(co) -> bytes:
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
-    el.append(sig)
+    # The Table splits by row and the overflow is silent, so a long CO used to
+    # orphan a couple of signature lines onto a page of their own wedged between
+    # the data page and SERVICES OFFERED. Keep the block whole instead.
+    el.append(KeepTogether(sig))
 
     doc.build(el, onFirstPage=_draw_furniture, onLaterPages=_draw_furniture)
     return buf.getvalue()

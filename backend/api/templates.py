@@ -9,12 +9,17 @@ The JSON blobs intentionally mirror the shapes used by the in-progress
 draft on the frontend (selectedAttendees, parsed.agenda_items,
 selectedDeliverables) so the clone path is a direct hydrate without any
 translation layer.
+
+A template is meeting boilerplate, so editing one takes `meeting_minutes` plus
+membership of the portfolio it belongs to. The one exception is the
+usage-timestamp bump — see `touch_template`.
 """
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from auth import get_current_db_user, require_db_user
+from auth import require_db_user
+from auth.permissions import MEETING_MINUTES, require_permission
 from core.deps import get_db
 from db.models import MeetingTemplate, Project
 from schemas.common import (
@@ -53,11 +58,15 @@ def get_template(template_id: int, db: Session = Depends(get_db), _user=Depends(
 def create_template(
     payload: MeetingTemplateIn,
     db: Session = Depends(get_db),
-    actor=Depends(get_current_db_user),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
 ):
     project = db.get(Project, payload.project_id)
     if not project:
         raise HTTPException(404, "Project not found")
+    # True create: the payload's portfolio is where the template lands, and it
+    # is a body field the dependency's path/query resolution cannot see.
+    guard.require_project(payload.project_id)
     name = (payload.name or "").strip()
     if not name:
         raise HTTPException(400, "Template name is required")
@@ -68,7 +77,7 @@ def create_template(
         agenda_topics_json=list(payload.agenda_topics_json or []),
         default_duration_minutes=int(payload.default_duration_minutes or 60),
         default_deliverables_json=list(payload.default_deliverables_json or []),
-        created_by_id=actor.id if actor else None,
+        created_by_id=actor.id,
     )
     db.add(t)
     db.flush()
@@ -81,10 +90,14 @@ def update_template(
     payload: MeetingTemplateUpdate,
     db: Session = Depends(get_db),
     _user=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
 ):
     t = db.get(MeetingTemplate, template_id)
     if not t:
         raise HTTPException(404, "Template not found")
+    # Scope off the loaded row — the URL names a template, not a portfolio, and
+    # the template never moves between portfolios.
+    guard.require_project(t.project_id)
     data = payload.model_dump(exclude_unset=True)
     if "name" in data:
         name = (data["name"] or "").strip()
@@ -104,10 +117,15 @@ def update_template(
 
 
 @router.delete("/{template_id}", status_code=204)
-def delete_template(template_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def delete_template(
+    template_id: int, db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
     t = db.get(MeetingTemplate, template_id)
     if not t:
         raise HTTPException(404, "Template not found")
+    guard.require_project(t.project_id)
     db.delete(t)
     return None
 
@@ -118,6 +136,14 @@ def touch_template(template_id: int, db: Session = Depends(get_db), _user=Depend
     cloning the template. Lets the next /api/templates fetch sort by
     "most recently used" so the PM's daily-driver templates float to the
     top of the picker. Idempotent and safe to fire-and-forget.
+
+    Deliberately NOT gated on `meeting_minutes`, unlike every other write in
+    this file. It records that someone LOOKED at a template, and looking is
+    what a read-only user is explicitly allowed to do: gating it would leave
+    them with a recent-templates list frozen forever, plus a 403 in the console
+    on every clone — from a fire-and-forget call they never chose to make. The
+    write it performs is one timestamp on a row the caller may already read,
+    and the worst a hostile caller achieves is reordering someone's picker.
     """
     from datetime import datetime
     t = db.get(MeetingTemplate, template_id)

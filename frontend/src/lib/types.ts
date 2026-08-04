@@ -7,7 +7,43 @@ export interface UserStub {
   email?: string | null;
 }
 
-/** Shape returned by `GET /api/me` — the DB-backed UserOut. `is_admin`
+/** The eight grantable write permissions, in the order the grid renders them.
+ *  Mirrors `auth/permissions.py::PERMISSIONS` — the backend rejects any name it
+ *  doesn't know, so a typo here fails loudly rather than granting nothing. */
+export type PermissionName =
+  | "meeting_minutes"
+  | "co_creation"
+  | "co_approval"
+  | "agenda"
+  | "proposals"
+  | "timeline"
+  | "user_mgmt"
+  | "client_mgmt";
+
+/** Every permission with a definite answer. What the API returns is always
+ *  EFFECTIVE — an admin comes back all-true, because the super-role really does
+ *  imply all eight. The SPA never folds the admin bypass in itself; a second
+ *  copy of an authorization rule is a second place for it to be wrong. */
+export type UserPermissions = Record<PermissionName, boolean>;
+
+/** A partial grant/revoke. Omitted names are left untouched server-side, which
+ *  is what stops two checkboxes toggled a second apart from clobbering each
+ *  other with a whole-map write. */
+export type UserPermissionsPatch = Partial<UserPermissions>;
+
+/** One column of the grid, described by the server so the header renders from
+ *  the backend's vocabulary rather than a hardcoded copy of it.
+ *  `scope: "global"` marks the three that take no portfolio: the two console
+ *  permissions, because managing people and clients isn't portfolio work, and
+ *  Timeline, because the capacity board plans people company-wide and none of
+ *  its tables carries a portfolio to be a member of. */
+export interface PermissionDef {
+  name: PermissionName;
+  label: string;
+  scope: "portfolio" | "global";
+}
+
+/** Shape returned by `GET /api/me` — the DB-backed MeOut. `is_admin`
  * controls scope-toggle defaulting and the "all projects" bypass on
  * the membership-aware list endpoints. */
 export interface MeResponse {
@@ -20,6 +56,12 @@ export interface MeResponse {
    *  still read — every other call 403s — so this is what the shell branches on
    *  to explain that, rather than rendering an app where nothing works. */
   is_active: boolean;
+  title?: string | null;
+  department?: string | null;
+  /** The caller's own effective permissions. Presentation only — greying out a
+   *  button the backend would refuse anyway. Optional because it is served by
+   *  /api/me, which may be older than this client. */
+  permissions?: UserPermissions;
 }
 
 /** Project membership row — one user assigned as a PM to a portfolio.
@@ -56,6 +98,17 @@ export interface AdminUser {
   oid?: string | null;
   name?: string | null;
   email?: string | null;
+  /** Derived server-side by splitting the Entra display name — NOT separate
+   *  storage. `name` is refreshed from Entra on every sign-in, so a hand-edited
+   *  first/last would be overwritten within the hour; the grid shows these two
+   *  columns read-only for that reason. */
+  first_name?: string | null;
+  last_name?: string | null;
+  /** Auto-filled from Entra (jobTitle / department) where we have it, and
+   *  overridable here. `null` means "never learned"; `""` means an admin
+   *  deliberately blanked it. */
+  title?: string | null;
+  department?: string | null;
   /** DB-authoritative: ADMIN_EMAILS only seeds this on the row's first
    *  insert, it no longer overwrites on every request. */
   is_admin: boolean;
@@ -67,7 +120,19 @@ export interface AdminUser {
   is_env_admin: boolean;
   last_seen_at?: string | null;
   created_at?: string | null;
+  /** EFFECTIVE, so an admin's row arrives all-true. The grid renders an
+   *  admin's boxes ticked-and-locked rather than editable: they are implied by
+   *  the super-role, and unticking one would change nothing. */
+  permissions: UserPermissions;
   portfolios: AdminUserPortfolio[];
+}
+
+/** `GET /api/admin/users` — the whole User Management grid in one round-trip.
+ *  Column definitions travel with the rows so the header can never offer a
+ *  checkbox for a permission the backend doesn't enforce. */
+export interface AdminUserGrid {
+  permissions: PermissionDef[];
+  users: AdminUser[];
 }
 
 export interface Client {
@@ -834,7 +899,18 @@ export interface ChangeOrder {
   signatory_email?: string | null;
   client_signatory_name?: string | null;
   client_signatory_title?: string | null;
+  client_signatory_email?: string | null;
+  client_signatory_phone?: string | null;
+  /** Internal cost adders, percent of the line-item subtotal (5 = 5%). Additive
+   *  on the base, so 5 + 5 on $100 is $110, not $110.25. The client never sees
+   *  either number: the PDF marks the markup into the printed line costs so they
+   *  sum to `total_amount` with no adder row and no residual cent. */
+  pmo_pct?: number | null;
+  admin_pct?: number | null;
   notes?: string | null;
+  /** WHAT THE CLIENT PAYS — inclusive of both adders, not the line-item
+   *  subtotal. The Proposals revised-contract-value rollup and the Dashboard CO
+   *  card both read this and are correct because of that meaning. */
   total_amount?: number | null;
   pdf_storage_path?: string | null;
   sent_at?: string | null;

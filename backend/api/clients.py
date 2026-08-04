@@ -2,7 +2,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from auth import require_db_user, require_admin
+from auth import require_db_user
+from auth.permissions import CLIENT_MGMT, require_permission
 from core.deps import get_db
 from db.models import Client
 from db.repository import list_clients
@@ -66,12 +67,22 @@ def update_client(
 
 
 @router.delete("/{client_id}", status_code=204)
-def delete_client(client_id: int, db: Session = Depends(get_db), _user=Depends(require_admin)):
-    """Admin-only. Deleting a client cascades through `Client.projects`
-    (all, delete-orphan) into every portfolio beneath it and everything they
-    own — meetings, agendas, proposals, change orders, action items. It is the
-    single most destructive call in the API, so it is gated to ADMIN_EMAILS
-    rather than any signed-in PM."""
+def delete_client(
+    client_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CLIENT_MGMT)),
+):
+    """Requires the Client Management permission. Deleting a client cascades
+    through `Client.projects` (all, delete-orphan) into every portfolio beneath
+    it and everything they own — meetings, agendas, proposals, change orders,
+    action items. It is the single most destructive call in the API, so it is
+    the one client mutation that is gated; create and rename stay open to any
+    PM (see above).
+
+    Global scope, no portfolio: a client sits ABOVE every portfolio, so there is
+    no single membership that could stand for "may destroy this". Admins hold
+    the permission implicitly, which preserves the previous admin-only reach."""
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(404, "Client not found")

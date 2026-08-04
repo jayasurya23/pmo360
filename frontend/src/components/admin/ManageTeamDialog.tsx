@@ -1,20 +1,20 @@
 /**
- * Modal for viewing — and, for an admin, managing — the PM membership of a
- * portfolio.
+ * Modal for viewing — and, for a user manager, managing — the PM membership of
+ * a portfolio.
  *
  * Surfaces:
- *   - Existing members list (name + email; Remove button for admins)
- *   - Add-by-email form (admins only, one user at a time)
- *   - "Browse Castillo directory" button (admins only) — opens
+ *   - Existing members list (name + email; Remove button for user managers)
+ *   - Add-by-email form (user managers only, one user at a time)
+ *   - "Browse Castillo directory" button (user managers only) — opens
  *     DirectoryBrowser in `members` mode so picking entries adds them as PMs
  *     rather than attendees on the portfolio roster
  *
- * Permissions: read for everyone, write for admins. Membership drives which
- * portfolios a PM can reach, so both mutations behind this dialog are
- * `require_admin` on the server; rendering the edit controls for a non-admin
- * would only produce guaranteed 403s. The roster itself stays visible to
- * everyone — knowing who is on your team is not a privileged fact, and this
- * is the only place it is listed in full.
+ * Permissions: read for everyone, write for `user_mgmt` holders (admins hold it
+ * implicitly). Membership drives which portfolios a PM can reach, so both
+ * mutations behind this dialog gate on that permission server-side; rendering
+ * the edit controls for anyone else would only produce guaranteed 403s. The
+ * roster itself stays visible to everyone — knowing who is on your team is not
+ * a privileged fact, and this is the only place it is listed in full.
  *
  * 404 handling: adding by email when no User row matches returns 404
  * with a helpful message. We render that inline as a "they haven't
@@ -44,9 +44,11 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
   const confirm = useConfirm();
   const { me } = useApp();
   /** Mirrors the server gate on POST /projects/{id}/members and
-   *  DELETE /project-members/{id}. Presentation only — the server refuses a
-   *  non-admin regardless of what this renders. */
-  const canEdit = !!me?.is_admin;
+   *  DELETE /project-members/{id}, both `require_permission(USER_MGMT)`. Reading
+   *  is_admin alone would hand a user_mgmt holder a read-only roster the server
+   *  would happily let them edit. Presentation only — the server refuses anyone
+   *  without the permission regardless of what this renders. */
+  const canEdit = !!me?.is_admin || !!me?.permissions?.user_mgmt;
 
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [loading, setLoading] = useState(false);
@@ -264,12 +266,12 @@ export default function ManageTeamDialog({ open, onClose, project }: Props) {
           )}
         </div>
 
-        {/* ----- Add by email (admins only) ----- */}
+        {/* ----- Add by email (user managers only) ----- */}
         {!canEdit && (
           <p className="text-xs text-brand-gray">
-            Portfolio assignment is user management, so only an administrator
-            can add or remove PMs. Ask one to make the change in Settings →
-            Users.
+            Portfolio assignment is user management, so it needs the User Mgmt
+            permission. Ask an administrator, or anyone who holds it, to make
+            the change in Settings → Users.
           </p>
         )}
         {canEdit && (

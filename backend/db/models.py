@@ -10,7 +10,7 @@ rolling action log can track when items were raised vs when they were closed.
 from datetime import datetime, date
 from sqlalchemy import (
     Column, Integer, String, Text, Date, DateTime, ForeignKey, Boolean, JSON,
-    Float, Index, text, true,
+    Float, Index, text, true, false,
 )
 from sqlalchemy.orm import declarative_base, relationship, backref
 
@@ -63,6 +63,63 @@ class User(Base):
     # create_all-built fresh DB drifts from a migrated one.
     is_active = Column(
         Boolean, default=True, nullable=False, server_default=true(),
+    )
+    # Directory attributes, auto-filled from Entra where we can get them —
+    # scripts/seed_directory.py already $selects jobTitle, department is one
+    # more field on the same call. Hand-typed org data goes stale the day
+    # someone changes team, so Graph is the preferred source; these stay plain
+    # nullable columns (not a read-only cache of the Graph payload) precisely
+    # so an admin can override a wrong or missing value from the grid.
+    title = Column(String(200))
+    department = Column(String(200))
+
+    # ---- Per-module write permissions ----
+    # "Can look, can't touch": reads stay open (already portfolio-filtered) and
+    # each flag gates only the WRITES in one module, so an unticked box never
+    # produces a blank screen or a missing nav tab. Scope is BOTH — the flag
+    # says WHAT, ProjectMember says WHERE — except the two console permissions,
+    # which are global. auth/permissions.py holds the canonical vocabulary and
+    # the check helper; the names there are these column names minus `can_`.
+    #
+    # Booleans on the row rather than a user_permissions join table or a JSON
+    # blob: every auth dependency already holds the User row, so a check costs
+    # no extra query on the hot path; the flags stay indexable for questions
+    # like "who else can approve a CO?"; and `create_all` reproduces these
+    # defaults exactly on a fresh DB, which a join table's seeded rows could
+    # not (prestart.py never replays migrations for a new database).
+    #
+    # DEFAULTS ARE THE SECURITY DECISION. The six portfolio permissions default
+    # TRUE because everyone does that work today and deploy day must not be an
+    # outage. The two console permissions default FALSE because they were
+    # admin-only before this change — defaulting them true would hand the whole
+    # company the admin console, which is a privilege escalation, not a no-op.
+    # `true()`/`false()` and never the literal "1"/"0": Postgres rejects an
+    # integer default on a boolean column and a failed ALTER fails the boot.
+    # These must stay byte-identical to the migration or a create_all-built
+    # fresh DB drifts from a migrated one.
+    can_meeting_minutes = Column(
+        Boolean, default=True, nullable=False, server_default=true(),
+    )
+    can_co_creation = Column(
+        Boolean, default=True, nullable=False, server_default=true(),
+    )
+    can_co_approval = Column(
+        Boolean, default=True, nullable=False, server_default=true(),
+    )
+    can_agenda = Column(
+        Boolean, default=True, nullable=False, server_default=true(),
+    )
+    can_proposals = Column(
+        Boolean, default=True, nullable=False, server_default=true(),
+    )
+    can_timeline = Column(
+        Boolean, default=True, nullable=False, server_default=true(),
+    )
+    can_user_mgmt = Column(
+        Boolean, default=False, nullable=False, server_default=false(),
+    )
+    can_client_mgmt = Column(
+        Boolean, default=False, nullable=False, server_default=false(),
     )
 
 
@@ -919,7 +976,24 @@ class ChangeOrder(Base):
     signatory_email = Column(String(200))  # back-cover "PREPARED BY" contact
     client_signatory_name = Column(String(200))   # Client signature block: Print Name
     client_signatory_title = Column(String(200))  # Client signature block: Title
+    client_signatory_email = Column(String(200))  # client-side contact for the CO
+    client_signatory_phone = Column(String(50))   # client-side contact for the CO
     notes = Column(Text)
+    # Internal cost adders, percent of the line-item subtotal (5 = 5%). ADDITIVE
+    # on the base, never compounding: base 100 + 5% PMO + 5% admin = 110, not
+    # 110.25. Float, not Numeric, to match `total_amount` below — these two get
+    # multiplied together on every save and PDF render, and Numeric hands back
+    # Decimal on Postgres, which raises TypeError against a float. Exactness is
+    # bought back inside co_pricing, which does the arithmetic in Decimal cents.
+    #
+    # The 0 default is load-bearing, not cosmetic: the PDF endpoint rebuilds
+    # every deliverable live from these rows, so a non-zero default would
+    # silently re-render already-approved, already-emailed COs at a new number.
+    pmo_pct = Column(Float, nullable=False, default=0.0, server_default=text("0"))
+    admin_pct = Column(Float, nullable=False, default=0.0, server_default=text("0"))
+    # What the CLIENT PAYS — inclusive of both adders. The Proposals
+    # revised-contract-value rollup and the Dashboard CO card both read it with
+    # that meaning; the pre-markup figure is the sum of the line items.
     total_amount = Column(Float, default=0.0)
     pdf_storage_path = Column(String(500))  # archived approved PDF (storage backend)
     sent_at = Column(DateTime)              # when emailed to the client

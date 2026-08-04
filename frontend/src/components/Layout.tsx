@@ -18,7 +18,12 @@ import {
   fetchOpenRisks,
   type UserPreferences,
 } from "@/lib/api";
-import type { Project, ProjectMember } from "@/lib/types";
+import type {
+  MeResponse,
+  PermissionName,
+  Project,
+  ProjectMember,
+} from "@/lib/types";
 import CommandPalette from "./CommandPalette";
 
 interface NavItem {
@@ -457,13 +462,28 @@ function RowDivider() {
 }
 
 /**
+ * One permission as this user experiences it, read off /api/me.
+ *
+ * `permissions` is optional on MeResponse — an /api/me older than this client
+ * omits it — so an absent map falls back to the admin flag rather than locking
+ * an admin out of their own console. Everyone else lands on the closed side,
+ * which is the safe direction for the destructive items below.
+ */
+function can(me: MeResponse | null, name: PermissionName): boolean {
+  if (!me) return false;
+  // The server already folds the admin bypass into `permissions`; keeping it
+  // here too costs nothing and covers the older-payload case above.
+  if (me.is_admin) return true;
+  return !!me.permissions?.[name];
+}
+
+/**
  * Small gear-icon popover next to the ContextSwitcher.
  *
  * Scoped to the portfolio and project tiers — create, rename, delete, and
- * team. Client-level actions are gone from here: they are admin-only and
- * live in Settings. The one exception is the shortcut at the bottom, which
- * only navigates, and only renders for an admin — so the shell gives away
- * nothing about the console to anyone else.
+ * team. Client-level actions are gone from here: they live in Settings. The
+ * one exception is the shortcut at the bottom, which only navigates, and only
+ * renders for someone the console actually serves.
  *
  * Uses the same click-outside dismiss pattern as ContextSwitcher above.
  */
@@ -485,6 +505,28 @@ function ContextAdminGear({
   const nav = useNavigate();
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
+
+  // Deleting a portfolio cascades into every meeting, agenda, schedule and
+  // attendee beneath it — the same shape as deleting a client, which the server
+  // gates on client_mgmt (api/clients.py::delete_client). Structure changes that
+  // are additive and correctable — new portfolio, new project, rename — stay
+  // open to any PM, matching the split that router already drew.
+  //
+  // Presentation, not protection: the matching server gate belongs on
+  // api/projects.py::delete_project and api/portfolio_projects.py. This only
+  // spares people a two-click path to a refusal.
+  //
+  // Disabled, not hidden: this menu already refuses items with a reason ("Pick
+  // a portfolio first"), and a destructive control that silently vanishes tells
+  // nobody what they are missing or who to ask for it.
+  const canDeleteStructure = can(me, "client_mgmt");
+  const structureBlocked = canDeleteStructure
+    ? undefined
+    : "Needs the Client Management permission — ask an administrator to grant it in Settings → Users.";
+
+  // The console below now serves permission holders, not just admins, so the
+  // shortcut to it has to widen with it or a client_mgmt holder never finds it.
+  const canReachConsole = can(me, "user_mgmt") || can(me, "client_mgmt");
 
   useEffect(() => {
     const click = (e: MouseEvent) => {
@@ -589,33 +631,37 @@ function ContextAdminGear({
           <div className="my-1 border-t border-surface-hairline" />
           <GearItem
             onClick={() => fire(onDeletePortfolio)}
-            disabled={!hasProject}
+            disabled={!hasProject || !canDeleteStructure}
             icon="🗑️"
             danger
-            title={hasProject ? undefined : "Pick a portfolio first to delete it"}
+            title={
+              structureBlocked ??
+              (hasProject ? undefined : "Pick a portfolio first to delete it")
+            }
           >
             Delete portfolio
           </GearItem>
           <GearItem
             onClick={() => fire(onDeleteProject)}
-            disabled={!hasSubProject}
+            disabled={!hasSubProject || !canDeleteStructure}
             icon="🗑️"
             danger
             title={
-              hasSubProject
+              structureBlocked ??
+              (hasSubProject
                 ? "Remove the selected project from this portfolio"
-                : "Pick a project first to delete it"
+                : "Pick a project first to delete it")
             }
           >
             Delete project
           </GearItem>
-          {me?.is_admin && (
+          {canReachConsole && (
             <>
               <div className="my-1 border-t border-surface-hairline" />
               {/* Creating a client used to live in this menu, and a PM
                   reaching for "New portfolio" for a brand-new client still
-                  needs somewhere to go. This only navigates — the console
-                  itself is admin-gated on both sides. */}
+                  needs somewhere to go. This only navigates — the console's
+                  own cards decide what it shows you when you get there. */}
               <GearItem onClick={() => fire(() => nav("/settings"))} icon="⚙">
                 Manage clients &amp; users
               </GearItem>

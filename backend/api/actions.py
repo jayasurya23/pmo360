@@ -7,7 +7,8 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from core.deps import get_db
-from auth import get_current_db_user, require_db_user
+from auth import require_db_user
+from auth.permissions import MEETING_MINUTES, require_permission
 from db.models import ActionItem, Project, Client, Meeting
 from db.repository import (
     all_actions, open_actions, update_action_status,
@@ -63,8 +64,12 @@ def list_actions(
 def create_action(
     payload: ActionItemCreate,
     db: Session = Depends(get_db),
-    actor = Depends(get_current_db_user),
+    actor = Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
 ):
+    # payload.project_id is the row's own portfolio — where this action will
+    # live and who will see it — so it is the right thing to authorise against.
+    guard.require_project(payload.project_id)
     action = ActionItem(
         project_id=payload.project_id,
         originating_meeting_id=payload.originating_meeting_id,
@@ -73,8 +78,8 @@ def create_action(
         owner_user_id=payload.owner_user_id,
         due_date=payload.due_date,
         status=payload.status or "open",
-        created_by_id=actor.id if actor else None,
-        updated_by_id=actor.id if actor else None,
+        created_by_id=actor.id,
+        updated_by_id=actor.id,
     )
     db.add(action)
     db.flush()
@@ -86,11 +91,13 @@ def patch_action(
     action_id: int,
     payload: ActionItemUpdate,
     db: Session = Depends(get_db),
-    actor = Depends(get_current_db_user),
+    actor = Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
 ):
     action = db.get(ActionItem, action_id)
     if not action:
         raise HTTPException(404, "Action not found")
+    guard.require_project(action.project_id)
     # `model_fields_set` lets us distinguish "field not in the request"
     # (leave alone) from "field explicitly set to null" (clear it). That
     # distinction matters for owner_user_id — re-assigning an action from
@@ -110,17 +117,22 @@ def patch_action(
         else:
             action.status = payload.status
         action.last_status_change = datetime.utcnow()
-    if actor is not None:
-        action.updated_by_id = actor.id
+    action.updated_by_id = actor.id
     db.flush()
     return action
 
 
 @router.delete("/{action_id}", status_code=204)
-def delete_action(action_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def delete_action(
+    action_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
     a = db.get(ActionItem, action_id)
     if not a:
         raise HTTPException(404, "Action not found")
+    guard.require_project(a.project_id)
     db.delete(a)
     return None
 

@@ -20,7 +20,8 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from auth import get_current_db_user, require_db_user
+from auth import require_db_user
+from auth.permissions import MEETING_MINUTES, require_permission
 from core.deps import get_db
 from core.services import safe_filename_slug
 from db.models import Meeting, MeetingAttachment
@@ -115,7 +116,8 @@ async def upload_meeting_attachment(
     file: UploadFile = File(...),
     description: Optional[str] = Form(None),
     db: Session = Depends(get_db),
-    actor=Depends(get_current_db_user),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
 ):
     """Upload a single file. Cap is 20 MB — anything bigger gets a 413 so
     the client can show a readable error instead of dying mid-transfer.
@@ -129,6 +131,9 @@ async def upload_meeting_attachment(
     meeting = db.get(Meeting, meeting_id)
     if not meeting:
         raise HTTPException(404, "Meeting not found")
+    # Checked before a single byte is read, so an unauthorised caller can't use
+    # the upload path as a way to push 20 MB into storage.
+    guard.require_project(meeting.project_id)
 
     _validate_upload(file)
 
@@ -166,7 +171,7 @@ async def upload_meeting_attachment(
         file_size_bytes=size,
         storage_path=rel_path,
         description=(description or "").strip() or None,
-        created_by_id=actor.id if actor is not None else None,
+        created_by_id=actor.id,
     )
     db.add(row)
     db.flush()
@@ -219,7 +224,12 @@ def download_attachment(attachment_id: int, db: Session = Depends(get_db), _user
 
 
 @router.delete("/api/attachments/{attachment_id}", status_code=204)
-def delete_attachment(attachment_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def delete_attachment(
+    attachment_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
     """Remove the row and make a best-effort attempt to delete the file
     from storage. Storage failures (file already gone, SharePoint hiccup,
     etc.) don't block the row delete — the DB is the source of truth for
@@ -228,6 +238,10 @@ def delete_attachment(attachment_id: int, db: Session = Depends(get_db), _user=D
     row = db.get(MeetingAttachment, attachment_id)
     if not row:
         raise HTTPException(404, "Attachment not found")
+    # The attachment carries no portfolio of its own — it inherits the one from
+    # the meeting it hangs off, which is the same scope the upload was checked
+    # against.
+    guard.require_project(row.meeting.project_id)
 
     storage_path = row.storage_path
     db.delete(row)

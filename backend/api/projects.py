@@ -1,4 +1,18 @@
-"""/api/projects — projects (portfolios) under a client."""
+"""/api/projects — projects (portfolios) under a client.
+
+Write gating here is deliberately NOT one column, because the three mutations
+have wildly different blast radii and the user has already ruled on the same
+shape one tier up (see clients.py): create and rename stay open to any PM, only
+destroy is gated.
+
+    POST   create  — ungated. Additive, and the creator is auto-added as a
+                     member, so this is how a PM gets a workspace at all.
+    PATCH  edit    — `meeting_minutes` + membership. Renaming or re-scoping a
+                     portfolio is ordinary work for the people who work in it,
+                     and nobody else's business.
+    DELETE         — `client_mgmt`, global, default FALSE. Mirrors
+                     DELETE /api/clients: it cascades everything underneath.
+"""
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -8,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from core.deps import get_db
 from auth import get_current_db_user, require_db_user
+from auth.permissions import CLIENT_MGMT, MEETING_MINUTES, require_permission
 from db.models import (
     Project, Client, Meeting, ActionItem, Deliverable, Agenda,
     Schedule, Proposal, ProposalVersion, PortfolioProject,
@@ -68,8 +83,17 @@ def get_one(project_id: int, db: Session = Depends(get_db), _user=Depends(requir
 def create_project(
     payload: ProjectCreate,
     db: Session = Depends(get_db),
-    actor = Depends(get_current_db_user),
+    actor = Depends(require_db_user),
 ):
+    """Any signed-in PM, deliberately ungated — the same reasoning as
+    create_client: a PM who cannot stand up the portfolio they just won is
+    blocked on someone else for the most ordinary task there is. It destroys
+    nothing and an admin can delete a mistake.
+
+    Identity is REQUIRED here (it used to be optional). An anonymous create
+    skipped the membership row below, leaving a portfolio nobody owned and only
+    an admin could see — a create that silently half-fails is worse than a 401.
+    """
     client = db.get(Client, payload.client_id)
     if not client:
         raise HTTPException(404, "Parent client not found")
@@ -89,16 +113,32 @@ def create_project(
     # their dashboard immediately. Admins still get auto-added — they'd
     # see it via the admin bypass anyway, but the explicit row makes the
     # Manage Team UI list them as the original owner.
-    if actor is not None:
-        add_project_member(
-            db, project_id=project.id, user_id=actor.id,
-            created_by_id=actor.id,
-        )
+    add_project_member(
+        db, project_id=project.id, user_id=actor.id,
+        created_by_id=actor.id,
+    )
     return project
 
 
 @router.patch("/{project_id}", response_model=ProjectOut)
-def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def update_project(
+    project_id: int, payload: ProjectUpdate, db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
+    """Requires Meeting Minutes on THIS portfolio (the dependency resolves
+    `project_id` straight off the path, so membership is checked before the
+    body runs).
+
+    Two things were wrong before: any signed-in user could rename any
+    portfolio, including one under a client they have nothing to do with, and
+    portfolio names go out on client-facing minutes. `client_mgmt` would have
+    been the wrong fix — it defaults FALSE, and this same endpoint is what the
+    Notes page calls to edit `sub_projects_json`, so it would have broken
+    sub-projects for every PM on day one. `meeting_minutes` defaults TRUE, is
+    what already gates the notes and minutes this metadata appears on, and
+    carries the membership check that closes the cross-portfolio hole.
+    """
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")
@@ -121,7 +161,28 @@ def update_project(project_id: int, payload: ProjectUpdate, db: Session = Depend
 
 
 @router.delete("/{project_id}", status_code=204)
-def delete_project(project_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def delete_project(
+    project_id: int, db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+    guard=Depends(require_permission(CLIENT_MGMT)),
+):
+    """Requires the Client Management permission — the same gate as
+    DELETE /api/clients, one tier down, and for the same reason: this cascades
+    through the portfolio into every meeting, agenda, action, attachment,
+    schedule and Project-tier row beneath it. It was reachable by any signed-in
+    user, member or not, which is how a zero-permission non-member could
+    destroy a portfolio they had never been given access to.
+
+    Membership was considered as the gate and rejected: `meeting_minutes`
+    defaults TRUE, so scoping this to "member with minutes" would still leave
+    every PM able to delete a portfolio they were added to merely to take
+    notes. An irreversible cascade wants a permission somebody had to be
+    *given*, and `client_mgmt` is the one that defaults FALSE.
+
+    Global scope, no portfolio: like a client, the thing being destroyed IS the
+    membership boundary, so there is no membership inside it that could stand
+    for "may destroy this". Admins hold it implicitly.
+    """
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(404, "Project not found")

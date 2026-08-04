@@ -8,9 +8,9 @@
  * open to every PM — additive and correctable.
  *
  * DELETE is the exception (`canDelete`). It cascades through every portfolio,
- * meeting and document beneath the client, so it is admin-only. As everywhere
- * else, hiding the button is presentation — `DELETE /api/clients/{id}` refuses
- * a non-admin on its own.
+ * meeting and document beneath the client, so it needs the Client Mgmt
+ * permission — admins hold it implicitly. As everywhere else, hiding the button
+ * is presentation: `DELETE /api/clients/{id}` gates on that permission itself.
  */
 import { useState } from "react";
 import AdminSection, { RowMessage } from "./AdminSection";
@@ -28,7 +28,8 @@ interface Draft {
 export default function AdminClientsCard({
   canDelete,
 }: {
-  /** Admins only. Everything else in this card is open to every PM. */
+  /** Client Mgmt holders and admins. Everything else in this card is open to
+   *  every PM. */
   canDelete: boolean;
 }) {
   const { clients, refreshClients, selectedClientId, setSelectedClientId } =

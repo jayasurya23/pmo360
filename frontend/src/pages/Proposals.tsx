@@ -1757,8 +1757,17 @@ export default function Proposals() {
     setPdfBusy(true);
     setPdfUrl(null);
     try {
-      await generateProposalPdf(proposalId, activeVersionId, kind);
-      const blob = await fetchProposalPdfBlob(proposalId, activeVersionId);
+      // Best-effort. This POST persists a stored copy and is gated on the
+      // `proposals` permission, so a member whose box is unticked gets a 403 —
+      // which must not cost them the preview. The GET below renders the PDF on
+      // the fly when there is nothing usable stored, so reading still works
+      // exactly as it should: unticking a box never blanks a screen.
+      try {
+        await generateProposalPdf(proposalId, activeVersionId, kind);
+      } catch {
+        /* read-only caller — the GET builds it live */
+      }
+      const blob = await fetchProposalPdfBlob(proposalId, activeVersionId, kind);
       setPdfUrl(URL.createObjectURL(blob));
     } catch (e: any) {
       setError(e?.message || "Could not generate the PDF");

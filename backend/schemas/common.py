@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Optional, Any, Literal
+from typing import Annotated, Optional, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -74,6 +74,120 @@ class UserPreferences(BaseModel):
     pinned_project_ids: list[int] = []
 
 
+# ---------- Permissions ----------
+class UserPermissionsOut(BaseModel):
+    """The eight write permissions, in the order the grid renders them.
+
+    These are EFFECTIVE values, not raw columns: an admin implicitly holds
+    everything, so build this from
+    ``auth.permissions.effective_permissions(user)`` rather than letting it
+    populate from the ORM. If the SPA had to fold the admin bypass in itself,
+    there would be two copies of an authorization rule and a second place for
+    it to be wrong.
+    """
+    meeting_minutes: bool = False
+    co_creation: bool = False
+    co_approval: bool = False
+    agenda: bool = False
+    proposals: bool = False
+    timeline: bool = False
+    user_mgmt: bool = False
+    client_mgmt: bool = False
+
+
+class UserPermissionsPatch(BaseModel):
+    """Partial grant/revoke. Omitted flags are left untouched so ticking one
+    box doesn't echo the other seven back and clobber a change an admin in
+    another tab just made."""
+    meeting_minutes: Optional[bool] = None
+    co_creation: Optional[bool] = None
+    co_approval: Optional[bool] = None
+    agenda: Optional[bool] = None
+    proposals: Optional[bool] = None
+    timeline: Optional[bool] = None
+    user_mgmt: Optional[bool] = None
+    client_mgmt: Optional[bool] = None
+
+
+class PermissionDefOut(BaseModel):
+    """One grid column, described by the backend.
+
+    Shipped alongside the rows so the SPA renders headers from the server's
+    vocabulary instead of a hardcoded list — when a ninth permission lands,
+    the grid grows a column without a frontend change.
+    """
+    name: str
+    label: str
+    scope: Literal["portfolio", "global"]
+
+
+# Generational suffixes and the post-nominals an engineering firm's directory is
+# full of. Compared with dots stripped and case-folded, so "P.E." and "pe" match.
+_NAME_SUFFIXES = frozenset({
+    "jr", "sr", "ii", "iii", "iv", "v",
+    "pe", "se", "phd", "eit", "pmp", "md", "esq",
+})
+
+
+def _is_name_suffix(token: str) -> bool:
+    return token.replace(".", "").strip().lower() in _NAME_SUFFIXES
+
+
+def split_display_name(name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Best-effort First / Last split of the Entra display name.
+
+    The grid shows them as separate columns but they are NOT separate storage:
+    `users.name` is refreshed from Entra on every sign-in, so a hand-edited
+    first/last would be silently overwritten within the hour. Derived and
+    read-only is the honest shape. Handles the "Surname, Given" form Entra
+    sometimes produces for imported accounts.
+    """
+    raw = (name or "").strip()
+    if not raw:
+        return None, None
+    if "," in raw:
+        # "Dee Vasquez, Jr" / "Dee Vasquez, PE" is NOT the "Surname, Given"
+        # form — the tail qualifies the surname, so reading it as a given name
+        # produces first="Jr". Probed off the LAST comma because a suffix always
+        # trails, and "Vasquez, Dee, PE" carries both forms at once; splitting
+        # what's left re-enters here and resolves the inverted half.
+        head, _, tail = raw.rpartition(",")
+        head, tail = head.strip(), tail.strip()
+        if tail and _is_name_suffix(tail):
+            first, last = split_display_name(head)
+            if last:
+                return first, f"{last}, {tail}"
+            # One token before the comma ("Vasquez, PE"): that's the surname
+            # being qualified, not a given name.
+            return None, (f"{head}, {tail}" if head else tail)
+        last, _, first = raw.partition(",")
+        return (first.strip() or None), (last.strip() or None)
+    parts = raw.split()
+    if len(parts) == 1:
+        return parts[0], None
+    # Everything before the final token is the given name(s) — "Mary Jo van
+    # Dijk" keeps the compound surname intact only if we split from the right
+    # once, which is the least-wrong heuristic without givenName/surname.
+    return " ".join(parts[:-1]), parts[-1]
+
+
+class MeOut(UserOut):
+    """/api/me only — the caller's own row, with their effective permissions.
+
+    Deliberately NOT folded into `UserOut`: that model is embedded inline as
+    `created_by` / `updated_by` on nearly every response, so putting the
+    permission flags there would ship one user's access rights to every other
+    user on every payload. The SPA needs them exactly once, about itself.
+
+    These drive presentation only — greying out a button the backend would
+    refuse anyway. Every gate is enforced in auth/permissions.py; a client that
+    ignores this payload and posts regardless still gets a 403.
+    """
+    title: Optional[str] = None
+    department: Optional[str] = None
+    permissions: UserPermissionsOut = Field(default_factory=UserPermissionsOut)
+
+
 # ---------- Admin: user + role management ----------
 class AdminUserPortfolioOut(BaseModel):
     """One portfolio assignment, flattened for the admin user table.
@@ -98,6 +212,15 @@ class AdminUserOut(BaseModel):
     oid: Optional[str] = None
     name: Optional[str] = None
     email: Optional[str] = None
+    # Derived from `name` via split_display_name — the grid's First/Last
+    # columns are read-only for the reason documented on that helper.
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    # Auto-populated from Entra (jobTitle / department) where we have it,
+    # overridable by an admin. NULL means "never learned", which the grid can
+    # show differently from a deliberately blanked value.
+    title: Optional[str] = None
+    department: Optional[str] = None
     is_admin: bool = False
     is_active: bool = True
     created_at: Optional[datetime] = None
@@ -107,14 +230,30 @@ class AdminUserOut(BaseModel):
     # renders the toggle disabled with the "edit the env var" explanation
     # instead of letting the admin fire a request that can only 409.
     is_env_admin: bool = False
+    # Effective, so an admin's row shows every box ticked. The grid should
+    # render an admin's checkboxes as locked-on rather than editable: they are
+    # implied by the super-role, and unticking one would change nothing.
+    permissions: UserPermissionsOut = Field(default_factory=UserPermissionsOut)
     portfolios: list[AdminUserPortfolioOut] = []
 
 
+class AdminUserGridOut(BaseModel):
+    """The whole User Management grid in one round-trip: the column
+    definitions plus a row per person."""
+    permissions: list[PermissionDefOut] = []
+    users: list[AdminUserOut] = []
+
+
 class AdminUserUpdate(BaseModel):
-    """Partial role/offboard update. Omitted fields are left untouched, so
-    the UI can flip one toggle without echoing back the other."""
+    """Partial role/offboard/permission update. Omitted fields are left
+    untouched, so the UI can flip one toggle without echoing back the rest."""
     is_admin: Optional[bool] = None
     is_active: Optional[bool] = None
+    # None = don't touch. An empty string is a real value — it's how an admin
+    # clears a title Entra got wrong and we shouldn't re-import over it.
+    title: Optional[str] = None
+    department: Optional[str] = None
+    permissions: Optional[UserPermissionsPatch] = None
 
 
 # ---------- Clients / Projects ----------
@@ -1262,6 +1401,12 @@ ProposalTreePut.model_rebuild()
 
 
 # ---------- Change Orders ----------
+# A percent, never a multiplier. Bounded on the way in because nothing
+# downstream re-checks it: a fat-fingered 500 instead of 5 turns a $100k change
+# order into a $600k one on a document the client signs.
+AdderPct = Annotated[float, Field(ge=0, le=100)]
+
+
 class COAllocation(BaseModel):
     """One person's contribution to an hourly task: role · rate · hours."""
     role: Optional[str] = None
@@ -1291,6 +1436,17 @@ class ChangeOrderLineItemIn(BaseModel):
     internal_notes: Optional[str] = None
 
 
+class ChangeOrderPricing(BaseModel):
+    """The internal money breakdown, server-computed by co_pricing. Never
+    leaves the app — the client's PDF shows line costs that already include the
+    adders and no percentage anywhere. The four fields always add up:
+    base + pmo + admin == total."""
+    base_amount: float    # sum of the line items, before either adder
+    pmo_amount: float     # dollars the PMO adder contributes
+    admin_amount: float   # dollars the admin adder contributes
+    total_amount: float   # what the client pays; mirrors the stored column
+
+
 class ChangeOrderOut(ORMModel):
     id: int
     project_id: int
@@ -1315,7 +1471,13 @@ class ChangeOrderOut(ORMModel):
     signatory_email: Optional[str] = None
     client_signatory_name: Optional[str] = None
     client_signatory_title: Optional[str] = None
+    client_signatory_email: Optional[str] = None
+    client_signatory_phone: Optional[str] = None
     notes: Optional[str] = None
+    # Internal cost adders, percent of the line-item subtotal (5 = 5%). Additive,
+    # struck on the whole CO, and marked into the line costs on the client PDF.
+    pmo_pct: float = 0.0
+    admin_pct: float = 0.0
     total_amount: Optional[float] = None
     pdf_storage_path: Optional[str] = None
     sent_at: Optional[datetime] = None
@@ -1329,6 +1491,9 @@ class ChangeOrderOut(ORMModel):
     updated_at: Optional[datetime] = None
     # Set by the list/detail endpoints for display (not an ORM column).
     project_name: Optional[str] = None
+    # Derived, not stored: filled in by the endpoints' shared `_out()` helper so
+    # there is one place that can forget it rather than one per route.
+    pricing: Optional[ChangeOrderPricing] = None
 
 
 class ChangeOrderIn(BaseModel):
@@ -1349,7 +1514,11 @@ class ChangeOrderIn(BaseModel):
     signatory_email: Optional[str] = None
     client_signatory_name: Optional[str] = None
     client_signatory_title: Optional[str] = None
+    client_signatory_email: Optional[str] = None
+    client_signatory_phone: Optional[str] = None
     notes: Optional[str] = None
+    pmo_pct: AdderPct = 0.0
+    admin_pct: AdderPct = 0.0
     line_items: list[ChangeOrderLineItemIn] = Field(default_factory=list)
 
 
@@ -1388,5 +1557,9 @@ class ChangeOrderUpdate(BaseModel):
     signatory_email: Optional[str] = None
     client_signatory_name: Optional[str] = None
     client_signatory_title: Optional[str] = None
+    client_signatory_email: Optional[str] = None
+    client_signatory_phone: Optional[str] = None
     notes: Optional[str] = None
+    pmo_pct: Optional[AdderPct] = None
+    admin_pct: Optional[AdderPct] = None
     line_items: Optional[list[ChangeOrderLineItemIn]] = None

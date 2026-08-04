@@ -7,7 +7,9 @@ project the schedule into a PMO 360 portfolio's existing Schedule/Deliverable
 tables (reusing the same save_schedule pipeline the AI parser uses).
 
 Works fully standalone: a proposal needs no client/portfolio. ``portfolio_id``
-(nullable) is the tie-in hinge. All endpoints require a signed-in user only.
+(nullable) is the tie-in hinge. Reads require a signed-in user; every WRITE
+additionally requires the `proposals` permission, scoped to the proposal's own
+portfolio (see ``_require_write``) — or global when it has none.
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import require_db_user
+from auth.permissions import PROPOSALS, TIMELINE, require_permission
 from core.deps import get_db
 from db.models import (
     Proposal, ProposalVersion, ProposalDocument, Project, Deliverable, Schedule,
@@ -224,6 +227,24 @@ def _get_proposal(pid: int, db: Session) -> Proposal:
     if not p:
         raise HTTPException(404, "Proposal not found")
     return p
+
+
+def _require_write(guard, p: Proposal) -> None:
+    """Narrow an already-granted `proposals` permission to this proposal's
+    portfolio.
+
+    Scope comes from the proposal's OWN ``portfolio_id`` — the stored row is
+    what decides where the write lands, so a request can never nominate a
+    portfolio it likes better.
+
+    NULL is handled here rather than deferred to ``guard.require_project``,
+    which treats a missing portfolio as a bug in the route and 403s. That is the
+    right default everywhere else, but a standalone proposal legitimately
+    belongs to no portfolio: there is no membership that could mean anything, so
+    the permission the dependency already checked is the whole gate.
+    """
+    if p.portfolio_id is not None:
+        guard.require_project(p.portfolio_id)
 
 
 def _get_version(proposal: Proposal, vid: int, db: Session) -> ProposalVersion:
@@ -477,9 +498,16 @@ async def upload_proposal(
     utilization_percent: float = Form(100.0),
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     if portfolio_id is not None and not db.get(Project, portfolio_id):
         raise HTTPException(404, "Portfolio not found")
+    # Creating: the requested portfolio IS where the new proposal lands. It
+    # arrives as a multipart Form field, which the dependency's path/query
+    # resolution cannot see, so narrow the scope explicitly. `None` =>
+    # standalone, and the permission alone is the gate.
+    if portfolio_id is not None:
+        guard.require_project(portfolio_id)
 
     items, info_json, cfg, source_format = await _parse_upload(
         file, "workbook", project_start, utilization_percent,
@@ -554,8 +582,10 @@ def get_board(pid: int, db: Session = Depends(get_db), actor=Depends(require_db_
 def patch_proposal(
     pid: int, payload: ProposalPatch,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     _check_stale(payload.expected_version, p.version)
     for f in ("title", "customer_name", "project_location", "project_state", "project_size_mw"):
         val = getattr(payload, f)
@@ -579,11 +609,13 @@ def get_proposal_logos(pid: int, db: Session = Depends(get_db), actor=Depends(re
 def put_proposal_logos(
     pid: int, payload: ProposalLogosUpdate,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     """Set/replace/clear the deliverable's branding logos. Only fields present in
     the body are touched; an explicit null clears that logo (company => bundled
     Castillo default, client => none)."""
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     fields = payload.model_fields_set
     if "company_logo" in fields:
         p.company_logo = _validate_logo_data_url(payload.company_logo)
@@ -595,8 +627,15 @@ def put_proposal_logos(
 
 
 @router.delete("/{pid}", status_code=204)
-def delete_proposal(pid: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
-    db.delete(_get_proposal(pid, db))
+def delete_proposal(
+    pid: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
+):
+    p = _get_proposal(pid, db)
+    _require_write(guard, p)
+    db.delete(p)
     return None
 
 
@@ -649,8 +688,10 @@ def _enforce_locked_fields(items, locked_map: dict) -> None:
 def put_tree(
     pid: int, vid: int, payload: ProposalTreePut,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     v = _get_version(p, vid, db)
     _check_stale(payload.expected_version, v.version, "proposal version")
 
@@ -684,8 +725,10 @@ def put_tree(
 def recompute_version(
     pid: int, vid: int, payload: ProposalRecomputeRequest,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     v = _get_version(p, vid, db)
     _check_stale(payload.expected_version, v.version, "proposal version")
 
@@ -715,8 +758,14 @@ def list_versions(pid: int, db: Session = Depends(get_db), actor=Depends(require
 
 
 @router.post("/{pid}/versions", response_model=ProposalBoardResponse, status_code=201)
-def new_version(pid: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
+def new_version(
+    pid: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
+):
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     active = _active_version(p, db)
     if active is None:
         raise HTTPException(400, "No active version to copy")
@@ -773,6 +822,7 @@ async def new_version_from_upload(
     update_identity: bool = Form(False),
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     """Add a version to an EXISTING proposal from a freshly uploaded spreadsheet.
 
@@ -784,6 +834,9 @@ async def new_version_from_upload(
     unless this request states one) do carry over.
     """
     p = _get_proposal(pid, db)
+    # Before `_parse_upload` — an unauthorised caller shouldn't get to spend the
+    # server's parse on a workbook it will never be allowed to store.
+    _require_write(guard, p)
     prev = _active_version(p, db)
     prev_config = (prev.config_json if prev else None) or {}
     if utilization_percent is None:
@@ -838,8 +891,10 @@ async def new_version_from_upload(
 def activate_version(
     pid: int, vid: int,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     v = _get_version(p, vid, db)
     p.current_version_id = v.id
     db.flush()
@@ -864,8 +919,19 @@ def generate_pdf(
     pid: int, vid: int,
     kind: str = Query("schedule", description="sov | schedule | both"),
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
+    """Render the PDF and PERSIST it — a ProposalDocument row + a stored file.
+
+    Gated like every other write here despite reading as "the download button":
+    it is the only route in this file that puts bytes in the storage backend,
+    and it was reachable by a caller holding no permission in any portfolio.
+    Gating costs nothing, because ``serve_pdf`` renders the same bytes on the
+    fly for any kind — a read-only user still previews and downloads, they just
+    stop leaving a document row behind in someone else's proposal.
+    """
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     v = _get_version(p, vid, db)
     kind = kind if kind in _PDF_KIND_SUFFIX else "schedule"
     merged = _build_proposal_pdf(v, p, kind=kind)
@@ -885,8 +951,20 @@ def generate_pdf(
 @router.get("/{pid}/versions/{vid}/pdf/file")
 def serve_pdf(
     pid: int, vid: int,
+    kind: Optional[str] = Query(None, description="sov | schedule | both"),
     db: Session = Depends(get_db), actor=Depends(require_db_user),
 ):
+    """Stream the version's PDF — the stored file when one fits, else built live.
+
+    Since ``generate_pdf`` became a gated write this is the ENTIRE read path for
+    a user without `proposals`, so it has to be able to produce every
+    deliverable on its own: naming `kind` renders that one fresh rather than
+    handing back whatever the last generate happened to leave behind. Omitting
+    `kind` keeps the original behaviour — newest stored file, no questions —
+    because the existing caller POSTs then immediately GETs, and that file is
+    the one it just asked for.
+    """
+    want = kind if kind in _PDF_KIND_SUFFIX else None
     p = _get_proposal(pid, db)
     v = _get_version(p, vid, db)
     doc = (
@@ -897,16 +975,19 @@ def serve_pdf(
     )
     content = None
     fname = None
-    if doc:
+    # Every kind is stored under kind="proposal_pdf", so the filename suffix is
+    # the only thing that distinguishes them; a miss just means we build.
+    if doc and (want is None or (doc.filename or "").endswith(f"-{_PDF_KIND_SUFFIX[want]}.pdf")):
         try:
             content = get_storage().read(doc.storage_path)
             fname = doc.filename
         except Exception:  # noqa: BLE001 — fall back to building on the fly
             content = None
     if content is None:
-        content = _build_proposal_pdf(v, p)
+        content = _build_proposal_pdf(v, p, kind=want)
         title = (v.info_json or {}).get("project_title") or p.title
-        fname = _safe_filename(f"{title}-{v.label}-Project-Schedule") + ".pdf"
+        suffix = _PDF_KIND_SUFFIX[want or "schedule"]
+        fname = _safe_filename(f"{title}-{v.label}-{suffix}") + ".pdf"
     return Response(
         content=content, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{fname}"'},
@@ -988,10 +1069,15 @@ async def import_template(
     portfolio_id: Optional[int] = Form(None),
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     """Load a saved proposal template .xlsx -> fresh Proposal + V1 (no injection)."""
     if portfolio_id is not None and not db.get(Project, portfolio_id):
         raise HTTPException(404, "Portfolio not found")
+    # Creating: the requested portfolio is where it lands (Form field, see
+    # upload_proposal). `None` => standalone.
+    if portfolio_id is not None:
+        guard.require_project(portfolio_id)
 
     items, info_json, cfg, source_format = await _parse_upload(file, "template")
     pinfo = project_info_from_json(info_json)
@@ -1068,10 +1154,17 @@ def _activate_for_project(p: Proposal, db: Session) -> "Proposal | None":
 def link_portfolio(
     pid: int, payload: ProposalLinkRequest,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     p = _get_proposal(pid, db)
     if not db.get(Project, payload.portfolio_id):
         raise HTTPException(404, "Portfolio not found")
+    # BOTH ends, because a re-link is a move. Checking only the destination
+    # would let a member of B pull a proposal out of portfolio A; checking only
+    # the source would let them push one INTO a portfolio they are not in.
+    # Either half alone is a hole, so the caller must hold both.
+    _require_write(guard, p)
+    guard.require_project(payload.portfolio_id)
     p.portfolio_id = payload.portfolio_id
     # A direct portfolio link bypasses the project tier — clear any project so it
     # can't dangle against a different portfolio. The ACTIVE slot belongs to a
@@ -1089,6 +1182,7 @@ def link_portfolio(
 def link_project(
     pid: int, payload: ProposalLinkProjectRequest,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     """Link a proposal to a Project (the tier under a Portfolio). The proposal's
     ``portfolio_id`` is derived from the project's portfolio so portfolio-scoped
@@ -1107,6 +1201,12 @@ def link_project(
     proj = db.get(PortfolioProject, payload.project_id)
     if not proj:
         raise HTTPException(404, "Project not found")
+    # Same move, one tier down: the destination portfolio is DERIVED from the
+    # target Project (`proj.portfolio_id`), never taken from the request — that
+    # derivation is the only thing that makes the destination check meaningful.
+    # Both ends are required; see link_portfolio.
+    _require_write(guard, p)
+    guard.require_project(proj.portfolio_id)
     p.project_id = proj.id
     p.portfolio_id = proj.portfolio_id   # derive the portfolio from the project
     # Drop the old Project's ACTIVE slot BEFORE anything can flush: carrying it
@@ -1132,11 +1232,13 @@ def link_project(
 @router.post("/{pid}/activate-for-project", response_model=ProposalOut)
 def activate_proposal_for_project(
     pid: int, db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     """Promote this proposal to the live one for its Project, demoting whichever
     sibling holds the slot today. There is no matching deactivate: "no active
     proposal" is reached by unlinking, or by activating a sibling."""
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     if not p.project_id:
         raise HTTPException(400, "Link the proposal to a project first.")
     if p.is_active_for_project:
@@ -1153,8 +1255,14 @@ def activate_proposal_for_project(
 
 
 @router.patch("/{pid}/unlink", response_model=ProposalOut)
-def unlink_portfolio(pid: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
+def unlink_portfolio(
+    pid: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
+):
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     p.portfolio_id = None
     p.project_id = None   # project implies a portfolio, so clear both
     p.is_active_for_project = False   # …and the ACTIVE slot belongs to a project
@@ -1168,8 +1276,10 @@ def unlink_portfolio(pid: int, db: Session = Depends(get_db), actor=Depends(requ
 def sync_to_portfolio(
     pid: int, payload: ProposalSyncRequest,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
 ):
     p = _get_proposal(pid, db)
+    _require_write(guard, p)
     if not p.portfolio_id:
         raise HTTPException(400, "Link the proposal to a portfolio before syncing.")
     portfolio = db.get(Project, p.portfolio_id)
@@ -1485,6 +1595,7 @@ def _resync_proposal_timeline(p, v, db, actor, *, explicit: bool = False) -> "di
 def send_to_timeline(
     pid: int, payload: ProposalToTimelineRequest,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     """Bulk-project a proposal version's schedule into the Timeline: one
     TimelineProject + one UNASSIGNED bar per design-phase milestone, at the
@@ -1494,7 +1605,14 @@ def send_to_timeline(
     This is the only endpoint that ARMS implicit projection: a proposal save
     re-dates the Timeline only once a PM has explicitly sent it here. A palette
     drop also creates the TimelineProject (it has to, to land the bar), but it
-    stakes no claim on the rest of the schedule."""
+    stakes no claim on the rest of the schedule.
+
+    Takes `timeline`, not `proposals`: every row it writes is a TimelineProject /
+    TimelineAssignment, and the resourcing board is not the proposal author's to
+    reshape. It also makes the implicit re-dating coherent — projection only
+    ever runs for a project somebody with `timeline` bulk-sent here first, so
+    this endpoint is the gate on the whole mechanism rather than a bypass of it.
+    """
     p = _get_proposal(pid, db)
     v = _get_version(p, payload.version_id, db) if payload.version_id else _active_version(p, db)
     if v is None:
@@ -1573,6 +1691,7 @@ def timeline_milestones(
 def place_timeline_bar(
     pid: int, payload: ProposalTimelineBarRequest,
     db: Session = Depends(get_db), actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     """Place ONE proposal milestone onto the board as an assignment (palette
     drag-drop). Ensures the proposal's Timeline project exists (get-or-create, no
@@ -1591,6 +1710,8 @@ def place_timeline_bar(
     proposal save."""
     from datetime import datetime
     p = _get_proposal(pid, db)
+    # `timeline`, for the same reason as send-to-timeline: the row created here
+    # is a board assignment. The proposal is only the source of the dates.
     v = _get_version(p, payload.version_id, db) if payload.version_id else _active_version(p, db)
     if v is None:
         raise HTTPException(422, "No version on this proposal")

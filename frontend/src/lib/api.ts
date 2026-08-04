@@ -29,6 +29,8 @@ import type {
   MeetingTemplateInput,
   MeResponse,
   AdminUser,
+  AdminUserGrid,
+  UserPermissionsPatch,
   PortfolioProject,
   ProjectMember,
   ProposalBoard,
@@ -663,10 +665,19 @@ export const proposalPdfUrl = (id: number, vid: number) =>
 /** Authed blob fetch — the proposal PDF endpoint is behind require_db_user,
  *  so we pull it through the axios client (Bearer attached) and hand back a
  *  Blob the caller turns into an object URL for preview + download. */
-export const fetchProposalPdfBlob = async (id: number, vid: number) => {
+export const fetchProposalPdfBlob = async (
+  id: number,
+  vid: number,
+  // Which deliverable to render. Omitted means "newest stored file", the
+  // original contract. Passing it matters for a caller whose `proposals`
+  // permission is unticked: they cannot run the generate step, so this GET is
+  // the only thing building their PDF and it has to know which one they asked
+  // for rather than serving whatever someone else persisted last.
+  kind?: "sov" | "schedule" | "both",
+) => {
   const res = await apiClient.get(
     `/proposals/${id}/versions/${vid}/pdf/file`,
-    { responseType: "blob" },
+    { responseType: "blob", ...(kind ? { params: { kind } } : {}) },
   );
   return res.data as Blob;
 };
@@ -927,21 +938,36 @@ export const removeProjectMember = (memberId: number) =>
  * the SPA chooses to render, so hiding the Settings section is presentation
  * only and never the control.
  */
+/** The User Management grid: the eight column definitions plus a row per
+ *  person. Admin-or-`user_mgmt` only, enforced server-side. */
 export const listAdminUsers = () =>
-  apiClient.get<AdminUser[]>("/admin/users").then((r) => r.data);
+  apiClient.get<AdminUserGrid>("/admin/users").then((r) => r.data);
 
 /**
- * Grant/revoke admin, or deactivate/reactivate a user. Never deletes — an
- * offboarded user keeps every meeting, action and record they authored.
+ * Edit one row of the grid: title, department, any of the eight permissions,
+ * admin, or active/offboarded. Never deletes — an offboarded user keeps every
+ * meeting, action and record they authored.
+ *
+ * Every field is optional and omitted fields are left untouched, `permissions`
+ * included: send only the box that moved, so two toggles a second apart merge
+ * instead of racing to write the whole map.
  *
  * The server owns the refusals (an ADMIN_EMAILS floor admin, the last
- * remaining admin, acting on yourself) and each comes back as a 4xx whose
- * message explains the fix. Surface `ApiError.message` verbatim instead of
- * re-deriving which rule fired — that logic would drift from the backend.
+ * remaining admin, acting on yourself, a non-admin reaching for an admin) and
+ * each comes back as a 4xx whose message explains the fix. Surface
+ * `ApiError.message` verbatim instead of re-deriving which rule fired — that
+ * logic would drift from the backend, and the backend is the one that counts.
  */
 export const updateAdminUser = (
   userId: number,
-  payload: { is_admin?: boolean; is_active?: boolean },
+  payload: {
+    is_admin?: boolean;
+    is_active?: boolean;
+    /** "" deliberately blanks the field; omit to leave it alone. */
+    title?: string;
+    department?: string;
+    permissions?: UserPermissionsPatch;
+  },
 ) =>
   apiClient
     .patch<AdminUser>(`/admin/users/${userId}`, payload)
@@ -1151,6 +1177,14 @@ export interface ChangeOrderCreate {
   signatory_email?: string | null;
   client_signatory_name?: string | null;
   client_signatory_title?: string | null;
+  client_signatory_email?: string | null;
+  client_signatory_phone?: string | null;
+  /** Internal cost adders as percentages of the line-item subtotal (5 = 5%).
+   *  Additive on the base, never compounded. Send a number and never null: the
+   *  columns are NOT NULL server-side, and an omitted key on a PATCH would
+   *  leave a cleared field priced at its old markup. */
+  pmo_pct?: number;
+  admin_pct?: number;
   notes?: string | null;
   line_items: ChangeOrderLineItemInput[];
 }
