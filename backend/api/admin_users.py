@@ -277,6 +277,23 @@ def update_user(
             "lose this screen with no way back. Ask an administrator.",
         )
 
+    # The other direction, which the guards above missed: a user_mgmt holder
+    # ticking their OWN boxes. Every guard here blocks locking yourself OUT;
+    # none blocked granting yourself MORE. So the office-manager persona this
+    # console was written for could open their own row, tick the seven
+    # non-admin permissions, and walk away holding client_mgmt -- the sole gate
+    # on DELETE /api/clients and DELETE /api/projects, both of which cascade.
+    # is_admin stays false throughout, so nothing on the screen shows it
+    # happened. Granting is an administrator's act; running the console is not.
+    if is_self and not actor_is_admin and any(permission_patch.values()):
+        granting = sorted(k for k, v in permission_patch.items() if v)
+        raise HTTPException(
+            403,
+            "You cannot grant yourself access. Ask an administrator to change "
+            f"your own permissions ({', '.join(granting)}). You can still "
+            "manage everyone else from here.",
+        )
+
     if revoking_admin:
         if is_self:
             raise HTTPException(

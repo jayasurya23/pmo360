@@ -185,11 +185,33 @@ def is_portfolio_member(db, user, project_id: int) -> bool:
     # Reuses the exact predicate the read side filters on, so a user can never
     # be shown a portfolio they would be refused a write on for a reason other
     # than the permission itself.
+    from db.models import ProjectMember
     from db.repository import user_can_access_project
 
     if user is None:
         return False
-    return user_can_access_project(db, user.id, project_id)
+    if user_can_access_project(db, user.id, project_id):
+        return True
+    # A portfolio nobody has been assigned to is UNOWNED, and an unowned
+    # portfolio scopes to nothing — the permission alone governs it.
+    #
+    # This is not a softening of the model, it is what stops the model being a
+    # company-wide outage on the day it ships. project_members had only ever
+    # filtered READS, and the read path defaults to my_only=false, so nothing
+    # ever forced anyone to populate it: production carried 42 imported
+    # portfolios with no membership rows between them. Making membership
+    # authoritative for writes turned that empty table into "no non-admin may
+    # save anything, anywhere" — and the only route that could fix it,
+    # POST /projects/{id}/members, needs user_mgmt, which backfills FALSE.
+    #
+    # So scoping is opt-in per portfolio and self-healing: assign one person
+    # and that portfolio is scoped from then on, with no code change. The
+    # permission half still applies everywhere, which is the half an admin
+    # actually manages from the grid.
+    return (
+        db.query(ProjectMember).filter_by(project_id=project_id).first()
+        is None
+    )
 
 
 # ============================================================
