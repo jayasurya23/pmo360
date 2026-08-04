@@ -5,6 +5,11 @@ Endpoints:
   - GET /api/dashboard/mine      → only the signed-in user's stuff. Same shape
                                     so the frontend can render one component
                                     in two contexts.
+  - GET /api/dashboard/my-work   → the signed-in person's own plate, counted:
+                                    action metrics, where the backlog is
+                                    concentrated, and the CO / agenda / draft
+                                    queue. Backs the Dashboard's all-clients
+                                    state, which otherwise renders nothing.
   - GET /api/dashboard/briefing  → AI-written personalized "since you were
                                     last here..." card for the top of Home.
   - GET /api/dashboard/risks     → open risks aggregated from the most-recent
@@ -14,13 +19,18 @@ Endpoints:
 """
 import logging
 from datetime import date, datetime, timedelta
+from typing import Optional
+
 from fastapi import APIRouter, Depends
-from sqlalchemy import or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from core.deps import get_db
 from auth import require_db_user
-from db.models import ActionItem, Meeting, Agenda, Note, Project
+from auth.permissions import CO_APPROVAL, has_permission
+from db.models import (
+    ActionItem, Agenda, ChangeOrder, Client, Meeting, Note, Project,
+)
 from db.repository import (
     all_open_actions_across_portfolios, all_notes_with_follow_up,
     all_upcoming_agendas, list_my_project_ids,
@@ -29,6 +39,8 @@ from llm.providers import get_provider
 from schemas.common import (
     DashboardResponse, DashboardActionOut, DashboardNoteOut, DashboardAgendaOut,
     BriefingResponse, DashboardRisksResponse, DashboardRiskOut,
+    MyWorkActionCounts, MyWorkOut, MyWorkPortfolioRow, MyWorkQueueItem,
+    MyWorkWaitingOnMe,
 )
 
 
@@ -43,6 +55,79 @@ def _project_label(project):
         return None, None
     client_name = project.client.name if project.client else None
     return project.name, client_name
+
+
+# ============================================================
+# "Is this action mine?" — ONE rule, every personal view
+# ============================================================
+# Why this is not a one-liner on owner_user_id: every person-picker in the app
+# asked an endpoint capped at 200 for 500 users, so the request 422'd, the
+# caller swallowed it, and the User-backed source was always empty. Owners were
+# therefore recorded as free-text NAME STRINGS for most of this app's life. That
+# was fixed and a prod backfill covered some rows, not all — so a count that
+# trusts owner_user_id alone reads LOW, and a PM believing they have less work
+# than they do is worse than showing nothing.
+#
+# Three rungs, strongest first. The basis is returned rather than a bare bool so
+# a caller can report how much of a number rests on the weakest rung; callers
+# that only need membership test `is not None`.
+ACTION_MINE_OWNER_ID = "owner_user_id"    # canonical: set by the typeahead picker
+ACTION_MINE_OWNER_NAME = "owner_name"     # legacy free text + external owners
+ACTION_MINE_CREATED_BY = "created_by"     # last resort: I raised it, nobody named
+
+
+def _name_targets(actor) -> list[str]:
+    """Lowercased substring candidates to test against ``ActionItem.owner`` —
+    full name, first name, last name. So an owner string of just 'Roashaael'
+    still matches 'Roashaael Mary John'."""
+    name = (actor.name or "").strip().lower() if actor is not None else ""
+    if not name:
+        return []
+    parts = name.split()
+    out = [name]
+    if parts:
+        out.append(parts[0])
+        if len(parts) > 1:
+            out.append(parts[-1])
+    return list(dict.fromkeys(out))  # dedupe, preserve strongest-first order
+
+
+def _action_mine_basis(action, actor, targets: list[str]) -> Optional[str]:
+    """Which rung (if any) makes this action the actor's. None = not theirs.
+
+    Extracted so /mine and /my-work cannot drift: two copies of this rule show
+    up as a dashboard and a list disagreeing about the same person's workload,
+    and neither number looks wrong on its own.
+    """
+    if actor is None:
+        return None
+    if action.owner_user_id is not None and action.owner_user_id == actor.id:
+        return ACTION_MINE_OWNER_ID
+    owner_lower = (action.owner or "").strip().lower()
+    if owner_lower and targets and any(t in owner_lower for t in targets):
+        return ACTION_MINE_OWNER_NAME
+    # AUTHORSHIP IS A LAST RESORT, not a third way of owning something.
+    #
+    # core/services.py stamps created_by_id on every action it saves out of a
+    # meeting, so whoever typed the minutes is author of all of them. Treating
+    # that as ownership made the note-taker "own" the entire meeting: on real
+    # data a PM who owned nothing read 30 open / 30 overdue, and /my-work said
+    # 27 overdue where /briefing — which has always used only the two rungs
+    # above — said 2. Castillo captures every meeting, so this fired on the
+    # primary user on day one.
+    #
+    # It still has to fire, or an action you raised for yourself and never
+    # assigned would belong to nobody. So: only when the row carries no other
+    # ownership signal at all. `.strip()` matters — a whitespace-only owner is
+    # not somebody else's name.
+    if (
+        action.created_by_id is not None
+        and action.created_by_id == actor.id
+        and action.owner_user_id is None
+        and not owner_lower
+    ):
+        return ACTION_MINE_CREATED_BY
+    return None
 
 
 @router.get("", response_model=DashboardResponse)
@@ -92,47 +177,17 @@ def get_my_dashboard(
 ):
     """Subset of the dashboard filtered to things the signed-in user owns
     or created. Three buckets:
-      - Open actions where the user is in the comma-separated `owner` field
-        (case-insensitive substring match on their display name) OR where
-        they're the creator.
+      - Open actions that are theirs by `_action_mine_basis` (owner link,
+        then owner-name substring, then authorship).
       - Follow-up notes they authored.
       - Agendas they authored that are still upcoming.
-
-    The owner-by-name match is a stopgap until ActionItem grows a real
-    `assignee_user_ids` column — see the deferred enhancement in Option B.
     """
-    name = (actor.name or "").strip().lower()
-    name_substr_targets: list[str] = []
-    if name:
-        # Match on both full name and just first name so 'Roashaael Mary John'
-        # also matches an owner string of just 'Roashaael'.
-        parts = name.split()
-        name_substr_targets.append(name)
-        if parts:
-            name_substr_targets.append(parts[0])
-            if len(parts) > 1:
-                name_substr_targets.append(parts[-1])
+    targets = _name_targets(actor)
 
     # ---- Open actions ----
-    # Priority order for "is this mine?":
-    #   1. owner_user_id == actor.id  (canonical — set via the typeahead picker)
-    #   2. owner substring matches the actor's display name (legacy fallback
-    #      for rows pre-dating owner_user_id + actions assigned to vendors by
-    #      name only)
-    #   3. actor authored the action (created_by_id) — covers the case where
-    #      the PM creates an action without naming an explicit owner
     actions = []
     for a in all_open_actions_across_portfolios(db):
-        if a.owner_user_id == actor.id:
-            owns = True
-        else:
-            owner_lower = (a.owner or "").lower()
-            owns = (
-                any(t in owner_lower for t in name_substr_targets)
-                if name_substr_targets else False
-            )
-        authored = a.created_by_id == actor.id
-        if not (owns or authored):
+        if _action_mine_basis(a, actor, targets) is None:
             continue
         proj_name, client_name = _project_label(
             getattr(a, "originating_meeting", None) and a.originating_meeting.project
@@ -176,24 +231,324 @@ def get_my_dashboard(
 
 
 # ============================================================
+# My work — the personal cross-portfolio plate
+# ============================================================
+# A rolling 7 days rather than "to the end of this calendar week": a
+# week-ending window answers a different question every day it is read — it is
+# near-empty by Thursday and jumps on Monday morning — and a number whose
+# meaning depends on the day of the week is one people stop trusting. Seven
+# days always answers "what lands on me next".
+_DUE_WINDOW_DAYS = 7
+# Two weeks of close-outs. This PMO runs on a weekly meeting cadence and PMs
+# close actions in a batch at the meeting, so a 7-day window reads zero for
+# anyone who looks the day before their next one.
+_CLOSED_WINDOW_DAYS = 14
+
+
+def _today_local() -> tuple[date, str]:
+    """The calendar date the people using this app are actually living in.
+
+    The server runs UTC in a container, so ``date.today()`` rolls over at 8pm
+    Eastern — a Florida PM checking after dinner would see tomorrow's date and
+    watch an action that is due today get filed as due tomorrow, or one due
+    yesterday stay un-overdue for an extra evening. We anchor to the company
+    timezone (config.DEFAULT_TIMEZONE, the same value /api/settings hands the
+    SPA) instead.
+
+    Consequence, stated plainly: this is ONE company-wide timezone, not a
+    per-user preference. A PM working from California sees Eastern day
+    boundaries, which is right for a single-office US-East company and wrong
+    the day that stops being true. The chosen zone ships in the response so
+    the UI can say which day the numbers mean rather than implying the
+    reader's own.
+    """
+    from datetime import datetime, timezone
+
+    from config import DEFAULT_TIMEZONE
+
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo(DEFAULT_TIMEZONE)
+    except Exception:  # noqa: BLE001 — missing tzdata must not 500 a dashboard
+        return datetime.now(timezone.utc).date(), "UTC"
+    return datetime.now(timezone.utc).astimezone(tz).date(), DEFAULT_TIMEZONE
+
+
+def _co_label(co) -> str:
+    base = f"CO-{co.co_number}"
+    title = (co.title or "").strip()
+    return f"{base} — {title}" if title else base
+
+
+@router.get("/my-work", response_model=MyWorkOut)
+def get_my_work(
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+) -> MyWorkOut:
+    """Everything on the signed-in person's plate, across every client and
+    portfolio. Backs the Dashboard's all-clients state.
+
+    Not the same page as /api/lead/overview: that one is the ORG, this one is
+    the PERSON. And not portfolio-scoped — ``auth/permissions.py::
+    is_portfolio_member`` is deliberately disabled, so "mine" here means action
+    OWNERSHIP, never ProjectMember.
+
+    THE DEFINITIONS, since a metric nobody can restate is a metric nobody
+    trusts. All dates compare against ``_today_local()``:
+
+      * open           — status open or pending, the app-wide meaning.
+      * overdue        — open AND due_date STRICTLY before today. Due today is
+                         due, not late. Matches PortfolioMetricsOut and
+                         /api/lead so the same action can't be overdue on one
+                         screen and not on another.
+      * due_this_week  — open AND today <= due_date <= today + 6. Starts at
+                         today, so it never double-counts an overdue item.
+      * no_due_date    — open with no due_date at all. NOT overdue (nothing
+                         says it is late) but reported, because otherwise a
+                         pile of undated work is invisible on a page whose
+                         whole job is to show what is on you.
+      * closed_recently— status COMPLETED inside the close window. Cancelled is
+                         counted separately: dropped work was not done, and
+                         folding it in flatters throughput.
+
+    Caveat worth knowing before anyone reads closed_recently as productivity:
+    re-saving a meeting from Review deletes and re-inserts its action rows
+    (core/services.py::update_parsed_meeting), which resets the very
+    timestamps we date the close by. A bulk re-save can therefore make old
+    close-outs look like this week's.
+
+    COST: seven queries, and seven regardless of how much work the user has —
+    the older dashboard routes resolve each action's label through
+    ``originating_meeting.project.client``, which is three lazy loads per row.
+    ActionItem carries project_id directly, so two bulk reads answer every
+    label here. The two action queries are deliberately NOT narrowed to the
+    user in SQL: the owner-name rung is a Python substring test, and pushing it
+    down as LOWER()/LIKE would let SQL and Python disagree on some strings. The
+    disagreement would show up as a count that reads LOW, which is the exact
+    failure this endpoint exists to avoid.
+    """
+    from datetime import datetime, timedelta
+
+    today, tz_name = _today_local()
+    due_window_end = today + timedelta(days=_DUE_WINDOW_DAYS - 1)
+    # A duration, not a calendar boundary, so it stays in UTC to line up with
+    # the naive utcnow() timestamps the ORM writes.
+    closed_cutoff = datetime.utcnow() - timedelta(days=_CLOSED_WINDOW_DAYS)
+    targets = _name_targets(actor)
+
+    # ---- Portfolio labels, resolved once (queries 1 + 2) ----
+    labels: dict[int, tuple[str, Optional[str]]] = {}
+    client_names = {c.id: c.name for c in db.query(Client).all()}
+    for p in db.query(Project).all():
+        labels[p.id] = (p.name, client_names.get(p.client_id))
+
+    # ---- Open actions (query 3) ----
+    counts = MyWorkActionCounts(
+        due_window_days=_DUE_WINDOW_DAYS,
+        closed_window_days=_CLOSED_WINDOW_DAYS,
+    )
+    open_by_project: dict[int, int] = {}
+    overdue_by_project: dict[int, int] = {}
+    for a in (
+        db.query(ActionItem)
+        .filter(ActionItem.status.in_(("open", "pending")))
+        .all()
+    ):
+        basis = _action_mine_basis(a, actor, targets)
+        if basis is None:
+            continue
+        counts.open += 1
+        if basis == ACTION_MINE_CREATED_BY:
+            counts.open_authored_only += 1
+        open_by_project[a.project_id] = open_by_project.get(a.project_id, 0) + 1
+        if a.due_date is None:
+            counts.no_due_date += 1
+        elif a.due_date < today:
+            counts.overdue += 1
+            overdue_by_project[a.project_id] = (
+                overdue_by_project.get(a.project_id, 0) + 1
+            )
+        elif a.due_date <= due_window_end:
+            counts.due_this_week += 1
+
+    # ---- Recently closed (query 4) ----
+    # COALESCE mirrors the burndown's rule in api/projects.py: last_status_change
+    # is only stamped by the Actions PATCH route, so rows closed by any other
+    # path fall back to updated_at then created_at. A row with none of the three
+    # has no knowable close time and is correctly left out of "recently".
+    closed_at = func.coalesce(
+        ActionItem.last_status_change, ActionItem.updated_at, ActionItem.created_at,
+    )
+    for a in (
+        db.query(ActionItem)
+        .filter(ActionItem.status.in_(("completed", "cancelled")))
+        .filter(closed_at >= closed_cutoff)
+        .all()
+    ):
+        if _action_mine_basis(a, actor, targets) is None:
+            continue
+        if a.status == "completed":
+            counts.closed_recently += 1
+        else:
+            counts.cancelled_recently += 1
+
+    # ---- Where the backlog is concentrated ----
+    by_portfolio = []
+    for project_id, open_count in open_by_project.items():
+        name, client_name = labels.get(project_id, (None, None))
+        if name is None:
+            continue  # action pointing at a deleted portfolio; nothing to link to
+        by_portfolio.append(MyWorkPortfolioRow(
+            project_id=project_id,
+            project_name=name,
+            client_name=client_name,
+            open=open_count,
+            overdue=overdue_by_project.get(project_id, 0),
+        ))
+    by_portfolio.sort(key=lambda r: (
+        -r.overdue, -r.open, (r.client_name or "").lower(), r.project_name.lower(),
+    ))
+
+    waiting = _waiting_on_me(db, actor, labels, today)
+
+    return MyWorkOut(
+        as_of=today,
+        timezone=tz_name,
+        actions=counts,
+        by_portfolio=by_portfolio,
+        waiting_on_me=waiting,
+    )
+
+
+def _waiting_on_me(db: Session, actor, labels, today: date) -> MyWorkWaitingOnMe:
+    """The non-action half of the queue: change orders, agendas, drafts.
+
+    Each rule is "could this person actually act on it right now", not "is it
+    unfinished somewhere" — a queue full of things you are not allowed to touch
+    is a queue people learn to ignore.
+    """
+    block = MyWorkWaitingOnMe()
+
+    # ---- Change orders (query 5) ----
+    # Both CO rungs need the CO Approval permission — approving and marking-sent
+    # are both gated on it (api/change_orders.py) — so someone without it has no
+    # CO work waiting and we skip the query entirely rather than filter it away.
+    if has_permission(actor, CO_APPROVAL):
+        for co in (
+            db.query(ChangeOrder)
+            .filter(or_(
+                ChangeOrder.status == "pending",
+                and_(ChangeOrder.status == "approved",
+                     ChangeOrder.sent_at.is_(None)),
+            ))
+            .order_by(ChangeOrder.created_at.desc())
+            .all()
+        ):
+            project_name, client_name = labels.get(co.project_id, (None, None))
+            amount = float(co.total_amount or 0.0)
+            item = MyWorkQueueItem(
+                kind="co_approval" if co.status == "pending" else "co_send",
+                id=co.id,
+                project_id=co.project_id,
+                project_name=project_name,
+                client_name=client_name,
+                label=_co_label(co),
+                amount=amount,
+                event_date=co.request_date,
+                updated_at=co.updated_at,
+            )
+            if co.status == "pending":
+                # Separation of duties (auth/permissions.py::
+                # assert_change_order_approvable): the creator of record cannot
+                # approve their own CO, so it is not waiting on them — listing it
+                # would send them at a button the server refuses.
+                #
+                # That rule has one escape hatch we deliberately do not mirror:
+                # it relents when literally nobody else could approve, so a sole
+                # admin in a one-person org CAN self-approve and will not see the
+                # CO here. Reproducing it costs a per-CO query and only matters
+                # in an org shape this one is not.
+                if co.created_by_id is not None and co.created_by_id == actor.id:
+                    continue
+                item.detail = (
+                    f"Raised by {co.requested_by}" if co.requested_by else None
+                )
+                block.co_approvals.append(item)
+                block.co_approval_amount += amount
+            else:
+                # Approved and never delivered. Anyone holding CO Approval could
+                # technically send it, but only the people attached to this one
+                # OWE it — otherwise every approver inherits the whole company's
+                # unsent pile on a page that is supposed to be personal.
+                if actor.id not in (
+                    co.created_by_id, co.approved_by_user_id, co.requested_by_user_id,
+                ):
+                    continue
+                item.detail = "Approved, not yet sent to the client"
+                block.co_to_send.append(item)
+                block.co_to_send_amount += amount
+
+    # ---- Agendas I authored that are still ahead of me (query 6) ----
+    # "Not yet sent" is approximated by "still upcoming": Agenda has no sent_at
+    # and no send route — SendAgendaDialog emails it client-side through Graph
+    # and records nothing — so the server genuinely cannot know. Once an agenda's
+    # meeting date has passed it is spent either way, which makes the upcoming
+    # ones the honest actionable set. Label it as upcoming in the UI, not "unsent".
+    for ag in (
+        db.query(Agenda)
+        .filter(Agenda.created_by_id == actor.id)
+        .filter(Agenda.upcoming_date >= today)
+        .order_by(Agenda.upcoming_date.asc())
+        .all()
+    ):
+        project_name, client_name = labels.get(ag.project_id, (None, None))
+        block.agendas.append(MyWorkQueueItem(
+            kind="agenda",
+            id=ag.id,
+            project_id=ag.project_id,
+            project_name=project_name,
+            client_name=client_name,
+            label=(ag.title or "").strip() or f"Agenda — {project_name or 'portfolio'}",
+            detail="Upcoming, not sent from PMO 360",
+            event_date=ag.upcoming_date,
+            updated_at=ag.updated_at,
+        ))
+
+    # ---- Meeting drafts I authored (query 7) ----
+    # NULL stage counts as draft: `stage` is a Python-side default, so any row
+    # written outside the ORM's default path has no stage and is unfinished in
+    # exactly the same way.
+    for m in (
+        db.query(Meeting)
+        .filter(Meeting.created_by_id == actor.id)
+        .filter(or_(Meeting.stage == "draft", Meeting.stage.is_(None)))
+        .order_by(Meeting.meeting_date.desc())
+        .all()
+    ):
+        project_name, client_name = labels.get(m.project_id, (None, None))
+        block.meeting_drafts.append(MyWorkQueueItem(
+            kind="meeting_draft",
+            id=m.id,
+            project_id=m.project_id,
+            project_name=project_name,
+            client_name=client_name,
+            label=(m.title or "").strip() or f"Meeting — {m.meeting_date:%b %d, %Y}",
+            detail="Draft — not finalized",
+            event_date=m.meeting_date,
+            updated_at=m.updated_at,
+        ))
+
+    block.total = (
+        len(block.co_approvals) + len(block.co_to_send)
+        + len(block.agendas) + len(block.meeting_drafts)
+    )
+    return block
+
+
+# ============================================================
 # AI Home briefing — "since you were last here..."
 # ============================================================
-def _name_targets(actor) -> list[str]:
-    """Same substring-match strategy as /api/dashboard/mine so we agree on
-    'who owns this action' across both endpoints. Returns lowercased
-    candidates to test against ``action.owner``."""
-    name = (actor.name or "").strip().lower()
-    if not name:
-        return []
-    parts = name.split()
-    out = [name]
-    if parts:
-        out.append(parts[0])
-        if len(parts) > 1:
-            out.append(parts[-1])
-    return out
-
-
 def _fallback_briefing(first_name: str, facts: dict) -> str:
     """Deterministic prose used when the LLM call fails — never let the
     endpoint return a 502 just because OpenAI is having a moment."""

@@ -28,16 +28,25 @@
  *     row is already all-true. Recomputing that here would be a second copy of
  *     an authorization rule.
  *
- * WIDTH — the reason the layout is what it is. Settings renders at
- * max-w-narrow (860px) with the shell's px-9 gutters and the card's 1px
- * border, which leaves 786px of table. The budget in the colgroup below sums
- * every fixed column to 576px and hands the remaining 210px to the identity
- * cell, so all eight permissions fit at their natural 3.5rem with no
- * horizontal scroll and no abbreviated headers. That fit is what removed the
- * old First name / Last name pair and the Title / Department columns: two
- * names that were one name, and two fields edited about once a year, were
- * costing 30rem of the very budget the Access band needed. Both survive — the
- * name as the identity cell, title and department inside the row's disclosure.
+ * WIDTH — the reason the layout is what it is. Settings renders at max-w-doc
+ * (1240px, see Layout.tsx::DOC_WIDTH_PATHS) less the shell's px-9 gutters
+ * (72px) and the card's 1px borders, which leaves 1166px of table. The budget
+ * in the colgroup below fixes every column except the identity cell at 580px
+ * total, so the identity cell takes the remaining 586px and all eight
+ * permissions fit at their natural 3.5rem with no horizontal scroll and no
+ * abbreviated headers.
+ *
+ * Those numbers have moved once already — this route was max-w-narrow (860px,
+ * 786px of table) until the grid outgrew it — so treat max-w-doc as the input
+ * and re-derive rather than trusting the pixel figures if the route changes
+ * again. The fixed 580px is the part that is really load-bearing: it is
+ * 2rem + 8 x 3.5rem + 3.5rem + 2.75rem and comes straight from the colgroup.
+ *
+ * The fit is also what removed the old First name / Last name pair and the
+ * Title / Department columns: two names that were one name, and two fields
+ * edited about once a year, were costing 30rem of the very budget the Access
+ * band needed. Both survive — the name as the identity cell, title and
+ * department inside the row's disclosure.
  *
  * Saving is per control, immediately, with no Save button. A checkbox carries
  * exactly one bit of intent, and a Save button over eight boxes × N people
@@ -553,12 +562,12 @@ export default function AdminUsersCard() {
 
           {/* Nothing scrolls sideways at the width Settings actually renders
               at — see the budget below. The wrapper is the escape hatch for a
-              phone, where 786px of card simply does not exist. */}
+              phone, where 1166px of card simply does not exist. */}
           <div className="overflow-x-auto">
             <table className="w-full min-w-[45rem] table-fixed text-[13px]">
-              {/* COLUMN BUDGET. Settings is max-w-narrow (860px) less the
+              {/* COLUMN BUDGET. Settings is max-w-doc (1240px) less the
                   shell's px-9 gutters (72px) less the card's 1px borders =
-                  786px of table.
+                  1166px of table.
 
                     select        2rem      32px
                     Access   8 × 3.5rem    448px
@@ -566,11 +575,14 @@ export default function AdminUsersCard() {
                     Manage      2.75rem     44px
                                           -----
                     fixed                  580px
-                    identity (remainder)   206px   at 786px of card
+                    identity (remainder)   586px   at 1166px of card
 
-                  206px carries a 32px avatar, an 8px gap and 20px of padding,
-                  leaving ~146px of text — about 23 characters of name at 13px,
-                  with a title attribute for the rest. Every fixed column is
+                  586px carries a 32px avatar, an 8px gap and 20px of padding,
+                  leaving ~526px of text — roughly 80 characters of name at
+                  13px, so the title attribute is now a formality rather than
+                  the thing keeping long names readable. (It was 206px / ~23
+                  characters while this route was max-w-narrow; the route
+                  widened when the grid outgrew it.) Every fixed column is
                   sized to its longest HEADER word, not its content, because
                   the header is what wrapped in the version this replaces.
                   `min-w-[45rem]` (720px) is the floor: below it the wrapper

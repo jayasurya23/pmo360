@@ -55,6 +55,7 @@ import type {
   ClientContact,
   ClientContactInput,
   ClientContactImportResult,
+  MyWork,
 } from "./types";
 
 // Honor VITE_API_BASE at build-time so the same artefact can talk to
@@ -893,6 +894,19 @@ export const fetchOpenRisks = (scope: "mine" | "all" = "all") =>
   apiClient
     .get<{ risks: DashboardRisk[] }>("/dashboard/risks", { params: { scope } })
     .then((r) => r.data.risks);
+
+/** Everything on the signed-in person's plate: action counts, which portfolios
+ *  the open work is concentrated in, and the change-order / agenda / draft
+ *  queue.
+ *
+ *  ALWAYS cross-portfolio — the endpoint takes no scope argument. The
+ *  per-portfolio card narrows the response client-side, which it can only do
+ *  honestly for the figures the payload breaks down per portfolio (`open`,
+ *  `overdue`, and the queue rows, which carry `project_id`). The date-window
+ *  counts are whole-plate totals and must not be relabelled as one
+ *  portfolio's. */
+export const fetchMyWork = () =>
+  apiClient.get<MyWork>("/dashboard/my-work").then((r) => r.data);
 export const fetchSettings = () =>
   apiClient.get<Settings>("/settings").then((r) => r.data);
 
