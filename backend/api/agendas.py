@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from core.deps import get_db
-from auth import get_current_db_user, require_db_user
+from auth import require_db_user
+from auth.permissions import AGENDA, require_permission
 from db.models import Project, Schedule, ProjectAttendee, GlobalAttendee, Agenda
 from db.repository import (
     list_agendas, get_agenda, save_agenda, delete_agenda,
@@ -41,7 +42,8 @@ def get_one(agenda_id: int, db: Session = Depends(get_db), _user=Depends(require
 def upsert_agenda(
     payload: AgendaIn,
     db: Session = Depends(get_db),
-    actor = Depends(get_current_db_user),
+    actor = Depends(require_db_user),
+    guard=Depends(require_permission(AGENDA)),
 ):
     project = db.get(Project, payload.project_id)
     if not project:
@@ -53,6 +55,11 @@ def upsert_agenda(
         existing = db.get(Agenda, payload.agenda_id)
         if existing is None:
             raise HTTPException(404, "Agenda not found")
+        # `save_agenda` only sets project_id on insert, so an update lands in
+        # the agenda's OWN portfolio no matter what the payload claims. Same
+        # trap as POST /meetings/save: authorising the payload's portfolio here
+        # would let a member of one portfolio edit another's agenda.
+        guard.require_project(existing.project_id)
         if (payload.expected_version is not None
                 and existing.version != payload.expected_version):
             raise HTTPException(
@@ -67,6 +74,8 @@ def upsert_agenda(
                     "submitted_version": payload.expected_version,
                 },
             )
+    else:
+        guard.require_project(project.id)
 
     a = save_agenda(
         db,
@@ -90,16 +99,27 @@ def upsert_agenda(
     # against the new value.
     a.version = (a.version or 1) + (1 if payload.agenda_id is not None else 0)
     # Per-user attribution stamps.
-    if actor is not None:
-        if a.created_by_id is None:
-            a.created_by_id = actor.id
-        a.updated_by_id = actor.id
+    if a.created_by_id is None:
+        a.created_by_id = actor.id
+    a.updated_by_id = actor.id
     db.flush()
     return a
 
 
 @router.delete("/{agenda_id}", status_code=204)
-def remove(agenda_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def remove(
+    agenda_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(AGENDA)),
+):
+    # Load first so the gate can read the agenda's own portfolio. A missing
+    # agenda stays a silent 204 (unchanged): there is nothing to authorise
+    # against and nothing to destroy.
+    existing = db.get(Agenda, agenda_id)
+    if existing is None:
+        return None
+    guard.require_project(existing.project_id)
     delete_agenda(db, agenda_id)
     return None
 

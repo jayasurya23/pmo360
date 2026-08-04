@@ -3,7 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from core.deps import get_db
-from auth import get_current_db_user, require_db_user
+from auth import require_db_user
+from auth.permissions import MEETING_MINUTES, require_permission
 from db.models import Meeting, Project, DiscussionPoint
 from db.repository import list_meetings, get_meeting, latest_meeting
 from core.services import (
@@ -116,15 +117,17 @@ def get_one(meeting_id: int, db: Session = Depends(get_db), _user=Depends(requir
 def save_meeting(
     payload: MeetingSaveRequest,
     db: Session = Depends(get_db),
-    actor = Depends(get_current_db_user),
+    actor = Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
 ):
     """Create or update a meeting from a ParsedMeeting + manual deliverables.
 
     If `meeting_id` is supplied, the row is updated in place; otherwise a new
     draft Meeting is created. Returns the persisted MeetingDetail.
 
-    `actor` is the signed-in user (or None if anonymous). Stamped on the
-    row's `created_by_id` / `updated_by_id` columns for per-user audit.
+    `actor` is the signed-in user. Stamped on the row's `created_by_id` /
+    `updated_by_id` columns for per-user audit, and it is who the
+    `meeting_minutes` gate below is resolved against.
     """
     project = db.get(Project, payload.project_id)
     if not project:
@@ -132,12 +135,19 @@ def save_meeting(
 
     parsed = _parsed_to_pydantic(payload.parsed)
     deliverables = [d.model_dump() for d in payload.deliverables]
-    actor_id = actor.id if actor is not None else None
+    actor_id = actor.id
 
     if payload.meeting_id:
         meeting = db.get(Meeting, payload.meeting_id)
         if not meeting:
             raise HTTPException(404, "Meeting not found")
+        # Authorise against the MEETING's portfolio, not the payload's. An
+        # update never re-homes a meeting (`update_parsed_meeting` leaves
+        # project_id alone), so the row's own portfolio is where this write
+        # lands. Trusting payload.project_id here would let a member of
+        # portfolio A pass their own id alongside portfolio B's meeting_id and
+        # edit B's minutes.
+        guard.require_project(meeting.project_id)
         # Optimistic concurrency: reject the write if someone else has
         # saved in the meantime. The client is expected to refetch and
         # merge — UI shows a "this was edited by another user" toast.
@@ -165,6 +175,8 @@ def save_meeting(
         )
         meeting.version = (meeting.version or 1) + 1
     else:
+        # New meeting: the payload's portfolio IS where it lands.
+        guard.require_project(project.id)
         meeting = save_parsed_meeting(
             db, project,
             meeting_date=payload.meeting_date,
@@ -188,7 +200,8 @@ def patch_meeting_meta(
     meeting_id: int,
     payload: MeetingMetaUpdate,
     db: Session = Depends(get_db),
-    actor=Depends(get_current_db_user),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
 ):
     """Rename a meeting or change its stage from the History page.
 
@@ -199,6 +212,7 @@ def patch_meeting_meta(
     m = db.get(Meeting, meeting_id)
     if not m:
         raise HTTPException(404, "Meeting not found")
+    guard.require_project(m.project_id)
     sent = payload.model_fields_set
     if "title" in sent:
         m.title = payload.title
@@ -213,22 +227,36 @@ def patch_meeting_meta(
 
 
 @router.delete("/{meeting_id}", status_code=204)
-def delete_meeting(meeting_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def delete_meeting(
+    meeting_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
     m = db.get(Meeting, meeting_id)
     if not m:
         raise HTTPException(404, "Meeting not found")
+    guard.require_project(m.project_id)
     db.delete(m)
     return None
 
 
 @router.post("/{meeting_id}/regenerate-summary", response_model=MeetingDetail)
-def regenerate_summary(meeting_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def regenerate_summary(
+    meeting_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
     """Re-run the AI executive summary against the current meeting state.
     Used after major edits where the cached summary no longer reflects the
     content. Returns the updated MeetingDetail."""
     meeting = db.get(Meeting, meeting_id)
     if not meeting:
         raise HTTPException(404, "Meeting not found")
+    # Overwrites `executive_summary`, which is rendered on the client-facing
+    # minutes PDF — an edit to the meeting, not a read of it.
+    guard.require_project(meeting.project_id)
     # Rebuild a ParsedMeeting view from the persisted ORM rows so we can
     # hand it to the summarizer. Reuse the same conversion logic as on
     # the save path.

@@ -7,10 +7,21 @@ declares no auth dependency at all. That is exactly how seven routers
 (clients, roster, schedules, parse, documents, search, settings) ended up
 publicly reachable in production.
 
-This script walks the real FastAPI app and classifies every `/api` route:
+This script walks the real FastAPI app and classifies every `/api` route by the
+dependencies it actually resolves — TRANSITIVELY, via FastAPI's own dependency
+tree, not the endpoint's direct signature. A route whose only auth is a wrapper
+(``require_user_console`` -> ``require_db_user``, or the ``require_permission``
+gate) is protected, and a reader that stops at the first level reports it as a
+hole. A hole-finder that cries wolf gets ignored, and then a real hole gets
+ignored with it. It classifies every `/api` route:
 
-    STRICT  — require_db_user / require_admin / require_user
+    STRICT  — require_db_user / require_admin / require_user /
+              get_db_user_any_status
               401s without a valid token regardless of environment.
+              get_db_user_any_status authenticates exactly as strictly as the
+              others; it only declines to enforce `is_active`, so a deactivated
+              user can still read the one route that tells them they have been
+              deactivated. Authentication is what this audit measures.
     ENV     — get_current_db_user / get_current_user
               Optional identity: 401s only when AUTH_REQUIRED=true. Fine for
               prod (which sets it) but it is a weaker guarantee.
@@ -45,20 +56,69 @@ PUBLIC_ALLOWLIST: dict[str, str] = {
     ),
 }
 
-STRICT_DEPS = {"require_db_user", "require_admin", "require_user"}
+STRICT_DEPS = {
+    "require_db_user", "require_admin", "require_user",
+    # Authenticates exactly as strictly (401 without a valid token); it only
+    # skips the is_active check, so a deactivated user can read the one route
+    # that tells them so. See auth/dependencies.py.
+    "get_db_user_any_status",
+}
 ENV_DEPS = {"get_current_db_user", "get_current_user"}
 
 
-def _classify(endpoint) -> str:
+def _dependency_names(route) -> set[str]:
+    """Every dependency callable this route resolves, at any depth.
+
+    FastAPI has already built the whole graph on `route.dependant` — including
+    router- and app-level `dependencies=`, which never appear in the endpoint's
+    signature at all — so we read that rather than re-deriving it. Walking it is
+    what makes this audit indifferent to how many wrapper dependencies someone
+    stacks in front of `require_db_user`: the guarantee is what actually runs on
+    the request, not what the handler happens to name.
+    """
+    dependant = getattr(route, "dependant", None)
+    if dependant is None:
+        return _signature_dependency_names(getattr(route, "endpoint", None))
+    names: set[str] = set()
+    seen: set[int] = set()
+    stack = list(getattr(dependant, "dependencies", ()))
+    while stack:
+        dep = stack.pop()
+        if id(dep) in seen:
+            continue
+        seen.add(id(dep))
+        call = getattr(dep, "call", None)
+        if call is not None:
+            names.add(getattr(call, "__name__", ""))
+        stack.extend(getattr(dep, "dependencies", ()))
+    return names
+
+
+def _signature_dependency_names(endpoint, _seen: set | None = None) -> set[str]:
+    """Fallback for a route FastAPI hasn't built a dependant for: recurse the
+    signatures ourselves so the answer still can't miss an indirection."""
+    if endpoint is None:
+        return set()
+    seen = _seen if _seen is not None else set()
+    if id(endpoint) in seen:
+        return set()
+    seen.add(id(endpoint))
     try:
         params = inspect.signature(endpoint).parameters
     except (TypeError, ValueError):
-        return "PUBLIC"
-    names = {
-        getattr(p.default, "dependency", None).__name__
-        for p in params.values()
-        if getattr(p.default, "dependency", None) is not None
-    }
+        return set()
+    names: set[str] = set()
+    for p in params.values():
+        call = getattr(p.default, "dependency", None)
+        if call is None:
+            continue
+        names.add(getattr(call, "__name__", ""))
+        names |= _signature_dependency_names(call, seen)
+    return names
+
+
+def _classify(route) -> str:
+    names = _dependency_names(route)
     if names & STRICT_DEPS:
         return "STRICT"
     if names & ENV_DEPS:
@@ -82,7 +142,7 @@ def main() -> int:
         if not path.startswith("/api") or endpoint is None:
             continue  # static mounts + the SPA catch-all are not API surface
         methods = sorted(getattr(route, "methods", set()) - {"HEAD", "OPTIONS"})
-        rows.append((path, ",".join(methods), _classify(endpoint)))
+        rows.append((path, ",".join(methods), _classify(route)))
 
     rows.sort()
     violations = [r for r in rows if r[2] == "PUBLIC" and _allowed(r[0]) is None]

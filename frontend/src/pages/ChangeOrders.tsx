@@ -95,6 +95,61 @@ const num = (s: string): number | null => {
   return Number.isFinite(v) ? v : null;
 };
 
+// Adders are ADDITIVE on the line-item subtotal, never compounding: $100 with a
+// 5% PMO and a 5% admin adder is $110, not $110.25. Both halves of the app have
+// to agree on that, so the arithmetic lives in one expression here and the
+// authoritative per-line apportionment lives only in backend/co_pricing.py.
+/** Whole cents, ties away from zero — matching Decimal's ROUND_HALF_UP in
+ *  co_pricing.py. Math.round alone breaks ties toward +Infinity, which rounds
+ *  a credit line the opposite way from the backend. */
+const centsRound = (n: number) => (n < 0 ? -1 : 1) * Math.round(Math.abs(n));
+
+/** The adder panel's four figures. Mirrors co_pricing.py::markup_breakdown and
+ *  is the ONLY arithmetic duplicated across the two languages — splitting the
+ *  markup back across individual line items stays in Python, because two
+ *  implementations of an apportionment will drift and a drifting cent is
+ *  exactly what gives the markup away on the printed page.
+ *
+ *  Quantizing to cents BEFORE scaling is the part that matters. `base` is a
+ *  float sum of the lines and arrives pre-drifted — 4387.88 + 36521.92 is
+ *  40909.799999999996 — so scaling it directly rendered a cent under the saved
+ *  total, and under the signed PDF, on roughly one change order in 590. */
+function markupBreakdown(base: number, pmoPct: number, adminPct: number) {
+  const baseCents = centsRound(base * 100);
+  const pct = pmoPct + adminPct;
+  if (pct === 0) {
+    return { pmoAmount: 0, adminAmount: 0, clientTotal: baseCents / 100 };
+  }
+  const totalCents = centsRound((baseCents * (100 + pct)) / 100);
+  const markupCents = totalCents - baseCents;
+  // Split proportionally and let admin absorb the residual cent, so base + PMO
+  // + admin always equals the total on screen and a 0% adder always shows $0.
+  const pmoCents = centsRound((markupCents * pmoPct) / pct);
+  return {
+    pmoAmount: pmoCents / 100,
+    adminAmount: (markupCents - pmoCents) / 100,
+    clientTotal: totalCents / 100,
+  };
+}
+
+// A markup above this is a typo, not a markup — the field refuses to hold it.
+const MAX_PCT = 100;
+// Combined markup past this earns a second look. Not a block: an unusual CO is
+// still a legitimate CO, and the PM is the one who knows which this is.
+const PCT_WARN = 20;
+
+// Sanitised on the way IN rather than validated on the way out. A percentage is
+// a small number where a slip is expensive — 50 instead of 5 is a 10x overcharge
+// on a document a client signs — so the form must never hold a value it would
+// submit. Digits and at most one point; anything over MAX_PCT snaps back to it.
+const clampPct = (raw: string): string => {
+  const cleaned = raw.replace(/[^\d.]/g, "").replace(/(\..*)\./g, "$1");
+  if (cleaned === "" || cleaned === ".") return cleaned;
+  const v = parseFloat(cleaned);
+  if (!Number.isFinite(v)) return "";
+  return v > MAX_PCT ? String(MAX_PCT) : cleaned;
+};
+
 // Local calendar date (avoid the UTC off-by-one from toISOString in US evenings).
 const today = () => format(new Date(), "yyyy-MM-dd");
 
@@ -144,6 +199,13 @@ export default function ChangeOrders() {
   const [signatoryEmail, setSignatoryEmail] = useState("");
   const [clientSignatoryName, setClientSignatoryName] = useState("");
   const [clientSignatoryTitle, setClientSignatoryTitle] = useState("");
+  const [clientSignatoryEmail, setClientSignatoryEmail] = useState("");
+  const [clientSignatoryPhone, setClientSignatoryPhone] = useState("");
+  // Percent strings, blank when unset — see clampPct. Deliberately per-CO with
+  // no remembered default: an adder carried over silently would price the next
+  // change order for the last one's reasons.
+  const [pmoPct, setPmoPct] = useState("");
+  const [adminPct, setAdminPct] = useState("");
   const [title, setTitle] = useState("");
   const [lines, setLines] = useState<LineRow[]>([blankLine()]);
   const [saving, setSaving] = useState(false);
@@ -211,6 +273,22 @@ export default function ChangeOrders() {
     }, 0);
   }, [lines, rateType]);
 
+  // What the adders turn `total` into. Only the four figures below are computed
+  // here — the split back across individual lines is the PDF's job and stays in
+  // Python, because two implementations of an apportionment WILL drift by a cent
+  // and a cent is exactly what gives the markup away on the printed page.
+  const pmoPctNum = num(pmoPct) || 0;
+  const adminPctNum = num(adminPct) || 0;
+  const { pmoAmount, adminAmount, clientTotal } = markupBreakdown(
+    total,
+    pmoPctNum,
+    adminPctNum,
+  );
+  const hasAdders = pmoPctNum > 0 || adminPctNum > 0;
+  // Rounded because it is only ever displayed: 5.1 + 5.2 is 10.299999999999999
+  // in float, and a warning about a "10.299999999999999% markup" reads as a bug.
+  const combinedPct = Math.round((pmoPctNum + adminPctNum) * 100) / 100;
+
   // Header rollups and the right-rail "In flight" list are derived from the
   // per-tab lists `load()` already fetched — no extra request.
   const pendingTotal = useMemo(
@@ -253,6 +331,10 @@ export default function ChangeOrders() {
     setSignatoryEmail("");
     setClientSignatoryName("");
     setClientSignatoryTitle("");
+    setClientSignatoryEmail("");
+    setClientSignatoryPhone("");
+    setPmoPct("");
+    setAdminPct("");
     setTitle("");
     setLines([blankLine()]);
     setErr(null);
@@ -278,6 +360,12 @@ export default function ChangeOrders() {
     setSignatoryEmail(co.signatory_email || "");
     setClientSignatoryName(co.client_signatory_name || "");
     setClientSignatoryTitle(co.client_signatory_title || "");
+    setClientSignatoryEmail(co.client_signatory_email || "");
+    setClientSignatoryPhone(co.client_signatory_phone || "");
+    // 0 is the "no adder" value server-side, so it hydrates as an empty field
+    // rather than a literal "0" the PM has to clear before typing.
+    setPmoPct(co.pmo_pct ? String(co.pmo_pct) : "");
+    setAdminPct(co.admin_pct ? String(co.admin_pct) : "");
     setTitle(co.title || "");
     setLines(
       (co.line_items.length ? co.line_items : [{}]).map((li: any) => {
@@ -332,6 +420,12 @@ export default function ChangeOrders() {
       signatory_email: signatoryEmail || null,
       client_signatory_name: clientSignatoryName || null,
       client_signatory_title: clientSignatoryTitle || null,
+      client_signatory_email: clientSignatoryEmail || null,
+      client_signatory_phone: clientSignatoryPhone || null,
+      // 0, never null: the columns are NOT NULL, and a cleared field has to send
+      // a value or a PATCH would leave the change order priced at its old markup.
+      pmo_pct: pmoPctNum,
+      admin_pct: adminPctNum,
       line_items: lines
         .filter(
           (l) =>
@@ -873,10 +967,22 @@ export default function ChangeOrders() {
 
               {/* total + actions */}
               <div className="flex flex-wrap items-center gap-2.5 border-t border-surface-hairline bg-surface-rowhover px-5 py-3">
-                <span className="text-[13px] text-brand-gray">Total proposal</span>
-                <span className="text-[19px] font-bold tabular-nums text-brand-black">
-                  {money(total)}
+                {/* The headline figure is always what the client pays, because
+                    that is what gets saved as total_amount and rolled up on the
+                    Dashboard and Proposals. With no adders the two are the same
+                    number and this reads exactly as it always has. */}
+                <span className="text-[13px] text-brand-gray">
+                  {hasAdders ? "Total to client" : "Total proposal"}
                 </span>
+                <span className="text-[19px] font-bold tabular-nums text-brand-black">
+                  {money(clientTotal)}
+                </span>
+                {hasAdders && (
+                  <span className="text-xs text-brand-gray">
+                    {money(total)} in lines + {money(pmoAmount + adminAmount)}{" "}
+                    adders
+                  </span>
+                )}
                 <div className="flex-1" />
                 <button
                   className="btn-ghost"
@@ -896,67 +1002,169 @@ export default function ChangeOrders() {
             </section>
           )}
 
-          {/* ---- right rail: who signs it, and what's already moving ---- */}
+          {/* ---- right rail: pricing, who signs it, what's already moving ---- */}
           <div className="space-y-5">
             {(editingId || rateChosen) && (
               <section className="card overflow-hidden">
                 <div className="flex items-baseline gap-2 border-b border-surface-hairline px-5 py-3.5">
-                  <h3 className="section-title">Signatories</h3>
-                  <span className="text-xs text-brand-gray">printed on the PDF</span>
+                  <h3 className="section-title">Adders</h3>
+                  <span className="text-xs text-brand-gray">
+                    internal — set per change order
+                  </span>
                 </div>
-                <div className="grid grid-cols-1 gap-3 px-5 py-3.5 sm:grid-cols-2">
-                  <Field label="Prepared by">
-                    <OwnerPicker
-                      value={signatoryName}
-                      ownerUserId={signatoryUserId}
-                      placeholder="Pick a Castillo team member…"
-                      onChange={({ owner, owner_user_id, email }) => {
-                        setSignatoryName(owner);
-                        setSignatoryUserId(owner_user_id);
-                        if (email) setSignatoryEmail(email); // auto-fill from the pick
-                      }}
+                <div className="space-y-3 px-5 py-3.5">
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="PMO">
+                      <PctInput
+                        label="PMO adder, percent"
+                        value={pmoPct}
+                        onChange={setPmoPct}
+                      />
+                    </Field>
+                    <Field label="Admin">
+                      <PctInput
+                        label="Admin adder, percent"
+                        value={adminPct}
+                        onChange={setAdminPct}
+                      />
+                    </Field>
+                  </div>
+
+                  {/* Dashed border and muted surface are this page's existing
+                      "internal, never printed" language — the same treatment the
+                      per-line internal note carries. */}
+                  <div className="rounded-lg border border-dashed border-surface-border bg-surface-page px-3 py-2.5">
+                    <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-brand-gray">
+                      Internal breakdown · the client never sees this
+                    </div>
+                    <AdderRow label="Line items" value={money(total)} />
+                    <AdderRow
+                      label={`PMO ${pmoPctNum}%`}
+                      value={money(pmoAmount)}
                     />
-                  </Field>
-                  <Field label="Title">
-                    <input
-                      className="input"
-                      value={signatoryTitle}
-                      onChange={(e) => setSignatoryTitle(e.target.value)}
-                      placeholder="e.g. Project Manager"
+                    <AdderRow
+                      label={`Admin ${adminPctNum}%`}
+                      value={money(adminAmount)}
                     />
-                  </Field>
-                  <Field label="Email">
-                    <input
-                      className="input"
-                      value={signatoryEmail}
-                      onChange={(e) => setSignatoryEmail(e.target.value)}
-                      placeholder="Auto-fills when you pick a team member"
+                    <AdderRow
+                      label="Client pays"
+                      value={money(clientTotal)}
+                      strong
                     />
-                  </Field>
-                  <Field label="Phone">
-                    <input
-                      className="input"
-                      value={signatoryPhone}
-                      onChange={(e) => setSignatoryPhone(e.target.value)}
-                      placeholder="(optional)"
-                    />
-                  </Field>
-                  <Field label="Client — print name">
-                    <input
-                      className="input"
-                      value={clientSignatoryName}
-                      onChange={(e) => setClientSignatoryName(e.target.value)}
-                      placeholder="Client signer's name"
-                    />
-                  </Field>
-                  <Field label="Client — title">
-                    <input
-                      className="input"
-                      value={clientSignatoryTitle}
-                      onChange={(e) => setClientSignatoryTitle(e.target.value)}
-                      placeholder="Client signer's title"
-                    />
-                  </Field>
+                  </div>
+
+                  {combinedPct > PCT_WARN && (
+                    <p className="text-xs text-status-pending-text">
+                      That is a {combinedPct}% combined markup — worth a second
+                      look before this goes to the client.
+                    </p>
+                  )}
+
+                  <p className="text-xs leading-relaxed text-brand-gray">
+                    Both adders are struck on the whole change order and added to
+                    the base, not compounded. The client's PDF prints line costs
+                    that already carry the markup and sum to{" "}
+                    <strong className="font-semibold text-brand-black">
+                      {money(clientTotal)}
+                    </strong>{" "}
+                    on their own — no adder row, no percentage, nothing to
+                    reconcile.
+                  </p>
+                </div>
+              </section>
+            )}
+
+            {(editingId || rateChosen) && (
+              <section className="card overflow-hidden">
+                <div className="flex items-baseline gap-2 border-b border-surface-hairline px-5 py-3.5">
+                  <h3 className="section-title">Signatories</h3>
+                  <span className="text-xs text-brand-gray">who signs it</span>
+                </div>
+                {/* Two labelled stacks, one field per row, so each input keeps
+                    the ~200px it has today. The rail only reaches its full
+                    459px once the page hits max-w-doc (1240px), so xl: is the
+                    first breakpoint where two columns are honestly affordable;
+                    below it the groups stack and each field spans the rail. */}
+                <div className="grid grid-cols-1 gap-x-4 gap-y-4 px-5 py-3.5 xl:grid-cols-2">
+                  <SigGroup
+                    title="Castillo"
+                    hint="Name and title sign the PDF; email and phone print on the back cover."
+                  >
+                    <Field label="Prepared by">
+                      <OwnerPicker
+                        value={signatoryName}
+                        ownerUserId={signatoryUserId}
+                        placeholder="Pick a Castillo team member…"
+                        onChange={({ owner, owner_user_id, email }) => {
+                          setSignatoryName(owner);
+                          setSignatoryUserId(owner_user_id);
+                          if (email) setSignatoryEmail(email); // auto-fill from the pick
+                        }}
+                      />
+                    </Field>
+                    <Field label="Title">
+                      <input
+                        className="input"
+                        value={signatoryTitle}
+                        onChange={(e) => setSignatoryTitle(e.target.value)}
+                        placeholder="e.g. Project Manager"
+                      />
+                    </Field>
+                    <Field label="Email">
+                      <input
+                        className="input"
+                        value={signatoryEmail}
+                        onChange={(e) => setSignatoryEmail(e.target.value)}
+                        placeholder="Auto-fills when you pick a team member"
+                      />
+                    </Field>
+                    <Field label="Phone">
+                      <input
+                        className="input"
+                        value={signatoryPhone}
+                        onChange={(e) => setSignatoryPhone(e.target.value)}
+                        placeholder="(optional)"
+                      />
+                    </Field>
+                  </SigGroup>
+
+                  <SigGroup
+                    title="Client"
+                    hint="Name and title sign the PDF; email and phone are who to send it to."
+                  >
+                    <Field label="Print name">
+                      <input
+                        className="input"
+                        value={clientSignatoryName}
+                        onChange={(e) => setClientSignatoryName(e.target.value)}
+                        placeholder="Client signer's name"
+                      />
+                    </Field>
+                    <Field label="Title">
+                      <input
+                        className="input"
+                        value={clientSignatoryTitle}
+                        onChange={(e) => setClientSignatoryTitle(e.target.value)}
+                        placeholder="Client signer's title"
+                      />
+                    </Field>
+                    <Field label="Email">
+                      <input
+                        className="input"
+                        value={clientSignatoryEmail}
+                        onChange={(e) => setClientSignatoryEmail(e.target.value)}
+                        placeholder="Client signer's email"
+                      />
+                    </Field>
+                    <Field label="Phone">
+                      <input
+                        className="input"
+                        value={clientSignatoryPhone}
+                        onChange={(e) => setClientSignatoryPhone(e.target.value)}
+                        placeholder="(optional)"
+                      />
+                    </Field>
+                  </SigGroup>
                 </div>
               </section>
             )}
@@ -1287,6 +1495,88 @@ function Field({
       <span className="label">{label}</span>
       {children}
     </label>
+  );
+}
+
+/** One side of the split Signatories card — a heading plus a single stack of
+ *  fields. Single stack, not 2-up pairs: the rail leaves ~200px per column, and
+ *  pairing inside one would halve that to ~94px. */
+function SigGroup({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="border-b border-surface-hairline pb-1.5">
+        <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-brand-gray">
+          {title}
+        </div>
+        <p className="mt-0.5 text-[11px] leading-snug text-brand-lightgray">
+          {hint}
+        </p>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Percent entry for the adders. String state with a "%" suffix rather than
+ *  <input type="number">: the spinner it brings changes the value on a stray
+ *  scroll, which is not a control to hand a field that reprices a client
+ *  document. Value is clamped as it is typed — see clampPct. */
+function PctInput({
+  value,
+  onChange,
+  label,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  label: string;
+}) {
+  return (
+    <div className="relative">
+      <input
+        className="input pr-6 text-right tabular-nums"
+        inputMode="decimal"
+        placeholder="0"
+        aria-label={label}
+        value={value}
+        onChange={(e) => onChange(clampPct(e.target.value))}
+      />
+      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-sm text-brand-lightgray">
+        %
+      </span>
+    </div>
+  );
+}
+
+/** One line of the internal adder breakdown. */
+function AdderRow({
+  label,
+  value,
+  strong,
+}: {
+  label: string;
+  value: string;
+  strong?: boolean;
+}) {
+  return (
+    <div
+      className={clsx(
+        "flex items-baseline justify-between gap-3 text-[13px]",
+        strong
+          ? "mt-1 border-t border-surface-hairline pt-1 font-bold text-brand-black"
+          : "text-brand-gray",
+      )}
+    >
+      <span>{label}</span>
+      <span className="tabular-nums">{value}</span>
+    </div>
   );
 }
 

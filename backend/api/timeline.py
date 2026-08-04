@@ -14,8 +14,12 @@ GET /board does the heavy lift: it buckets the horizon into Monday-start weeks
 per week, the utilization load = Σ (workdays_overlap / 5) × utilization. The
 frontend flags any cell whose load exceeds 1.0 as over-allocated.
 
-All endpoints require a signed-in user (require_db_user). It's a team planning
-tool, not admin-only.
+All endpoints require a signed-in user (require_db_user); every WRITE
+additionally requires the `timeline` permission. That permission is GLOBAL —
+none of these tables carries a portfolio, so there is no membership to scope
+against, and `project_id` in these paths is a TimelineProject id from an
+unrelated id space. Reads stay open to any signed-in user: the whole point of
+a capacity board is that the team can see who is loaded.
 """
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from auth import require_db_user
+from auth.permissions import TIMELINE, require_permission
 from core.deps import get_db
 from db.models import (
     TimelineResource, TimelineProject, TimelineAssignment, TimelineTimeOff,
@@ -119,6 +124,7 @@ def create_resource(
     payload: TimelineResourceIn,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     r = TimelineResource(
         name=payload.name.strip(),
@@ -142,6 +148,7 @@ def patch_resource(
     payload: TimelineResourcePatch,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     r = db.get(TimelineResource, resource_id)
     if r is None:
@@ -158,6 +165,7 @@ def delete_resource(
     resource_id: int,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     r = db.get(TimelineResource, resource_id)
     if r is None:
@@ -186,6 +194,7 @@ def create_project(
     payload: TimelineProjectIn,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     _check_status(payload.status)
     client = (payload.client or "").strip() or None
@@ -228,6 +237,7 @@ def add_client(
     payload: dict,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     name = (payload.get("name") or "").strip()
     if not name:
@@ -243,6 +253,7 @@ def patch_project(
     payload: TimelineProjectPatch,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     p = db.get(TimelineProject, project_id)
     if p is None:
@@ -267,6 +278,7 @@ def delete_project(
     project_id: int,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     p = db.get(TimelineProject, project_id)
     if p is None:
@@ -283,6 +295,7 @@ def create_assignment(
     payload: TimelineAssignmentIn,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     _check_status(payload.status)
     if db.get(TimelineProject, payload.timeline_project_id) is None:
@@ -313,6 +326,7 @@ def patch_assignment(
     payload: TimelineAssignmentPatch,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     a = db.get(TimelineAssignment, assignment_id)
     if a is None:
@@ -344,6 +358,7 @@ def delete_assignment(
     assignment_id: int,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     a = db.get(TimelineAssignment, assignment_id)
     if a is None:
@@ -357,6 +372,7 @@ def release_assignment(
     assignment_id: int,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     """Hand a hand-edited bar back to the proposal auto-resync.
 
@@ -403,6 +419,7 @@ def create_timeoff(
     payload: TimelineTimeOffIn,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     if db.get(TimelineResource, payload.resource_id) is None:
         raise HTTPException(404, "Resource not found")
@@ -426,6 +443,7 @@ def patch_timeoff(
     payload: TimelineTimeOffPatch,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     t = db.get(TimelineTimeOff, timeoff_id)
     if t is None:
@@ -443,6 +461,7 @@ def delete_timeoff(
     timeoff_id: int,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(TIMELINE)),
 ):
     t = db.get(TimelineTimeOff, timeoff_id)
     if t is not None:

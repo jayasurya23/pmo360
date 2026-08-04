@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy.orm import Session
 
 from auth import require_db_user
+from auth.permissions import PROPOSALS, require_permission
 from core.deps import get_db
 from db.models import Schedule, ScheduleItem, Project
 from schedule_parser.parser import parse_schedule_file
@@ -43,6 +44,10 @@ async def parse_uploaded(
     ``engine`` (PDF only): ``auto`` runs the fast regex parser and falls back
     to AI only when the result looks weak; ``regex`` forces the fast parser;
     ``llm`` forces AI extraction (use when a non-standard layout parsed badly).
+
+    Deliberately ungated: POST by verb, but it persists nothing and names no
+    portfolio — it reads a file the caller already holds and hands the parse
+    back. POST "" below is where the result becomes a row, and that is gated.
     """
     if engine not in ("auto", "regex", "llm"):
         raise HTTPException(400, "engine must be one of: auto, regex, llm")
@@ -68,10 +73,20 @@ async def parse_uploaded(
 
 
 @router.post("", response_model=ScheduleOut, status_code=201)
-def save_schedule(payload: ScheduleSaveRequest, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def save_schedule(
+    payload: ScheduleSaveRequest, db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
+):
+    """`proposals` — the permission that already covers "proposals, schedules
+    and versions", and a save here also rewrites the portfolio's headline
+    `schedule_version` below."""
     project = db.get(Project, payload.project_id)
     if not project:
         raise HTTPException(404, "Project not found")
+    # True create: the payload's portfolio is where the schedule lands. It is a
+    # body field, invisible to the dependency's path/query resolution.
+    guard.require_project(payload.project_id)
     p = payload.parsed
     sched = Schedule(
         project_id=payload.project_id,
@@ -105,9 +120,16 @@ def save_schedule(payload: ScheduleSaveRequest, db: Session = Depends(get_db), _
 
 
 @router.delete("/{schedule_id}", status_code=204)
-def remove(schedule_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def remove(
+    schedule_id: int, db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+    guard=Depends(require_permission(PROPOSALS)),
+):
     s = db.get(Schedule, schedule_id)
     if not s:
         raise HTTPException(404, "Schedule not found")
+    # Scope off the loaded row; the URL carries a schedule id, not a portfolio.
+    # Cascades into every ScheduleItem, so this is a real destructive write.
+    guard.require_project(s.project_id)
     db.delete(s)
     return None

@@ -1,9 +1,23 @@
 """/api/change-orders — internal Change Order Request module.
 
 Workflow: draft -> pending (submit) -> approved (downloadable branded PDF).
-Scoped to a portfolio (project_id). Any signed-in user can approve. Line items
-are fixed (cost) or hourly (rate*hours); `total_amount` is recomputed on save.
-Internal notes are stored but never rendered on the client-facing PDF.
+Scoped to a portfolio (project_id). Line items are fixed (cost) or hourly
+(rate*hours); `total_amount` is recomputed on save. Internal notes are stored
+but never rendered on the client-facing PDF.
+
+`pmo_pct` / `admin_pct` are internal cost adders struck against the whole CO,
+additively (100 + 5% + 5% = 110). They are invisible to the client: the PDF
+marks them into the line amounts rather than printing a row, so `total_amount`
+here means the marked-up figure the client actually pays.
+
+Two separate permissions govern the two halves of that workflow, because a
+change order is money leaving the client's pocket: `co_creation` raises and
+edits one, `co_approval` decides on it. Splitting the columns only means
+something if the app also refuses to let one person do both, so the approve
+path additionally calls `assert_change_order_approvable` — the creator cannot
+approve their own. Reject and mark-sent deliberately skip that rule: pulling
+back your own request, or recording a delivery a second person already
+approved, never lets you self-authorise the money.
 """
 from datetime import datetime
 
@@ -13,13 +27,17 @@ from sqlalchemy.orm import Session
 
 from core.deps import get_db
 from auth import require_db_user
+from auth.permissions import (
+    CO_APPROVAL, CO_CREATION, assert_change_order_approvable, require_permission,
+)
+from co_pricing import distribute_markup, markup_breakdown
 from core.services import safe_filename_slug
 from storage.backend import get_storage
 from db.models import ChangeOrder, ChangeOrderLineItem, Project
 from docgen.change_order_pdf import build_change_order_pdf
 from schemas.common import (
     ChangeOrderOut, ChangeOrderIn, ChangeOrderUpdate, ChangeOrderLineItemIn,
-    ChangeOrderMarkSent,
+    ChangeOrderMarkSent, ChangeOrderPricing,
 )
 
 
@@ -46,8 +64,20 @@ def _line_total(li: ChangeOrderLineItem, rate_type: str) -> float:
 
 
 def _recompute_total(co: ChangeOrder) -> None:
+    """Store WHAT THE CLIENT PAYS — the line items plus both adders.
+
+    Keeping the markup in `total_amount` is what lets the Proposals
+    revised-contract-value rollup and the Dashboard CO card stay correct without
+    either of them learning about the adders. The pre-markup figure is always
+    recoverable as the sum of the line items.
+
+    Deliberately the SUM OF THE MARKED-UP LINES rather than a separately
+    marked-up subtotal. The two can land a cent apart when a line's float
+    carries repr noise and the markup falls on a half-cent tie, and when they
+    disagree the figure the client signed for has to be the one on record."""
+    lines = [_line_total(li, co.rate_type) for li in co.line_items]
     co.total_amount = round(
-        sum(_line_total(li, co.rate_type) for li in co.line_items), 2
+        sum(distribute_markup(lines, _num(co.pmo_pct), _num(co.admin_pct))), 2
     )
 
 
@@ -75,6 +105,14 @@ def _out(co: ChangeOrder, db: Session) -> ChangeOrderOut:
     proj = db.get(Project, co.project_id)
     # Prefer the editable snapshot; fall back to the portfolio name (legacy rows).
     o.project_name = co.project_name or (proj.name if proj else None)
+    # The internal-only breakdown behind `total_amount`. Derived here rather than
+    # stored so it can never drift from the line items it describes, and computed
+    # by co_pricing so the dollars shown in the app are the same dollars the PDF
+    # spreads across the lines.
+    o.pricing = ChangeOrderPricing(**markup_breakdown(
+        sum(_line_total(li, co.rate_type) for li in co.line_items),
+        _num(co.pmo_pct), _num(co.admin_pct),
+    ))
     return o
 
 
@@ -160,10 +198,12 @@ def create_change_order(
     payload: ChangeOrderIn,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_CREATION)),
 ):
     project = db.get(Project, payload.project_id)
     if not project:
         raise HTTPException(404, "Portfolio not found")
+    guard.require_project(project.id)
     next_n = (db.query(func.max(ChangeOrder.co_number))
               .filter(ChangeOrder.project_id == payload.project_id)
               .scalar() or 0) + 1
@@ -190,6 +230,11 @@ def create_change_order(
         signatory_email=payload.signatory_email,
         client_signatory_name=payload.client_signatory_name,
         client_signatory_title=payload.client_signatory_title,
+        client_signatory_email=payload.client_signatory_email,
+        client_signatory_phone=payload.client_signatory_phone,
+        # Set per change order, never defaulted from the portfolio or company.
+        pmo_pct=_num(payload.pmo_pct),
+        admin_pct=_num(payload.admin_pct),
         notes=payload.notes,
         created_by_id=actor.id if actor else None,
         updated_by_id=actor.id if actor else None,
@@ -208,8 +253,12 @@ def update_change_order(
     payload: ChangeOrderUpdate,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_CREATION)),
 ):
     co = _get(db, co_id)
+    # Scope from the CO itself, never from the payload — the row's own portfolio
+    # is where this write actually lands.
+    guard.require_project(co.project_id)
     if payload.expected_version is not None and co.version != payload.expected_version:
         raise HTTPException(409, detail={
             "error": "stale_version",
@@ -221,9 +270,15 @@ def update_change_order(
                   "request_date", "requested_by", "requested_by_user_id",
                   "location", "state", "size_mw", "signatory_name",
                   "signatory_title", "signatory_phone", "signatory_email",
-                  "client_signatory_name", "client_signatory_title", "notes"):
+                  "client_signatory_name", "client_signatory_title",
+                  "client_signatory_email", "client_signatory_phone",
+                  "pmo_pct", "admin_pct", "notes"):
         if field in sent:
             setattr(co, field, getattr(payload, field))
+    # The adders are NOT NULL, and a percentage field cleared on the form arrives
+    # as an explicit null rather than 0 — coerce so the save can't 500.
+    co.pmo_pct = _num(co.pmo_pct)
+    co.admin_pct = _num(co.admin_pct)
     if co.rate_type not in _VALID_RATE:
         co.rate_type = "fixed"
     if payload.line_items is not None:
@@ -237,8 +292,14 @@ def update_change_order(
 
 
 @router.post("/{co_id}/submit", response_model=ChangeOrderOut)
-def submit_change_order(co_id: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
+def submit_change_order(
+    co_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_CREATION)),
+):
     co = _get(db, co_id)
+    guard.require_project(co.project_id)
     co.status = "pending"
     if actor:
         co.updated_by_id = actor.id
@@ -247,8 +308,25 @@ def submit_change_order(co_id: int, db: Session = Depends(get_db), actor=Depends
 
 
 @router.post("/{co_id}/approve", response_model=ChangeOrderOut)
-def approve_change_order(co_id: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
+def approve_change_order(
+    co_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_APPROVAL)),
+):
     co = _get(db, co_id)
+    guard.require_project(co.project_id)
+    # Separation of duties, on top of the permission: whoever raised this CO is
+    # not allowed to be the one who approves it. `created_by_id` is the creator
+    # of record — `updated_by_id` moves with every save (including this one) and
+    # `requested_by_user_id` is a free-text-ish attribution of who ASKED for the
+    # work, which is often the client-facing PM rather than the author.
+    assert_change_order_approvable(
+        db,
+        project_id=co.project_id,
+        creator_user_id=co.created_by_id,
+        actor=actor,
+    )
     co.status = "approved"
     co.approved_by = (actor.name or actor.email) if actor else None
     co.approved_by_user_id = actor.id if actor else None
@@ -267,11 +345,13 @@ def mark_change_order_sent(
     payload: ChangeOrderMarkSent,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_APPROVAL)),
 ):
     """Record that the approved CO PDF was emailed to the client. The send itself
     happens client-side — Microsoft Graph from the PM's mailbox, or handed off to
     the desktop Outlook client — so `method` is how the Sent tab tells them apart."""
     co = _get(db, co_id)
+    guard.require_project(co.project_id)
     recipients = (payload.recipients or "").strip() or None
     if co.sent_at is None:
         # First delivery is the one the archive is for: on a re-send we keep the
@@ -295,13 +375,19 @@ def mark_change_order_sent(
 
 
 @router.post("/{co_id}/reject", response_model=ChangeOrderOut)
-def reject_change_order(co_id: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
+def reject_change_order(
+    co_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_APPROVAL)),
+):
     """Send a pending CO back to the requester (clears the approval stamp).
 
     Distinct 'sent_back' status (not plain 'draft') so returned COs surface in
     their own tab instead of blending in with fresh drafts. Editable + can be
     re-submitted (submit -> pending) from there."""
     co = _get(db, co_id)
+    guard.require_project(co.project_id)
     co.status = "sent_back"
     co.approved_by = None
     co.approved_by_user_id = None
@@ -320,8 +406,18 @@ def reject_change_order(co_id: int, db: Session = Depends(get_db), actor=Depends
 
 
 @router.delete("/{co_id}", status_code=204)
-def delete_change_order(co_id: int, db: Session = Depends(get_db), actor=Depends(require_db_user)):
-    db.delete(_get(db, co_id))
+def delete_change_order(
+    co_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_CREATION)),
+):
+    # Authoring-side permission: discarding a CO belongs with raising one, not
+    # with deciding on it. An approver's job is to say yes or no, not to make the
+    # request disappear.
+    co = _get(db, co_id)
+    guard.require_project(co.project_id)
+    db.delete(co)
     return None
 
 

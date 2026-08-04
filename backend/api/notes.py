@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 from core.deps import get_db
-from auth import get_current_db_user, require_db_user
+from auth import require_db_user
+from auth.permissions import MEETING_MINUTES, require_permission
 from db.models import Note
 from db.repository import list_notes, get_project_roster
 from schemas.common import NoteOut, NoteIn, NoteUpdate
@@ -33,8 +34,10 @@ def get_notes(project_id: int = Query(...), db: Session = Depends(get_db), _user
 def create_note(
     payload: NoteIn,
     db: Session = Depends(get_db),
-    actor = Depends(get_current_db_user),
+    actor = Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
 ):
+    guard.require_project(payload.project_id)
     n = Note(
         project_id=payload.project_id,
         project_area=payload.project_area,
@@ -45,8 +48,8 @@ def create_note(
         follow_up_date=payload.follow_up_date,
         priority=payload.priority,
         status=payload.status,
-        created_by_id=actor.id if actor else None,
-        updated_by_id=actor.id if actor else None,
+        created_by_id=actor.id,
+        updated_by_id=actor.id,
     )
     db.add(n)
     db.flush()
@@ -58,24 +61,31 @@ def patch_note(
     note_id: int,
     payload: NoteUpdate,
     db: Session = Depends(get_db),
-    actor = Depends(get_current_db_user),
+    actor = Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
 ):
     n = db.get(Note, note_id)
     if not n:
         raise HTTPException(404, "Note not found")
+    guard.require_project(n.project_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(n, field, value)
-    if actor is not None:
-        n.updated_by_id = actor.id
+    n.updated_by_id = actor.id
     db.flush()
     return n
 
 
 @router.delete("/{note_id}", status_code=204)
-def delete_note(note_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def delete_note(
+    note_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
     n = db.get(Note, note_id)
     if not n:
         raise HTTPException(404, "Note not found")
+    guard.require_project(n.project_id)
     db.delete(n)
     return None
 

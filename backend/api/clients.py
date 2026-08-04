@@ -2,7 +2,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from auth import require_db_user, require_admin
+from auth import require_db_user
+from auth.permissions import CLIENT_MGMT, require_permission
 from core.deps import get_db
 from db.models import Client
 from db.repository import list_clients
@@ -13,11 +14,19 @@ router = APIRouter(prefix="/api/clients", tags=["clients"])
 
 @router.get("", response_model=list[ClientOut])
 def get_clients(db: Session = Depends(get_db), _user=Depends(require_db_user)):
+    """Deliberately require_db_user, NOT require_admin. Every page in the app
+    resolves the client list to render the header switcher and navigation, so
+    tightening this to admins would break the app for everyone else. Client
+    *names* are not sensitive; the mutations below are what's gated."""
     return list_clients(db)
 
 
 @router.post("", response_model=ClientOut, status_code=201)
 def create_client(payload: ClientCreate, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+    """Any PM. Winning new work is the job — a PM who cannot register the client
+    they just won is blocked on someone else for the most ordinary task there is.
+    Creating is additive and reversible by an admin; only DELETE is gated, since
+    that is the one that destroys everything underneath."""
     existing = db.query(Client).filter_by(name=payload.name).first()
     if existing:
         raise HTTPException(409, f"Client {payload.name!r} already exists")
@@ -32,6 +41,10 @@ def update_client(
     client_id: int, payload: ClientUpdate, db: Session = Depends(get_db),
     _user=Depends(require_db_user),
 ):
+    """Any PM, same reasoning as create_client. A rename relabels everything
+    beneath the client, but a wrong label is a typo someone can correct — it
+    destroys nothing, and clients get renamed (acquisitions, rebrands) often
+    enough that routing it through an admin would just add latency."""
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(404, "Client not found")
@@ -54,12 +67,22 @@ def update_client(
 
 
 @router.delete("/{client_id}", status_code=204)
-def delete_client(client_id: int, db: Session = Depends(get_db), _user=Depends(require_admin)):
-    """Admin-only. Deleting a client cascades through `Client.projects`
-    (all, delete-orphan) into every portfolio beneath it and everything they
-    own — meetings, agendas, proposals, change orders, action items. It is the
-    single most destructive call in the API, so it is gated to ADMIN_EMAILS
-    rather than any signed-in PM."""
+def delete_client(
+    client_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CLIENT_MGMT)),
+):
+    """Requires the Client Management permission. Deleting a client cascades
+    through `Client.projects` (all, delete-orphan) into every portfolio beneath
+    it and everything they own — meetings, agendas, proposals, change orders,
+    action items. It is the single most destructive call in the API, so it is
+    the one client mutation that is gated; create and rename stay open to any
+    PM (see above).
+
+    Global scope, no portfolio: a client sits ABOVE every portfolio, so there is
+    no single membership that could stand for "may destroy this". Admins hold
+    the permission implicitly, which preserves the previous admin-only reach."""
     client = db.get(Client, client_id)
     if not client:
         raise HTTPException(404, "Client not found")

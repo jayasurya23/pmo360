@@ -164,6 +164,7 @@ def lead_overview(
             name=u.name or u.email or f"User {uid}",
             email=u.email or "",
             is_admin=bool(u.is_admin),
+            is_active=bool(u.is_active),
             portfolios=portfolios_by_user.get(uid, 0),
             open_actions=open_by_user.get(uid, 0),
             overdue_actions=overdue_by_user.get(uid, 0),

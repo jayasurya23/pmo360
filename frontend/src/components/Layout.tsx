@@ -3,7 +3,6 @@ import { useApp } from "@/lib/state";
 import { useAuth } from "@/auth/useAuth";
 import { useEffect, useState, useRef, Suspense } from "react";
 import clsx from "clsx";
-import NewClientDialog from "@/components/admin/NewClientDialog";
 import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
 import DeletePortfolioDialog from "@/components/admin/DeletePortfolioDialog";
 import ManageTeamDialog from "@/components/admin/ManageTeamDialog";
@@ -19,7 +18,12 @@ import {
   fetchOpenRisks,
   type UserPreferences,
 } from "@/lib/api";
-import type { Project, ProjectMember } from "@/lib/types";
+import type {
+  MeResponse,
+  PermissionName,
+  Project,
+  ProjectMember,
+} from "@/lib/types";
 import CommandPalette from "./CommandPalette";
 
 interface NavItem {
@@ -85,17 +89,20 @@ const THEME_LS_KEY = "theme";
 type PrefsWithPins = UserPreferences & { pinned_project_ids?: number[] };
 
 export default function Layout() {
-  const { settings, currentProject } = useApp();
+  const { settings, currentProject, me } = useApp();
   const location = useLocation();
 
   // ----- Admin dialog state (gear popover -> create/delete/team) -----
   // Lifted here so the modal portals are mounted once at the top of the tree
   // and remain available even when the header re-renders.
-  const [showNewClient, setShowNewClient] = useState(false);
+  //
+  // Client create/rename is NOT here any more: it lives in Settings behind an
+  // admin check, because the shell renders for every signed-in PM and a
+  // client rename or delete reaches every portfolio beneath it.
   const [showNewPortfolio, setShowNewPortfolio] = useState(false);
   const [showDeletePortfolio, setShowDeletePortfolio] = useState(false);
   const [showManageTeam, setShowManageTeam] = useState(false);
-  const [renameKind, setRenameKind] = useState<"client" | "portfolio" | null>(null);
+  const [showEditPortfolio, setShowEditPortfolio] = useState(false);
   const [projectMode, setProjectMode] = useState<ProjectMode | null>(null);
 
   useEffect(() => {
@@ -110,18 +117,36 @@ export default function Layout() {
         ? "max-w-doc"
         : "max-w-shell";
 
+  // An offboarded user still holds a valid Entra token, so the auth gate lets
+  // them through — /api/me is the one route that still answers them, and every
+  // other call 403s. Without this they would get the whole shell with nothing
+  // working and no explanation. Told plainly instead, with who to ask.
+  if (me && me.is_active === false) {
+    return (
+      <div className="min-h-screen bg-surface-page text-brand-black flex items-center justify-center px-4">
+        <div className="card p-8 max-w-md text-center space-y-2">
+          <div className="text-2xl">🔒</div>
+          <h1 className="text-lg font-semibold">Your access has been removed</h1>
+          <p className="text-sm text-brand-gray">
+            This {settings?.app.tool_name ?? "PMO 360"} account is no longer
+            active. Your work is untouched — an administrator can restore access
+            from Settings if this was a mistake.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-surface-page text-brand-black flex flex-col">
       {/* Brand rule across the very top of the viewport. */}
       <div className="h-[3px] bg-brand-red" />
       <TopNav
         admin={{
-          onNewClient: () => setShowNewClient(true),
           onNewPortfolio: () => setShowNewPortfolio(true),
           onDeletePortfolio: () => setShowDeletePortfolio(true),
           onManageTeam: () => setShowManageTeam(true),
-          onRenameClient: () => setRenameKind("client"),
-          onRenamePortfolio: () => setRenameKind("portfolio"),
+          onRenamePortfolio: () => setShowEditPortfolio(true),
           onNewProject: () => setProjectMode("new"),
           onRenameProject: () => setProjectMode("rename"),
           onDeleteProject: () => setProjectMode("delete"),
@@ -140,10 +165,6 @@ export default function Layout() {
       </main>
       <Footer />
 
-      <NewClientDialog
-        open={showNewClient}
-        onClose={() => setShowNewClient(false)}
-      />
       <NewPortfolioDialog
         open={showNewPortfolio}
         onClose={() => setShowNewPortfolio(false)}
@@ -158,9 +179,8 @@ export default function Layout() {
         project={currentProject}
       />
       <RenameDialog
-        open={renameKind !== null}
-        kind={renameKind ?? "client"}
-        onClose={() => setRenameKind(null)}
+        open={showEditPortfolio}
+        onClose={() => setShowEditPortfolio(false)}
       />
       <ProjectDialog mode={projectMode} onClose={() => setProjectMode(null)} />
 
@@ -365,11 +385,9 @@ function MobileNav() {
 
 /** Openers for the admin dialogs, whose state lives on Layout. */
 interface AdminActions {
-  onNewClient: () => void;
   onNewPortfolio: () => void;
   onDeletePortfolio: () => void;
   onManageTeam: () => void;
-  onRenameClient: () => void;
   onRenamePortfolio: () => void;
   onNewProject: () => void;
   onRenameProject: () => void;
@@ -392,7 +410,6 @@ function ContextRow({ admin }: { admin: AdminActions }) {
       <span className="micro-label shrink-0">Context</span>
       <ContextSwitcher />
       <ContextAdminGear
-        hasClient={!!client}
         hasProject={!!project}
         hasSubProject={!!selectedSubProject}
         {...admin}
@@ -445,35 +462,71 @@ function RowDivider() {
 }
 
 /**
+ * One permission as this user experiences it, read off /api/me.
+ *
+ * `permissions` is optional on MeResponse — an /api/me older than this client
+ * omits it — so an absent map falls back to the admin flag rather than locking
+ * an admin out of their own console. Everyone else lands on the closed side,
+ * which is the safe direction for the destructive items below.
+ */
+function can(me: MeResponse | null, name: PermissionName): boolean {
+  if (!me) return false;
+  // The server already folds the admin bypass into `permissions`; keeping it
+  // here too costs nothing and covers the older-payload case above.
+  if (me.is_admin) return true;
+  return !!me.permissions?.[name];
+}
+
+/**
  * Small gear-icon popover next to the ContextSwitcher.
  *
- * Three actions:
- *   - + New client
- *   - + New portfolio
- *   - Delete portfolio (destructive, requires a portfolio to be selected)
+ * Scoped to the portfolio and project tiers — create, rename, delete, and
+ * team. Client-level actions are gone from here: they live in Settings. The
+ * one exception is the shortcut at the bottom, which only navigates, and only
+ * renders for someone the console actually serves.
  *
  * Uses the same click-outside dismiss pattern as ContextSwitcher above.
  */
 function ContextAdminGear({
-  hasClient,
   hasProject,
   hasSubProject,
-  onNewClient,
   onNewPortfolio,
   onDeletePortfolio,
   onManageTeam,
-  onRenameClient,
   onRenamePortfolio,
   onNewProject,
   onRenameProject,
   onDeleteProject,
 }: AdminActions & {
-  hasClient: boolean;
   hasProject: boolean;
   hasSubProject: boolean;
 }) {
+  const { me } = useApp();
+  const nav = useNavigate();
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
+
+  // Deleting a portfolio cascades into every meeting, agenda, schedule and
+  // attendee beneath it — the same shape as deleting a client, which the server
+  // gates on client_mgmt (api/clients.py::delete_client). Structure changes that
+  // are additive and correctable — new portfolio, new project, rename — stay
+  // open to any PM, matching the split that router already drew.
+  //
+  // Presentation, not protection: the matching server gate belongs on
+  // api/projects.py::delete_project and api/portfolio_projects.py. This only
+  // spares people a two-click path to a refusal.
+  //
+  // Disabled, not hidden: this menu already refuses items with a reason ("Pick
+  // a portfolio first"), and a destructive control that silently vanishes tells
+  // nobody what they are missing or who to ask for it.
+  const canDeleteStructure = can(me, "client_mgmt");
+  const structureBlocked = canDeleteStructure
+    ? undefined
+    : "Needs the Client Management permission — ask an administrator to grant it in Settings → Users.";
+
+  // The console below now serves permission holders, not just admins, so the
+  // shortcut to it has to widen with it or a client_mgmt holder never finds it.
+  const canReachConsole = can(me, "user_mgmt") || can(me, "client_mgmt");
 
   useEffect(() => {
     const click = (e: MouseEvent) => {
@@ -517,9 +570,6 @@ function ContextAdminGear({
 
       {open && (
         <div className="absolute left-0 mt-2 w-56 bg-surface-card border border-surface-border rounded-[10px] shadow-lg z-50 py-1.5">
-          <GearItem onClick={() => fire(onNewClient)} icon="+">
-            New client
-          </GearItem>
           <GearItem onClick={() => fire(onNewPortfolio)} icon="+">
             New portfolio
           </GearItem>
@@ -536,14 +586,6 @@ function ContextAdminGear({
             New project
           </GearItem>
           <div className="my-1 border-t border-surface-hairline" />
-          <GearItem
-            onClick={() => fire(onRenameClient)}
-            disabled={!hasClient}
-            icon="✏️"
-            title={hasClient ? "Rename the selected client" : "Pick a client first"}
-          >
-            Rename client
-          </GearItem>
           <GearItem
             onClick={() => fire(onRenamePortfolio)}
             disabled={!hasProject}
@@ -569,41 +611,62 @@ function ContextAdminGear({
             Rename project
           </GearItem>
           <div className="my-1 border-t border-surface-hairline" />
+          {/* Open to everyone, but the dialog is read-only unless you're an
+              admin — assignment is user management and lives behind
+              require_admin. The roster itself is not privileged. */}
           <GearItem
             onClick={() => fire(onManageTeam)}
             disabled={!hasProject}
             icon="👥"
             title={
-              hasProject
-                ? "Add or remove PMs on this portfolio"
-                : "Pick a portfolio first to manage its team"
+              !hasProject
+                ? "Pick a portfolio first to see its team"
+                : me?.is_admin
+                  ? "Add or remove PMs on this portfolio"
+                  : "See who is assigned to this portfolio"
             }
           >
-            Manage team
+            {me?.is_admin ? "Manage team" : "View team"}
           </GearItem>
           <div className="my-1 border-t border-surface-hairline" />
           <GearItem
             onClick={() => fire(onDeletePortfolio)}
-            disabled={!hasProject}
+            disabled={!hasProject || !canDeleteStructure}
             icon="🗑️"
             danger
-            title={hasProject ? undefined : "Pick a portfolio first to delete it"}
+            title={
+              structureBlocked ??
+              (hasProject ? undefined : "Pick a portfolio first to delete it")
+            }
           >
             Delete portfolio
           </GearItem>
           <GearItem
             onClick={() => fire(onDeleteProject)}
-            disabled={!hasSubProject}
+            disabled={!hasSubProject || !canDeleteStructure}
             icon="🗑️"
             danger
             title={
-              hasSubProject
+              structureBlocked ??
+              (hasSubProject
                 ? "Remove the selected project from this portfolio"
-                : "Pick a project first to delete it"
+                : "Pick a project first to delete it")
             }
           >
             Delete project
           </GearItem>
+          {canReachConsole && (
+            <>
+              <div className="my-1 border-t border-surface-hairline" />
+              {/* Creating a client used to live in this menu, and a PM
+                  reaching for "New portfolio" for a brand-new client still
+                  needs somewhere to go. This only navigates — the console's
+                  own cards decide what it shows you when you get there. */}
+              <GearItem onClick={() => fire(() => nav("/settings"))} icon="⚙">
+                Manage clients &amp; users
+              </GearItem>
+            </>
+          )}
         </div>
       )}
     </div>

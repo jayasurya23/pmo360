@@ -5,10 +5,20 @@
  * Anonymous callers get a friendly "sign in to save" callout. The values
  * shown then mirror the hardcoded defaults so the controls still render
  * sensibly even when persistence is unavailable.
+ *
+ * Console operators additionally get the user + client administration console
+ * at the bottom of the page — whoever holds `user_mgmt` / `client_mgmt`, with
+ * admins holding both implicitly. A card the caller has no permission on is
+ * absent rather than disabled: a whole section is a place, and an empty place
+ * is worse than no place. Single controls inside a card that IS shown stay
+ * visible and refuse with a reason. Either way the absence is cosmetic — the
+ * endpoints underneath are permission-gated server-side.
  */
 import { useEffect, useMemo, useState } from "react";
 import PageHeader from "@/components/PageHeader";
 import SaveStatus from "@/components/SaveStatus";
+import AdminUsersCard from "@/components/admin/AdminUsersCard";
+import AdminClientsCard from "@/components/admin/AdminClientsCard";
 import { useApp } from "@/lib/state";
 import { useAuth } from "@/auth/useAuth";
 import { useAutoSave } from "@/lib/useAutoSave";
@@ -36,7 +46,7 @@ interface PortfolioOption {
 }
 
 export default function Settings() {
-  const { clients } = useApp();
+  const { clients, me } = useApp();
   const { isAuthenticated, signIn, user } = useAuth();
 
   const [prefs, setPrefs] = useState<UserPreferences>(DEFAULT_PREFS);
@@ -126,6 +136,11 @@ export default function Settings() {
   ) {
     setPrefs((p) => ({ ...p, [key]: value }));
   }
+
+  // Console access — see the Administration block below for why `is_admin` is
+  // still consulted alongside the permission.
+  const canManageUsers = !!me?.is_admin || !!me?.permissions?.user_mgmt;
+  const canManageClients = !!me?.is_admin || !!me?.permissions?.client_mgmt;
 
   const portfolioCount = portfolios.length;
   const selectedPortfolio = useMemo(
@@ -320,6 +335,34 @@ export default function Settings() {
         >
           {status === "saving" ? "Saving…" : "Save settings"}
         </button>
+      </div>
+
+      {/* ---------- Administration ----------
+          Split on purpose. Users decides who can reach what, so it takes the
+          `user_mgmt` permission. Clients is open to every PM: registering the
+          client you just won, or fixing its name after a rebrand, is ordinary
+          work, and routing it through an admin only adds latency. Deleting a
+          client is the one destructive act (it cascades through every portfolio
+          beneath it), so that button alone takes `client_mgmt` inside the card.
+
+          Read off /api/me, where the flags arrive EFFECTIVE — an admin comes
+          back holding all eight. `is_admin` is still checked here because
+          `permissions` is optional on the payload, and an /api/me older than
+          this client must not lock an admin out of their own console.
+
+          These checks HIDE things; they do not protect them — every endpoint
+          underneath refuses a caller without the permission on its own. */}
+      <div className="space-y-[18px] pt-6 mt-2 border-t border-surface-border">
+        <div>
+          <h2 className="kicker">Administration</h2>
+          <p className="mt-1 text-xs text-brand-lightgray">
+            {canManageUsers || canManageClients
+              ? "Changes here affect everyone."
+              : "Clients are shared across the team — renaming one relabels every portfolio beneath it."}
+          </p>
+        </div>
+        {canManageUsers && <AdminUsersCard />}
+        <AdminClientsCard canDelete={canManageClients} />
       </div>
     </div>
   );

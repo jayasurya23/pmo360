@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from auth import require_db_user
+from auth.permissions import MEETING_MINUTES, require_permission
 from config import local_output_dir
 from core.deps import get_db
 from db.models import Meeting, GeneratedDocument
@@ -56,10 +57,21 @@ def download_meeting_doc(
 
 
 @router.post("/meeting/{meeting_id}/finalize")
-def finalize(meeting_id: int, db: Session = Depends(get_db), _user=Depends(require_db_user)):
+def finalize(
+    meeting_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
+    """Takes `meeting_minutes`: `finalize_meeting` flips `meeting.stage` to
+    "final" and files the client-ready artifacts. That is the same mutation
+    PATCH /api/meetings/{id} performs, so leaving this open would be a way
+    around that gate rather than a separate capability. The GET download route
+    above stays ungated — reading a document is not editing the meeting."""
     m = db.get(Meeting, meeting_id)
     if not m:
         raise HTTPException(404, "Meeting not found")
+    guard.require_project(m.project_id)
     paths = finalize_meeting(db, m)
     return {"paths": paths, "stage": m.stage}
 
