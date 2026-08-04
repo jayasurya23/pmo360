@@ -1179,6 +1179,100 @@ class DashboardRisksResponse(BaseModel):
     risks: list[DashboardRiskOut] = Field(default_factory=list)
 
 
+# ---------- "My work" — the signed-in person's cross-portfolio plate ----------
+class MyWorkActionCounts(BaseModel):
+    """Action-item metrics for the signed-in user across every portfolio.
+
+    ``open`` is the denominator for the rest and means status open OR pending
+    — the same definition every other rollup in this app uses. The three
+    date buckets partition it exactly: an open action is overdue, due inside
+    the window, further out, or carries no date at all.
+
+    The window sizes travel with the payload so the UI can label the tiles
+    from the response instead of hardcoding a number that then drifts from
+    the backend's.
+    """
+    open: int = 0
+    overdue: int = 0              # due_date strictly before today
+    due_this_week: int = 0        # today <= due_date <= today + (window - 1)
+    no_due_date: int = 0          # open, but no date is tracking it
+    closed_recently: int = 0      # status completed inside the close window
+    cancelled_recently: int = 0   # cancelled inside the same window, counted
+                                  # apart because dropped work is not throughput
+    due_window_days: int = 7
+    closed_window_days: int = 14
+    # How many of `open` are mine ONLY because I created the row — no owner
+    # link and no name match. Surfaced so the UI can be honest that the
+    # weakest attribution rung is carrying part of the number.
+    open_authored_only: int = 0
+
+
+class MyWorkPortfolioRow(BaseModel):
+    """Where one person's open backlog is piling up. Worst-first so the top
+    row is the portfolio to go and work on."""
+    project_id: int
+    project_name: str
+    client_name: Optional[str] = None
+    open: int = 0
+    overdue: int = 0
+
+
+class MyWorkQueueItem(BaseModel):
+    """One row of the personal queue, whatever module it came from.
+
+    Deliberately one shape for all four kinds: the UI renders a single list
+    and routes on ``kind`` + ``id`` + ``project_id``, which is everything a
+    deep link needs. ``amount`` is only ever set for change orders — the
+    dollar value is what makes an approval queue read as urgent rather than
+    tidy.
+    """
+    kind: Literal["co_approval", "co_send", "agenda", "meeting_draft"]
+    id: int
+    project_id: int
+    project_name: Optional[str] = None
+    client_name: Optional[str] = None
+    label: str                        # primary line, e.g. "CO-3 — Re-trenching"
+    detail: Optional[str] = None      # secondary line, e.g. "Raised by Ana Ruiz"
+    amount: Optional[float] = None    # CO total (client-inclusive), else null
+    # The date that matters for this row — CO request date, meeting date,
+    # agenda date. Not named `date`: a field of that name shadows the `date`
+    # type in its own annotation namespace and silently resolves to None-only.
+    event_date: Optional[date] = None
+    updated_at: Optional[datetime] = None
+
+
+class MyWorkWaitingOnMe(BaseModel):
+    """Everything other than action items that is parked on this person.
+
+    The two dollar totals are sums of the matching lists, precomputed so the
+    header can show a number without the UI re-implementing the rule about
+    which rows count.
+    """
+    co_approvals: list[MyWorkQueueItem] = Field(default_factory=list)
+    co_to_send: list[MyWorkQueueItem] = Field(default_factory=list)
+    agendas: list[MyWorkQueueItem] = Field(default_factory=list)
+    meeting_drafts: list[MyWorkQueueItem] = Field(default_factory=list)
+    co_approval_amount: float = 0.0
+    co_to_send_amount: float = 0.0
+    total: int = 0
+
+
+class MyWorkOut(BaseModel):
+    """GET /api/dashboard/my-work — what the signed-in user personally owns,
+    across every client and portfolio.
+
+    ``as_of`` + ``timezone`` are the date every comparison in here was made
+    against. They ship with the payload because the server runs UTC in a
+    container while the people using it do not: without saying which day the
+    numbers mean, an "overdue" count is unfalsifiable.
+    """
+    as_of: date
+    timezone: str
+    actions: MyWorkActionCounts
+    by_portfolio: list[MyWorkPortfolioRow] = Field(default_factory=list)
+    waiting_on_me: MyWorkWaitingOnMe
+
+
 # ---------- AI Home briefing ----------
 class BriefingResponse(BaseModel):
     """Personalized "since you were last here…" summary for the Home page.

@@ -2,18 +2,26 @@ import { ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import PageHeader from "@/components/PageHeader";
-import EmptyState from "@/components/EmptyState";
+import MyWorkPanel from "@/components/dashboard/MyWorkPanel";
 import { listMeetings, fetchPortfolioMetrics, listChangeOrders } from "@/lib/api";
 import type { PortfolioMetrics, BurndownPoint } from "@/lib/api";
 import type { Meeting, ChangeOrder } from "@/lib/types";
 import { useApp } from "@/lib/state";
 
 /**
- * Per-portfolio health snapshot. Backed by GET /api/projects/:id/metrics — a
- * single fat endpoint that rolls up the top-row stats, 8-week action
- * burndown, and the latest agenda's risk heatmap. Five most recent meetings
- * live in their own list and use `listMeetings` (already cached by
- * History).
+ * The Dashboard, in two modes.
+ *
+ * With a portfolio picked: a per-portfolio health snapshot backed by GET
+ * /api/projects/:id/metrics — a single fat endpoint that rolls up the top-row
+ * stats, 8-week action burndown, and the latest agenda's risk heatmap. Five
+ * most recent meetings live in their own list and use `listMeetings` (already
+ * cached by History). The personal panel then sits underneath, scoped to that
+ * portfolio.
+ *
+ * With no portfolio picked (the All-clients state): the personal panel IS the
+ * page. It used to be an EmptyState telling the PM to go pick something, which
+ * made All-clients a dead screen — the one place a cross-portfolio view of
+ * their own work belongs.
  */
 export default function PortfolioDashboard() {
   const { currentProject, currentClient } = useApp();
@@ -50,10 +58,31 @@ export default function PortfolioDashboard() {
 
   if (!currentProject) {
     return (
-      <EmptyState
-        title="Pick a client and portfolio first"
-        hint="Use the context switcher under the nav bar to choose where this dashboard belongs."
-      />
+      <div className="space-y-[22px]">
+        <PageHeader
+          kicker="Dashboard · all clients"
+          title="Your work"
+          actions={
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => nav("/actions?owner=mine&status=open_pending")}
+            >
+              All my actions
+            </button>
+          }
+        />
+
+        <MyWorkPanel />
+
+        {/* The old dead-end copy, demoted to a footnote — the route to
+            portfolio health is still worth naming, just not worth the screen. */}
+        <div className="card px-5 py-4 text-sm text-brand-gray">
+          Looking for portfolio health — action burndown, the risk board, recent
+          meetings? Pick a client and portfolio in the context switcher under
+          the nav bar.
+        </div>
+      </div>
     );
   }
 
@@ -116,6 +145,13 @@ export default function PortfolioDashboard() {
           </div>
         </>
       )}
+
+      {/* Same panel as the All-clients view, narrowed to this portfolio. It
+          sits below the portfolio rollups deliberately: the portfolio's health
+          is the page's subject, the PM's own slice of it is the follow-up
+          question. A card that vanished the moment you picked a portfolio
+          would read as a bug. */}
+      <MyWorkPanel projectId={currentProject.id} />
     </div>
   );
 }

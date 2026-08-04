@@ -893,6 +893,98 @@ export interface DashboardResponse {
   upcoming_agendas: DashboardAgenda[];
 }
 
+// ---- "Assigned to you" (GET /api/dashboard/my-work) ----
+// Ownership is NOT `owner_user_id` alone, and a count built on it alone reads
+// low. Every person-picker asked for more users than the endpoint would return,
+// so the picker list came back empty and owners were saved as free-text names;
+// the prod backfill covered some rows, not all. The server resolves ownership
+// the way /api/dashboard/mine does — owner_user_id, then a case-insensitive
+// name match on the free-text `owner`, then created_by_id — and these numbers
+// are only trustworthy because it does.
+// Mirrors backend `schemas.common.MyWorkOut`. The window lengths travel in the
+// payload on purpose — the tiles label themselves from the response instead of
+// hardcoding "7 days" and drifting the day someone retunes the backend.
+export interface MyWorkActions {
+  /** status open OR pending — the app-wide meaning of "open". */
+  open: number;
+  /** open AND due strictly before today. Due today is due, not late. */
+  overdue: number;
+  /** open AND due between today and today + (due_window_days - 1). */
+  due_this_week: number;
+  /** open with no due date at all. Not overdue, but not invisible either. */
+  no_due_date: number;
+  closed_recently: number;
+  /** Counted apart from `closed_recently`: dropped work is not throughput. */
+  cancelled_recently: number;
+  due_window_days: number;
+  closed_window_days: number;
+  /** How many of `open` are the user's ONLY because they created the row — no
+   *  owner link, no name match. Shown when non-zero so the weakest rung of the
+   *  ownership rule is visible rather than folded silently into the headline. */
+  open_authored_only: number;
+}
+
+/** One portfolio's slice of the open pile — where the work is concentrated.
+ *  Server-sorted worst-first, so the top row is the one to go work on. */
+export interface MyWorkPortfolio {
+  project_id: number;
+  project_name: string;
+  client_name: string | null;
+  open: number;
+  overdue: number;
+}
+
+export type MyWorkKind =
+  | "co_approval"
+  | "co_send"
+  | "agenda"
+  | "meeting_draft";
+
+/** A row in the personal queue — one shape for all four kinds. `kind` + `id` +
+ *  `project_id` is everything a link needs. */
+export interface MyWorkItem {
+  kind: MyWorkKind;
+  id: number;
+  project_id: number;
+  project_name: string | null;
+  client_name: string | null;
+  /** Primary line, e.g. "CO-3 — Re-trenching". */
+  label: string;
+  /** Secondary line, e.g. "Raised by Ana Ruiz". */
+  detail: string | null;
+  /** Change orders only — the client-inclusive total. Null elsewhere. */
+  amount: number | null;
+  /** CO request date / agenda date / meeting date. Named `event_date` rather
+   *  than `date` to match the server, where the shorter name shadowed the
+   *  `date` type in its own annotation. */
+  event_date: string | null;
+  updated_at: string | null;
+}
+
+export interface MyWorkQueue {
+  co_approvals: MyWorkItem[];
+  co_to_send: MyWorkItem[];
+  /** Upcoming agendas the user authored. The server cannot know "unsent" —
+   *  SendAgendaDialog mails through Graph client-side and records nothing — so
+   *  these are the still-ahead ones. Label them upcoming, never "unsent". */
+  agendas: MyWorkItem[];
+  meeting_drafts: MyWorkItem[];
+  co_approval_amount: number;
+  co_to_send_amount: number;
+  total: number;
+}
+
+export interface MyWork {
+  /** The calendar date every comparison above was made against, in `timezone`.
+   *  The server runs UTC in a container while the people reading it do not, so
+   *  an "overdue" count that doesn't say which day it means is unfalsifiable. */
+  as_of: string;
+  timezone: string;
+  actions: MyWorkActions;
+  by_portfolio: MyWorkPortfolio[];
+  waiting_on_me: MyWorkQueue;
+}
+
 // Meeting templates — recurring-meeting boilerplate (attendees, agenda
 // topics, default deliverables, duration). Cloning hydrates the in-progress
 // draft directly; the JSON blobs use the same shapes the Capture/Review
