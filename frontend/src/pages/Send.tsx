@@ -10,11 +10,11 @@ import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import {
   finalizeMeeting,
-  meetingDocUrl,
   getMeeting,
   fetchMyPreferences,
   type UserPreferences,
 } from "@/lib/api";
+import { fetchMeetingDocBlob, saveMeetingDoc } from "@/lib/documents";
 import type { MeetingDetail } from "@/lib/types";
 import { useApp } from "@/lib/state";
 import { useAuth } from "@/auth/useAuth";
@@ -162,14 +162,16 @@ export default function Send() {
             <section className="card overflow-hidden">
               <div className="flex items-baseline gap-2 border-b border-surface-hairline px-5 py-3.5">
                 <h3 className="section-title">Deliverables</h3>
-                <a
+                {/* Buttons rather than hrefs throughout this page: the
+                    document endpoint requires a bearer token an anchor cannot
+                    send. See lib/documents.ts. */}
+                <button
+                  type="button"
                   className="ml-auto text-xs font-semibold text-brand-red hover:text-brand-darkred"
-                  href={meetingDocUrl(draftMeetingId!, "zip")}
-                  target="_blank"
-                  rel="noreferrer"
+                  onClick={() => void saveMeetingDoc(draftMeetingId!, "zip")}
                 >
                   ZIP (all) ⬇
-                </a>
+                </button>
               </div>
               {Object.entries(paths).map(([kind, p]) => {
                 const meta = DELIVERABLE_META[kind] ?? {
@@ -197,17 +199,18 @@ export default function Send() {
                         {p}
                       </div>
                     </div>
-                    <a
+                    <button
+                      type="button"
                       className="shrink-0 text-xs font-semibold text-brand-red hover:text-brand-darkred"
-                      href={meetingDocUrl(
-                        draftMeetingId!,
-                        kind as "pdf" | "docx" | "xlsx",
-                      )}
-                      target="_blank"
-                      rel="noreferrer"
+                      onClick={() =>
+                        void saveMeetingDoc(
+                          draftMeetingId!,
+                          kind as "pdf" | "docx" | "xlsx",
+                        )
+                      }
                     >
                       Download
-                    </a>
+                    </button>
                   </div>
                 );
               })}
@@ -386,14 +389,13 @@ function ComposeEmailSection({
   }
 
   function handleOpenMail() {
-    // Download the PDF first so the user has it ready to attach. We open
-    // the doc endpoint in a new tab — the browser will trigger the
-    // Content-Disposition download. Then in the SAME click handler we
-    // open the mailto: URL so the user's default mail client launches.
-    // Always pull from the same-origin regenerate endpoint — the stored
-    // SharePoint webUrl isn't browser-fetchable in production.
+    // Download the PDF first so the user has it ready to attach, then open
+    // the mailto: URL in the SAME click handler so their mail client launches.
+    // This used to window.open the doc endpoint, which sends no Authorization
+    // header and so opened a tab showing 401 instead of saving a file.
+    // saveMeetingDoc fetches through the authed client and saves the blob.
     if (meetingId) {
-      window.open(meetingDocUrl(meetingId, "pdf"), "_blank");
+      void saveMeetingDoc(meetingId, "pdf");
     }
     // Slight delay so the download tab opens before the mail client steals
     // focus. Without this some browsers swallow the download.
@@ -428,10 +430,9 @@ function ComposeEmailSection({
       //    (cross-origin, not a direct download) — finalizedFileUrl would 404.
       //    The regenerate endpoint streams identical bytes and works in every
       //    storage mode.
-      const pdfUrl = meetingDocUrl(meetingId, "pdf");
-      const pdfResp = await fetch(pdfUrl);
-      if (!pdfResp.ok) throw new Error(`Couldn't fetch PDF: ${pdfResp.status}`);
-      const pdfBlob = await pdfResp.blob();
+      //    A bare fetch() sends no Authorization header, so this failed with
+      //    "Couldn't fetch PDF: 401" and the minutes never reached the client.
+      const pdfBlob = await fetchMeetingDocBlob(meetingId, "pdf");
       const contentBytesBase64 = await blobToBase64(pdfBlob);
 
       // 2. Get a Graph Mail.Send token. First call pops the consent dialog
