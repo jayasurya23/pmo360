@@ -28,7 +28,7 @@ from api import (
     clients, projects, meetings, actions, notes, agendas, schedules,
     roster, dashboard, parse, documents, search, me, users, templates,
     attachments, members, calendar, lead, timeline, proposals, change_orders,
-    portfolio_projects, admin_users,
+    portfolio_projects, admin_users, client_contacts,
     settings as settings_router,
 )
 
@@ -89,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(change_orders.router)
     app.include_router(portfolio_projects.router)
     app.include_router(admin_users.router)
+    app.include_router(client_contacts.router)
 
     # ---- Health check ----
     @app.get("/api/health", tags=["health"])

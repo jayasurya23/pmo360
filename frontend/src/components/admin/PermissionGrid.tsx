@@ -1,21 +1,22 @@
 /**
  * The "Access" band of the User Management grid — the eight checkbox columns
- * and the spanning header above them.
+ * and the two group headers above them.
  *
- * Split out of AdminUsersCard because the column budget, the two-line header
- * labels and the sticky-column offsets have to agree with each other exactly,
- * and that is easier to keep true when they live next to each other. The card
- * still owns the row: these export `<col>`, `<th>` and `<td>` fragments that
- * slot into its table.
+ * Split out of AdminUsersCard because the column budget and the header labels
+ * have to agree with each other exactly, and that is easier to keep true when
+ * they live next to each other. The card still owns the row: these export
+ * `<col>`, `<th>` and `<td>` fragments that slot into its table.
  *
  * Semantics, so the copy in here stays honest:
  *
- *  - A permission gates WRITES only. Reads stay open and already portfolio-
- *    filtered, so unticking a box never blanks a screen or hides a nav tab.
- *  - Scope is BOTH. The permission says WHAT, portfolio membership says WHERE.
- *    The five portfolio permissions do nothing for someone on no portfolios,
- *    which is why the card warns about that case. The other three — Timeline,
- *    User Mgmt, Client Mgmt — are global and need no membership.
+ *  - A permission gates WRITES only. Reads stay open, so unticking a box never
+ *    blanks a screen or hides a nav tab.
+ *  - A ticked box applies EVERYWHERE. There is no per-portfolio version of a
+ *    permission: `auth/permissions.py::is_portfolio_member` is disabled and
+ *    returns true for anyone signed in, because Castillo's rule is that every
+ *    PM reaches every portfolio. Portfolio assignment is a visibility tool —
+ *    the Mine/all filter, the dashboard scope toggle, Manage Team — and gates
+ *    nothing. No copy in this file may imply otherwise.
  *  - Admin is the super-role and implicitly holds all eight, so an admin's
  *    boxes render ticked and locked. Showing eight empty boxes beside someone
  *    who can in fact do everything would be a lie the grid tells daily.
@@ -35,50 +36,54 @@ export const FALLBACK_PERMISSION_DEFS: PermissionDef[] = [
   { name: "agenda", label: "Agenda", scope: "portfolio" },
   { name: "proposals", label: "Proposals", scope: "portfolio" },
   // Global, not portfolio: the capacity board plans PEOPLE and none of its
-  // tables carries a portfolio. Getting this wrong here isn't cosmetic — the
-  // fallback paints before the defs fetch resolves, and a portfolio-scoped
-  // Timeline would make hasDeadPortfolioGrants briefly accuse a Timeline-only
-  // holder of holding permissions that do nothing.
+  // tables carries a portfolio. `scope` no longer decides who may write where
+  // — it only files a column under one of the two group headers — so getting
+  // this wrong would sit Timeline under "Portfolio work" until the real defs
+  // land, describing the module rather than the access.
   { name: "timeline", label: "Timeline", scope: "global" },
   { name: "user_mgmt", label: "User Mgmt", scope: "global" },
   { name: "client_mgmt", label: "Client Mgmt", scope: "global" },
 ];
 
-/* Per-column budget. 3.5rem fits the longest single word any label breaks into
-   ("Proposals") at the 10px header size, which is what lets the header stay
-   horizontal and readable instead of rotated. Kept in rem, not px, so a
-   browser font-size of Large scales the budget with the text it budgets for. */
+/* Per-column budget. 3.5rem leaves 3rem of content inside the 4px gutters,
+   which clears the longest single word any label breaks into ("Proposals",
+   ~43px at the 10px header size) with room to spare in the Helvetica fallback
+   too. That headroom is the whole point: the old band was one wrapped word
+   away from rendering "CO / proval". Kept in rem, not px, so a browser
+   font-size of Large scales the budget with the text it budgets for.
+
+   Eight of these is 28rem / 448px, which is the largest single term in the
+   card's width arithmetic — see the colgroup comment in AdminUsersCard. */
 export const ACCESS_COL_W = "3.5rem";
 
 /** What each permission actually unlocks — the hover explanation on the header.
  *  Written as "may + verb" so it reads as a grant, and every one of them names
  *  a write: that is the whole model. */
 const HELP: Record<PermissionName, string> = {
-  // The company-wide attendee directory is called out because it is the one
-  // write this permission unlocks with no membership check — a shared address
-  // book has no portfolio to belong to, so the grid must not imply otherwise.
+  // The attendee directory is called out because it is the one write here that
+  // is not filed under a portfolio at all — a shared address book belongs to
+  // the company, so an admin should not go looking for it per portfolio.
   meeting_minutes:
-    "May create and edit meeting minutes, actions and attachments on their portfolios, plus the company-wide attendee directory, which belongs to no portfolio. Everyone can still read them.",
+    "May create and edit meeting minutes, actions and attachments on any portfolio, plus the company-wide attendee directory. Everyone can still read them.",
   co_creation: "May create and edit change orders, and send them to a client.",
   co_approval:
     "May approve a change order — but never one they created themselves. Approval needs a second pair of eyes.",
   agenda: "May create and edit pre-meeting agendas.",
   proposals: "May create and edit proposals, schedules and versions.",
   timeline:
-    "May create and edit timeline assignments. Global: the capacity board plans people company-wide, so it is not limited to any portfolio.",
+    "May create and edit timeline assignments. The capacity board plans people across the whole business rather than any one portfolio.",
   user_mgmt:
-    "May open this console and edit people — without being a full admin. Global: not limited to any portfolio.",
-  client_mgmt:
-    "May create, rename and delete clients. Global: not limited to any portfolio.",
+    "May open this console and edit people — without being a full admin.",
+  client_mgmt: "May create, rename and delete clients.",
 };
 
 /** The reason an admin's boxes are ticked and can't be changed. Shown on hover
  *  of every locked box, so the state is never mysterious. */
 export const ADMIN_LOCK_REASON =
-  "Admin — implicitly holds every permission, on every portfolio. Remove admin to grant permissions individually.";
+  "Admin — implicitly holds every permission. Remove admin to grant permissions individually.";
 
-/** Index of the first global permission, so the band can draw a divider where
- *  portfolio work stops. -1 when there are none. */
+/** Index of the first global permission, so the band can split its header and
+ *  draw a divider where portfolio work stops. -1 when there are none. */
 function firstGlobalIndex(defs: PermissionDef[]): number {
   return defs.findIndex((d) => d.scope === "global");
 }
@@ -95,15 +100,46 @@ export function AccessCols({ defs }: { defs: PermissionDef[] }) {
   );
 }
 
-/** The spanning "Access" header. Row one of the table's two header rows. */
+/**
+ * Row one of the two header rows: two group headers rather than one "Access".
+ *
+ * The split groups the columns by WHAT they unlock, not by where it applies —
+ * five that govern work filed under a portfolio, three that govern things the
+ * company keeps in one place. Every box in both groups applies everywhere.
+ * One spanning "Access" made the divider between columns 5 and 6 look
+ * decorative, which is why the two headers survived the scoping rule that
+ * originally motivated them.
+ */
 export function AccessGroupHead({ defs }: { defs: PermissionDef[] }) {
+  const globalAt = firstGlobalIndex(defs);
+  const portfolioCount = globalAt < 0 ? defs.length : globalAt;
+  const globalCount = defs.length - portfolioCount;
   return (
-    <th
-      colSpan={defs.length}
-      className="border-x border-surface-hairline px-2 py-2 text-center font-semibold"
-    >
-      Access
-    </th>
+    <>
+      {portfolioCount > 0 && (
+        <th
+          colSpan={portfolioCount}
+          title="What these unlock lives inside a portfolio — minutes, change orders, agendas, proposals. A ticked box applies on every portfolio; being assigned to one neither widens nor narrows it."
+          className="border-l border-surface-hairline px-2 py-2 text-center font-semibold"
+        >
+          {/* "work", not "access" — the grid also has a Portfolios count
+              column, and two headers reading PORTFOLIO would be a coin toss
+              about which one the ticks belong to. "Access" was the earlier
+              answer and is now the wrong word twice over: these do not grant
+              access per portfolio, and the count beside them grants none. */}
+          Portfolio work
+        </th>
+      )}
+      {globalCount > 0 && (
+        <th
+          colSpan={globalCount}
+          title="What these unlock is filed under no portfolio at all — the capacity board, this console, and the client list."
+          className="border-x border-surface-border px-2 py-2 text-center font-semibold"
+        >
+          Company-wide
+        </th>
+      )}
+    </>
   );
 }
 
@@ -112,7 +148,9 @@ export function AccessGroupHead({ defs }: { defs: PermissionDef[] }) {
  *  Each label breaks on its spaces so "Meeting Minutes" stacks to two lines
  *  inside 3.5rem — sentence case, not the uppercase the rest of the header
  *  uses, because uppercase plus letter-spacing would not fit and a header that
- *  needs a tooltip to read is not a header. */
+ *  needs a tooltip to read is not a header. `whitespace-nowrap` is the part
+ *  that matters: a word must overflow its gutter rather than hyphenate itself
+ *  into "CO / proval", which is unreadable in a way a 2px spill is not. */
 export function AccessHeadCells({ defs }: { defs: PermissionDef[] }) {
   const globalAt = firstGlobalIndex(defs);
   return (
@@ -123,17 +161,14 @@ export function AccessHeadCells({ defs }: { defs: PermissionDef[] }) {
           scope="col"
           title={HELP[d.name] ?? d.label}
           className={clsx(
-            "px-1 py-2 align-bottom text-center text-[10px] font-semibold leading-[1.15] tracking-normal normal-case text-brand-gray",
+            "px-0.5 py-1.5 align-bottom text-center text-[10px] font-semibold leading-[1.15] tracking-normal normal-case text-brand-gray",
             i === 0 && "border-l border-surface-hairline",
-            i === defs.length - 1 && "border-r border-surface-hairline",
-            // Everything right of here is global — it takes no portfolio. The
-            // divider is the visual half of the sentence the card's footnote
-            // spells out.
+            i === defs.length - 1 && "border-r border-surface-border",
             i === globalAt && globalAt > 0 && "border-l border-surface-border",
           )}
         >
           {d.label.split(" ").map((word) => (
-            <span key={word} className="block">
+            <span key={word} className="block whitespace-nowrap">
               {word}
             </span>
           ))}
@@ -181,9 +216,9 @@ export function AccessCells({
           <td
             key={d.name}
             className={clsx(
-              "px-1 py-2 text-center align-middle",
+              "px-0.5 py-1.5 text-center align-middle",
               i === 0 && "border-l border-surface-hairline",
-              i === defs.length - 1 && "border-r border-surface-hairline",
+              i === defs.length - 1 && "border-r border-surface-border",
               i === globalAt && globalAt > 0 && "border-l border-surface-border",
             )}
           >
@@ -210,13 +245,12 @@ export function AccessCells({
   );
 }
 
-/** "no portfolios, but holds portfolio permissions" — the one combination that
- *  looks granted and does nothing, so the card says so out loud. */
-export function hasDeadPortfolioGrants(
-  user: AdminUser,
-  defs: PermissionDef[],
-): boolean {
-  if (user.is_admin) return false; // admins bypass membership entirely
-  if ((user.portfolios ?? []).length > 0) return false;
-  return defs.some((d) => d.scope === "portfolio" && user.permissions?.[d.name]);
-}
+/* A predicate lived here — hasDeadPortfolioGrants, later renamed
+   hasUnscopedPortfolioGrants — that flagged somebody holding portfolio
+   permissions while assigned to no portfolio. It has been deleted rather than
+   reworded a third time. Under the first rule that combination meant "these
+   grants do nothing"; under the second it meant "these grants reach every
+   unassigned portfolio". Under the rule that actually shipped it means
+   nothing at all: membership gates no write, so a person on no portfolios has
+   exactly the access their eight boxes describe, the same as everyone else.
+   A flag with no consequence trains admins to ignore the ones that have one. */

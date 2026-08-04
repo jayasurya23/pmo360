@@ -10,7 +10,7 @@ rolling action log can track when items were raised vs when they were closed.
 from datetime import datetime, date
 from sqlalchemy import (
     Column, Integer, String, Text, Date, DateTime, ForeignKey, Boolean, JSON,
-    Float, Index, text, true, false,
+    Float, Index, UniqueConstraint, text, true, false,
 )
 from sqlalchemy.orm import declarative_base, relationship, backref
 
@@ -132,6 +132,21 @@ class ProjectMember(Base):
     their membership rows, so the manager doesn't need to be added to
     every portfolio individually."""
     __tablename__ = "project_members"
+    # One row per (portfolio, person). Every write path already guarded against
+    # duplicates in Python — a read-then-insert in the repository, and a
+    # pre-snapshot in the bulk route — but read-then-insert is not atomic, so
+    # two concurrent assignments could still both pass the check and both
+    # insert. The database is the only place that can settle that race.
+    #
+    # A duplicate is not merely untidy here: member COUNT is read (the roster,
+    # the "N portfolios" chip, the bulk route's before/after), so a doubled row
+    # makes a portfolio look more staffed than it is, and removing one copy
+    # leaves the pair still assigned.
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "user_id", name="uq_project_members_project_user"
+        ),
+    )
     id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
@@ -165,6 +180,86 @@ class Client(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     projects = relationship("Project", back_populates="client", cascade="all, delete-orphan")
+    # Deleting a client already destroys every portfolio beneath it and
+    # everything they own, so leaving its people behind would strand rows
+    # pointing at a client_id that no longer resolves — an FK violation on
+    # Postgres and, worse, a directory full of contacts nobody can explain.
+    contacts = relationship(
+        "ClientContact", back_populates="client", cascade="all, delete-orphan",
+    )
+
+
+class ClientContact(Base):
+    """A person who works for a client — the address book behind Settings.
+
+    Deliberately NOT the same table as ProjectAttendee/GlobalAttendee. Those
+    answer "who sat in this meeting": they are per-portfolio, carry `initials`
+    for the minutes header, and legitimately hold one person seven times over
+    because seven portfolios each met them. This answers "who works at this
+    client", once, and is the thing you look somebody up in.
+
+    NO UNIQUE CONSTRAINT ON `email`, and that is a decision rather than an
+    omission. GlobalAttendee's UNIQUE on `full_name` is the cautionary tale in
+    this schema — it makes two different people with the same name at two
+    different clients unrepresentable — and an email unique would land in the
+    same place for three reasons:
+
+      * `email` is nullable and really is null in the data (25 of the 195
+        client-side roster rows carry no address). A constraint covering 87% of
+        the table cannot be the identity guarantee it looks like; the import
+        needs a second rule for the rest either way, so the constraint buys no
+        invariant that the second rule does not already have to provide.
+      * Shared mailboxes are real at exactly this kind of client —
+        `permits@`, `projects@` — and a hard unique turns a legitimate second
+        contact into an IntegrityError 500 on an admin who did nothing wrong.
+      * Nothing keys off this table. It is a directory, not an auth principal,
+        so a duplicate row is untidy rather than corrupting. Contrast
+        ProjectMember, where the member COUNT is read in three places and a
+        doubled row actively lies about how staffed a portfolio is — that one
+        earns its constraint.
+
+    Duplicates are instead prevented where they are actually created: the
+    import dedupes on an explicit identity key, and POST/PATCH answer 409 with
+    the id of the row you collided with. Both use the same key, so a
+    hand-added contact and an imported one cannot drift apart.
+    """
+    __tablename__ = "client_contacts"
+    # No unique constraints; both indexes serve a query this module actually
+    # issues (the ?client_id= filter, and the duplicate probe on write).
+    # `domain` is deliberately unindexed — it is only ever read back out of a
+    # result set the caller already has in hand.
+    __table_args__ = (
+        Index("ix_client_contacts_client_id", "client_id"),
+        Index("ix_client_contacts_email", "email"),
+    )
+    id = Column(Integer, primary_key=True)
+    # NULLABLE ON PURPOSE. The import places people by email domain and most of
+    # the roster will not match on the first run — 20 of the 23 clients have no
+    # `email_domain` recorded at all. A contact we cannot place still belongs in
+    # the directory: it lands here unparented and comes back in the import's
+    # `unmatched` list for an admin to assign. Refusing to import what we cannot
+    # classify would throw away the very data the admin needs to classify it.
+    client_id = Column(Integer, ForeignKey("clients.id"))
+    # Both nullable because the split they come from can produce either half
+    # alone: a single-token roster entry ("Ana") yields no surname, and a
+    # suffix-qualified one ("Vasquez, PE") yields no given name.
+    first_name = Column(String(120))
+    last_name = Column(String(120))
+    title = Column(String(200))
+    # INVARIANT: stored lower-cased. It is the identity key, and a key written
+    # in one case and compared in another is two keys. Holding it lets the
+    # duplicate probe use plain equality — and therefore the index — instead of
+    # a `lower(email) = ?` that Postgres would not index. Anything writing this
+    # column outside api/client_contacts.py must fold it too.
+    email = Column(String(200))
+    # The email's domain, stored rather than derived at read time: it is what
+    # the unmatched review groups by, and a contact can have a known employer
+    # with no known address. The API derives it from `email` whenever there is
+    # one, so the two cannot disagree.
+    domain = Column(String(100))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    client = relationship("Client", back_populates="contacts")
 
 
 class GlobalAttendee(Base):

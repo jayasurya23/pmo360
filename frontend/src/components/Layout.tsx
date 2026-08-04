@@ -66,7 +66,17 @@ const NEXT_CYCLE_STEP: NavItem = { to: "/next-agenda", label: "Plan next agenda"
 const STEPPER_PATHS = [...MEETING_FLOW.map((s) => s.to), NEXT_CYCLE_STEP.to];
 
 /** Every route that renders a document-shaped page (a single reading column)
- *  rather than a board. Settings is narrower still. */
+ *  rather than a board.
+ *
+ *  Settings used to be narrower still (max-w-narrow, 860px). It isn't any
+ *  more: the eight-column permission grid plus a person's name and email does
+ *  not fit in the 786px of card that left, and the answer to "I have to scroll
+ *  sideways to use User Management" is width, not smaller type. At max-w-doc
+ *  the same grid gets 1166px of table — the fixed columns still cost 580px, so
+ *  the identity cell goes from 206px to 586px and stops truncating people's
+ *  email addresses. The page being wide does not make every tab wide: the
+ *  Preferences tab caps its own content, since a 1100px signature box would
+ *  just be a different complaint. */
 const DOC_WIDTH_PATHS = [
   "/review",
   "/preview",
@@ -74,6 +84,7 @@ const DOC_WIDTH_PATHS = [
   "/history",
   "/notes",
   "/change-orders",
+  "/settings",
 ];
 
 /** localStorage key for the light/dark preference. It drives the `dark` class
@@ -110,12 +121,9 @@ export default function Layout() {
       document.title = `${settings.app.title} — ${settings.app.tool_name}`;
   }, [settings]);
 
-  const contentWidth =
-    location.pathname === "/settings"
-      ? "max-w-narrow"
-      : DOC_WIDTH_PATHS.includes(location.pathname)
-        ? "max-w-doc"
-        : "max-w-shell";
+  const contentWidth = DOC_WIDTH_PATHS.includes(location.pathname)
+    ? "max-w-doc"
+    : "max-w-shell";
 
   // An offboarded user still holds a valid Entra token, so the auth gate lets
   // them through — /api/me is the one route that still answers them, and every

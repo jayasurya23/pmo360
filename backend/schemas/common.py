@@ -256,6 +256,104 @@ class AdminUserUpdate(BaseModel):
     permissions: Optional[UserPermissionsPatch] = None
 
 
+# ---------- Admin: bulk edits ----------
+class AdminBulkPermissionsIn(BaseModel):
+    """Apply the same grant/revoke to several people at once.
+
+    `permissions` is an open ``{name: bool}`` map rather than
+    ``UserPermissionsPatch`` on purpose: Pydantic drops unknown fields
+    silently, so a typo'd permission name would come back "8 users updated"
+    having changed nothing. The router validates the keys against the
+    vocabulary and 422s, which is the loud version of the same mistake.
+
+    No `is_admin` / `is_active` here by design. Minting an administrator is a
+    one-at-a-time, look-at-what-you-are-doing act, and offboarding in bulk is
+    how a whole team disappears from one mis-click.
+    """
+    # A grid nobody paginates tops out in the dozens; the cap only bounds a
+    # pathological request, it is not a UI limit anyone will meet.
+    user_ids: list[int] = Field(min_length=1, max_length=500)
+    permissions: dict[str, bool] = Field(min_length=1)
+
+
+class AdminBulkRefusalOut(BaseModel):
+    """One target the batch could not touch, and why.
+
+    Every refusal in this console is deterministic, so the batch reports ALL
+    of them at once — refusing on the first would have the admin untick one
+    row, retry, and get refused again on the next.
+    """
+    user_id: int
+    label: str
+    reason: str
+
+
+class AdminUserProvisionIn(BaseModel):
+    """Create the `users` row for a colleague who has never signed in.
+
+    `oid` is the Entra object id, and it is the whole point of this shape: the
+    JWT upsert (auth/dependencies.py::_upsert_user_row) matches on `oid` and
+    nothing else, so a row provisioned under any other key becomes a ghost —
+    the real sign-in inserts a SECOND row, and the permissions an admin
+    carefully set sit on a row that will never authenticate. Graph's
+    ``/users`` `id` IS that object id, which is what the directory picker
+    hands over.
+    """
+    oid: str = Field(min_length=1, max_length=64)
+    email: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    title: Optional[str] = Field(default=None, max_length=200)
+    department: Optional[str] = Field(default=None, max_length=200)
+
+
+# ---------- Admin: bulk portfolio membership ----------
+class MembershipFlipOut(BaseModel):
+    """A portfolio whose OWNED-NESS changed, which is a change in who may
+    write to it — not just a change to one person's assignments.
+
+    ``auth/permissions.py::is_portfolio_member`` treats a portfolio with zero
+    members as unowned, and an unowned portfolio is governed by the permission
+    alone. So the first member added to an empty portfolio revokes write
+    access for everyone else in one step, and removing the last member hands
+    it back to everyone holding the permission. Both directions are correct
+    and neither is obvious, so they are reported for the UI to warn about.
+    """
+    project_id: int
+    project_name: str
+    client_name: Optional[str] = None
+    members_before: int
+    members_after: int
+    # 0 -> >0. Scoping just switched ON here: everyone NOT listed lost write
+    # access to this portfolio.
+    became_scoped: bool = False
+    # >0 -> 0. Scoping just switched OFF: every holder of the relevant
+    # permission can now write here, member or not.
+    became_unowned: bool = False
+
+
+class AdminBulkMembershipIn(BaseModel):
+    """Assign (or unassign) several people across several portfolios."""
+    user_ids: list[int] = Field(min_length=1, max_length=500)
+    project_ids: list[int] = Field(min_length=1, max_length=500)
+    action: Literal["add", "remove"]
+
+
+class AdminBulkMembershipOut(BaseModel):
+    """What the batch actually did.
+
+    `skipped` is the idempotent half — re-adding an existing assignment or
+    removing one that was never there. Those are no-ops, not errors: the UI
+    lets an admin tick eight people and four portfolios without first working
+    out which of the 32 pairs already exist.
+    """
+    added: int = 0
+    removed: int = 0
+    skipped: int = 0
+    # Only portfolios that crossed the zero-members line. A portfolio that
+    # went from 3 members to 4 changed nobody's access and is not in here.
+    flipped: list[MembershipFlipOut] = []
+
+
 # ---------- Clients / Projects ----------
 class ClientOut(ORMModel):
     id: int
@@ -274,6 +372,102 @@ class ClientUpdate(BaseModel):
     Omitted fields are left untouched."""
     name: Optional[str] = None
     email_domain: Optional[str] = None
+
+
+# ---------- Client contacts ----------
+def normalize_domain(value: Optional[str]) -> Optional[str]:
+    """Fold an email domain to the one form everything compares against.
+
+    Both sides of the import's match go through here — the domain lifted off an
+    attendee's address and the one an admin typed into `Client.email_domain` —
+    because those two are entered by different people in different moods.
+    "@Heelstone.com ", "www.heelstone.com" and "heelstone.com" are the same
+    employer, and a match that only works when both were typed identically is a
+    match that will not fire on real data.
+    """
+    raw = (value or "").strip().lower()
+    if not raw:
+        return None
+    raw = raw.rsplit("@", 1)[-1]        # tolerate "@acme.com" and a full address
+    if raw.startswith("www."):
+        raw = raw[4:]
+    return raw.strip(" .") or None
+
+
+def email_domain_of(email: Optional[str]) -> Optional[str]:
+    """The domain half of an address, or None if there isn't a usable one.
+
+    Requires a literal "@" rather than trusting the field: this data is
+    hand-typed and the roster really does contain empty strings and bare first
+    names in the email column.
+    """
+    raw = (email or "").strip()
+    if "@" not in raw:
+        return None
+    return normalize_domain(raw.rsplit("@", 1)[-1])
+
+
+class ClientContactOut(ORMModel):
+    """One person in the client directory.
+
+    Held to exactly the stored columns — no denormalized `client_name`. The SPA
+    already holds the clients list to render its own switcher, so joining the
+    name on here would ship a second copy of it on every row for no lookup the
+    caller cannot already do.
+    """
+    id: int
+    # Null means "not placed with a client yet" — see ClientContact.client_id.
+    client_id: Optional[int] = None
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    title: Optional[str] = None
+    email: Optional[str] = None
+    domain: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class ClientContactCreate(BaseModel):
+    """Hand-add a contact. `domain` is not accepted when an email is given —
+    the router derives it, so the pair cannot be saved disagreeing."""
+    client_id: Optional[int] = None
+    first_name: Optional[str] = Field(default=None, max_length=120)
+    last_name: Optional[str] = Field(default=None, max_length=120)
+    title: Optional[str] = Field(default=None, max_length=200)
+    email: Optional[str] = Field(default=None, max_length=200)
+    # Only read when `email` is empty: a contact whose employer is known but
+    # whose address is not still groups with the rest of that domain.
+    domain: Optional[str] = Field(default=None, max_length=100)
+
+
+class ClientContactUpdate(BaseModel):
+    """Partial edit. Every field optional, and the router reads
+    ``model_fields_set`` rather than testing for None — an explicit
+    ``client_id: null`` is how the UI un-assigns somebody, which is a different
+    intent from omitting the field and must not be collapsed into it."""
+    client_id: Optional[int] = None
+    first_name: Optional[str] = Field(default=None, max_length=120)
+    last_name: Optional[str] = Field(default=None, max_length=120)
+    title: Optional[str] = Field(default=None, max_length=200)
+    email: Optional[str] = Field(default=None, max_length=200)
+    domain: Optional[str] = Field(default=None, max_length=100)
+
+
+class ClientContactImportOut(BaseModel):
+    """What one run of the attendee import did.
+
+    `imported` + `skipped` counts SOURCE ROWS considered, not people: the
+    roster holds one person once per portfolio that met them, so a first run
+    over this data reports far more skips than the directory has rows. That is
+    the dedupe working, and reporting rows-in rather than rows-written is what
+    makes a second run's "0 imported, N skipped" legible as "nothing to do".
+    """
+    imported: int = 0
+    skipped: int = 0
+    # Every contact this run touched — newly created OR already present — that
+    # still has no client. Deliberately not limited to new rows: a re-run is
+    # then a way to re-fetch the review list rather than a call that returns
+    # nothing once the import has been done once.
+    unmatched: list[ClientContactOut] = Field(default_factory=list)
 
 
 class ProjectOut(ORMModel):
