@@ -74,12 +74,16 @@ class User(Base):
     department = Column(String(200))
 
     # ---- Per-module write permissions ----
-    # "Can look, can't touch": reads stay open (already portfolio-filtered) and
-    # each flag gates only the WRITES in one module, so an unticked box never
-    # produces a blank screen or a missing nav tab. Scope is BOTH — the flag
-    # says WHAT, ProjectMember says WHERE — except the two console permissions,
-    # which are global. auth/permissions.py holds the canonical vocabulary and
-    # the check helper; the names there are these column names minus `can_`.
+    # "Can look, can't touch": reads stay open and each flag gates only the
+    # WRITES in one module, so an unticked box never produces a blank screen or
+    # a missing nav tab. These flags are COMPANY-WIDE — they say WHAT, and
+    # nothing says WHERE. ProjectMember is not an authorization input:
+    # auth/permissions.py::is_portfolio_member is deliberately disabled because
+    # Castillo's rule is that a PM reaches every portfolio, not only assigned
+    # ones. (This comment claimed the opposite for a while after the code
+    # stopped doing it — trust that function, not this paragraph.)
+    # auth/permissions.py holds the canonical vocabulary and the check helper;
+    # the names there are these column names minus `can_`.
     #
     # Booleans on the row rather than a user_permissions join table or a JSON
     # blob: every auth dependency already holds the User row, so a check costs

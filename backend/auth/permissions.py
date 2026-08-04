@@ -5,14 +5,24 @@ filtered by portfolio membership), and each permission gates the WRITES in one
 module. Unticking a box must never blank a screen or hide a nav tab — that
 would turn a permission system into a support queue.
 
-Scope is BOTH:
-    the permission says WHAT the user may change,
-    ProjectMember says WHERE they may change it.
-A portfolio-scoped write is allowed only when the caller holds the permission
-AND is a member of that portfolio. Admins bypass membership, exactly as they
-already do for reads. `timeline`, `user_mgmt` and `client_mgmt` are global:
-their tables carry no portfolio, so there is nothing to be a member of and
-they take no project_id.
+PERMISSIONS ARE COMPANY-WIDE. The permission says WHAT; nothing says WHERE.
+Castillo's rule, handed down after the first release: a PM has access to all
+portfolios, not only the ones they are assigned to. `is_portfolio_member` below
+is deliberately disabled and is the single switch if that is ever revisited.
+
+This docstring used to claim the opposite — "scope is BOTH", a write allowed
+only for a member of that portfolio — and was left saying so for a while after
+the code stopped doing it. Read `is_portfolio_member`, not this paragraph, if
+they ever disagree again.
+
+`require_project(...)` calls therefore still appear on portfolio-scoped routes
+and are currently no-ops. They are kept so re-enabling the WHERE half is one
+function, not an archaeology exercise across forty endpoints — but do not read
+them as evidence that a check is happening.
+
+`timeline`, `user_mgmt` and `client_mgmt` are declared global for a different
+reason that still holds: their tables carry no portfolio column at all, so
+there was never anything to be a member of, and they take no project_id.
 
 `is_admin` stays the super-role: an admin implicitly holds every permission
 and can always edit the grid. That is the break-glass the ADMIN_EMAILS floor
@@ -265,10 +275,21 @@ def _missing_detail(perm: PermissionDef) -> str:
 
 
 def _membership_detail(perm: PermissionDef) -> str:
+    """Unreachable while `is_portfolio_member` is disabled, except through
+    `require_project(None)` — a route that resolved no portfolio at all.
+
+    So it deliberately no longer tells anyone they are "not assigned to this
+    portfolio" and to ask an admin for access: portfolio assignment grants no
+    access any more, so that advice would send someone to an administrator who
+    could not help them and would leave both of them believing the permission
+    model works differently than it does. What is left says the honest thing —
+    the request could not be tied to a portfolio, which is a bug in the route,
+    not something the caller can fix.
+    """
     return (
-        f'You are not assigned to this portfolio, so your "{perm.label}" '
-        f"({perm.name}) permission does not apply here. Ask an administrator "
-        "to add you to it in Settings -> Users."
+        f'This request could not be tied to a portfolio, so the "{perm.label}" '
+        f"({perm.name}) check could not be completed. That is a fault in the "
+        "app rather than anything you did — please report it."
     )
 
 
