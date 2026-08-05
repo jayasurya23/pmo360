@@ -113,6 +113,62 @@ def create_app() -> FastAPI:
     return app
 
 
+# Cache policy for the SPA shell. `no-cache` does NOT mean "don't store" — it
+# means "revalidate before using", which is exactly what we want here.
+SHELL_CACHE_CONTROL = "no-cache"
+# Vite content-hashes every bundle (index-Cr5uj-Ow.js), so a changed file is
+# always a changed URL and these can never go stale. A year + immutable means a
+# returning PM re-downloads nothing.
+HASHED_CACHE_CONTROL = "public, max-age=31536000, immutable"
+# Self-hosted Jost is NOT content-hashed, so it can't be immutable. A week is
+# long enough that nobody refetches a typeface daily, short enough to recover.
+FONT_CACHE_CONTROL = "public, max-age=604800"
+
+
+def _asset_cache_control(path: str) -> str:
+    """Only the content-hashed files under /assets may be immutable.
+
+    The single /assets mount serves two different kinds of file. Vite's output
+    sits FLAT at the top (Actions-CriecTAH.js) and is content-hashed, so it can
+    never go stale. The Dockerfile then copies backend/assets/ in on top, which
+    lands in SUBDIRECTORIES — assets/logo/Castillo_logo.png, assets/co_template/
+    — and those keep their filenames across edits.
+
+    Telling a browser Castillo_logo.png is immutable for a year would make a
+    rebrand unrecoverable without renaming the file, so nesting is the tell.
+    """
+    nested = "/" in path.strip("/\\").replace("\\", "/")
+    return FONT_CACHE_CONTROL if nested else HASHED_CACHE_CONTROL
+
+
+class _CachedStaticFiles(StaticFiles):
+    """StaticFiles that stamps Cache-Control on every response it serves.
+
+    Overriding ``get_response`` (rather than adding an HTTP middleware) keeps
+    the blast radius on the static mounts: no extra wrapper around API calls,
+    PDF streams or Graph-backed endpoints just to set a header on .js files.
+    It also runs AFTER StaticFiles' own conditional-request handling, so 304s
+    still work and still carry the header.
+
+    ``cache_control`` is either a fixed string or a callable taking the
+    mount-relative path, for mounts that serve a mix of hashed and named files.
+    """
+
+    def __init__(self, *args, cache_control, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._cache_control = cache_control
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        value = (
+            self._cache_control(path)
+            if callable(self._cache_control)
+            else self._cache_control
+        )
+        response.headers["Cache-Control"] = value
+        return response
+
+
 def _mount_static(app: FastAPI) -> None:
     """Serve the built React SPA from the same origin as the API.
 
@@ -142,11 +198,16 @@ def _mount_static(app: FastAPI) -> None:
     )
 
     if spa_dir is None:
-        # Dev fallback — no built SPA present; serve backend logos only.
+        # Dev fallback — no built SPA present; serve backend logos only. These
+        # are NOT content-hashed (logo.png keeps its name across edits), so
+        # they get the font policy, not the immutable one.
         if backend_assets.exists():
             app.mount(
                 "/assets",
-                StaticFiles(directory=str(backend_assets)),
+                _CachedStaticFiles(
+                    directory=str(backend_assets),
+                    cache_control=FONT_CACHE_CONTROL,
+                ),
                 name="assets",
             )
         return
@@ -155,13 +216,19 @@ def _mount_static(app: FastAPI) -> None:
     if (spa_dir / "assets").is_dir():
         app.mount(
             "/assets",
-            StaticFiles(directory=str(spa_dir / "assets")),
+            _CachedStaticFiles(
+                directory=str(spa_dir / "assets"),
+                cache_control=_asset_cache_control,
+            ),
             name="spa-assets",
         )
     if (spa_dir / "fonts").is_dir():
         app.mount(
             "/fonts",
-            StaticFiles(directory=str(spa_dir / "fonts")),
+            _CachedStaticFiles(
+                directory=str(spa_dir / "fonts"),
+                cache_control=FONT_CACHE_CONTROL,
+            ),
             name="spa-fonts",
         )
 
@@ -178,9 +245,18 @@ def _mount_static(app: FastAPI) -> None:
         # Serve real files that live at the root of the build (favicon,
         # manifest, robots, etc.); everything else falls through to the SPA
         # shell for client-side routing.
+        #
+        # THE HEADER IS THE POINT. Without it a PM could open the site the
+        # morning after a release and still get yesterday's app: no
+        # Cache-Control means the browser falls back to HEURISTIC caching
+        # (~10% of the file's age), serving index.html from disk without ever
+        # asking us. And index.html is what NAMES the hashed bundles, so one
+        # stale copy pins the whole app to the previous build — which is
+        # exactly the "needs a hard refresh" report this fixes.
+        headers = {"Cache-Control": SHELL_CACHE_CONTROL}
         if full_path and candidate.is_file():
-            return FileResponse(str(candidate))
-        return FileResponse(str(index_file))
+            return FileResponse(str(candidate), headers=headers)
+        return FileResponse(str(index_file), headers=headers)
 
 
 app = create_app()
