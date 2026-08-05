@@ -744,6 +744,56 @@ class ActionItemCreate(BaseModel):
     status: str = "open"
 
 
+class ActionOwnerOut(BaseModel):
+    """One selectable owner in the Actions page filter.
+
+    ``name`` is the value the page filters on and the value the CSV export
+    receives, so it is a spelling that really appears in ``action_items.owner``
+    — never a tidied-up or reconciled form. See
+    ``api/actions.py::_owner_key`` for why that matters.
+    """
+    name: str
+    # Set only when every action naming this person alone carries the SAME user
+    # link. Null covers three different situations the UI should not try to
+    # distinguish: nobody linked them, they are external, or the rows disagree.
+    owner_user_id: Optional[int] = None
+    # What the group is sorted on, shipped so the UI can render it (initial
+    # letter dividers, "sorted by first name" affordances) without re-splitting
+    # the name and reaching a different answer than the server did.
+    first_name: Optional[str] = None
+    # Actions in scope whose owner list names this person. Comma-lists count
+    # once per action, and every status counts — the page's own status filter
+    # is a separate control and this number must not move when it changes.
+    action_count: int = 0
+
+
+class ActionOwnerGroupOut(BaseModel):
+    """Owners that resolve to one company, in the order they should render.
+
+    The two booleans exist so the UI never has to string-compare a company name
+    to decide how to paint it. Castillo is the brand red and the unmatched
+    worklist is grey; both of those are decisions about IDENTITY, and a client
+    legitimately called "Castillo Solar" must not inherit either.
+    """
+    company: str
+    is_castillo: bool = False
+    is_unmatched: bool = False
+    owners: list[ActionOwnerOut] = Field(default_factory=list)
+
+
+class ActionOwnersOut(BaseModel):
+    """GET /api/actions/owners.
+
+    Groups arrive ORDERED and their owners arrive SORTED. That is the server's
+    job here rather than the client's: the ordering rules (Castillo pinned
+    first, unmatched pinned last, first-name sort inside a group) depend on
+    company resolution that only the server can do, and splitting the work
+    would let the dropdown disagree with itself between two renders of the same
+    data.
+    """
+    groups: list[ActionOwnerGroupOut] = Field(default_factory=list)
+
+
 # ---------- Notes ----------
 class NoteOut(ORMModel):
     id: int

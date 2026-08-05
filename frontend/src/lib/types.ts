@@ -327,6 +327,48 @@ export interface ActionItem {
   originating_meeting_date?: string | null;
 }
 
+/** One distinct action owner in the owner-filter dropdown.
+ *
+ *  `name` is a VALUE, not a label: the Actions filter and the CSV export both
+ *  match on it, so the server must emit the owner string exactly as it is
+ *  stored (comma-split and trimmed, nothing else) or picking a name here
+ *  filters to nothing.
+ *
+ *  `owner_user_id` is the only CERTAIN company signal in the payload — a real
+ *  FK to a PMO 360 user. Every other row was matched by hand-typed name against
+ *  the rosters / client directory, so its company is a best guess.
+ */
+export interface ActionOwnerEntry {
+  name: string;
+  owner_user_id?: number | null;
+  /** The server's split of `name` (schemas/common.py::split_display_name),
+   *  which is what it sorted the group by. Null when the stored string has no
+   *  discernible given name — "CK" and other initials land here. */
+  first_name?: string | null;
+  action_count: number;
+}
+
+/** One company section of the owner filter. */
+export interface ActionOwnerGroup {
+  company: string;
+  /** Castillo's own section. Pinned first, and pinned to the brand red — it is
+   *  never part of the derived palette, so no client can collide with us. */
+  is_castillo: boolean;
+  /** Owners we could not place with any company. A worklist, not an error:
+   *  adding these people to the directory fixes them permanently. */
+  is_unmatched: boolean;
+  owners: ActionOwnerEntry[];
+}
+
+/** GET /api/actions/owners.
+ *
+ *  Groups arrive ORDERED and their owners SORTED. The client deliberately does
+ *  not re-sort: two sort implementations would eventually disagree, and the
+ *  dropdown would then change order between renders of the same data. */
+export interface ActionOwners {
+  groups: ActionOwnerGroup[];
+}
+
 export interface MeetingAttendee {
   id: number;
   full_name: string;

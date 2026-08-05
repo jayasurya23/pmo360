@@ -5,6 +5,7 @@ import type {
   Meeting,
   MeetingDetail,
   ActionItem,
+  ActionOwners,
   Note,
   Agenda,
   Schedule,
@@ -354,6 +355,20 @@ export const listAllActions = (onlyOpen = false) =>
   apiClient
     .get<ActionItem[]>("/actions", { params: { only_open: onlyOpen } })
     .then((r) => r.data);
+
+/** Distinct action owners in scope, grouped by the company they resolve to.
+ *
+ *  Pass the SAME scope the table is showing — a project id when the page is
+ *  scoped to one portfolio, nothing for the cross-portfolio view. Mismatch it
+ *  and the dropdown offers owners the table has no rows for, so picking one
+ *  empties the list for no visible reason. */
+export const fetchActionOwners = (projectId?: number | null) =>
+  apiClient
+    .get<ActionOwners>("/actions/owners", {
+      params: projectId != null ? { project_id: projectId } : undefined,
+    })
+    .then((r) => r.data);
+
 export const updateAction = (
   id: number,
   payload: Partial<{
