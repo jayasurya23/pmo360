@@ -3,6 +3,7 @@ import { useApp } from "@/lib/state";
 import { useAuth } from "@/auth/useAuth";
 import { useEffect, useState, useRef, Suspense } from "react";
 import clsx from "clsx";
+import ErrorBoundary from "@/components/ErrorBoundary";
 import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
 import DeletePortfolioDialog from "@/components/admin/DeletePortfolioDialog";
 import ManageTeamDialog from "@/components/admin/ManageTeamDialog";
@@ -161,15 +162,23 @@ export default function Layout() {
         }}
       />
       <main className={clsx("flex-1 px-9 py-7 w-full mx-auto", contentWidth)}>
-        <Suspense
-          fallback={
-            <div className="flex items-center justify-center py-24 text-sm text-brand-gray">
-              Loading…
-            </div>
-          }
-        >
-          <Outlet />
-        </Suspense>
+        {/* Inside the shell on purpose: a page that throws leaves the nav,
+            the portfolio switcher and the theme alive, so it is something you
+            navigate away from rather than a white screen you have to reload.
+            Keyed on the route so moving to another tab clears the error —
+            without that the boundary latches and every later page renders the
+            error card instead. */}
+        <ErrorBoundary resetKey={location.key}>
+          <Suspense
+            fallback={
+              <div className="flex items-center justify-center py-24 text-sm text-brand-gray">
+                Loading…
+              </div>
+            }
+          >
+            <Outlet />
+          </Suspense>
+        </ErrorBoundary>
       </main>
       <Footer />
 
