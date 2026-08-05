@@ -6,6 +6,7 @@ import { AppProvider } from "./lib/state";
 import { ConfirmProvider } from "./components/ConfirmDialog";
 import AuthProvider from "./auth/AuthProvider";
 import AuthGate from "./auth/AuthGate";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { msalInstance } from "./auth/msalConfig";
 import "./styles/index.css";
 
@@ -19,17 +20,25 @@ import "./styles/index.css";
 function mount() {
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
-      <BrowserRouter>
-        <AuthProvider>
-          <AuthGate>
-            <AppProvider>
-              <ConfirmProvider>
-                <App />
-              </ConfirmProvider>
-            </AppProvider>
-          </AuthGate>
-        </AuthProvider>
-      </BrowserRouter>
+      {/* Last resort. The boundary that matters is inside Layout, around the
+          page — it keeps the nav and switcher alive so a broken screen is one
+          you walk away from. This one only catches a throw in the shell
+          ITSELF (TopNav, the providers, Layout), where there is no nav left to
+          preserve. Without it those still white-screen, which is the failure
+          mode the MSAL comment below already refuses to accept. */}
+      <ErrorBoundary title="PMO 360 could not start">
+        <BrowserRouter>
+          <AuthProvider>
+            <AuthGate>
+              <AppProvider>
+                <ConfirmProvider>
+                  <App />
+                </ConfirmProvider>
+              </AppProvider>
+            </AuthGate>
+          </AuthProvider>
+        </BrowserRouter>
+      </ErrorBoundary>
     </React.StrictMode>,
   );
 }
