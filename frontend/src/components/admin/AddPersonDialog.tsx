@@ -98,6 +98,15 @@ export default function AddPersonDialog({ open, onClose, onAdded }: Props) {
     }
   }, [getDirectoryToken, activeOnly]);
 
+  // Opening and closing the dialog. Keyed on `open` ALONE, deliberately.
+  //
+  // This used to also depend on `fetchDirectory` and do the fetch itself. That
+  // conflation is what made the search box impossible to type in: any churn in
+  // the fetch identity re-ran this effect, and this effect calls setQuery(""),
+  // so a keystroke could erase itself. The root cause was an unstable
+  // getDirectoryToken (fixed in auth/useAuth.ts), but resetting typed input from
+  // an effect that tracks a *function* is fragile whatever the dep does, so the
+  // reset and the fetch are now separate concerns.
   useEffect(() => {
     if (!open) {
       setSelected(new Set());
@@ -112,7 +121,13 @@ export default function AddPersonDialog({ open, onClose, onAdded }: Props) {
     listAdminUsers()
       .then((grid) => setAppUsers(grid.users ?? []))
       .catch(() => setAppUsers([]));
-    if (isAuthenticated) void fetchDirectory();
+  }, [open]);
+
+  // Reading the directory. Re-runs when the dialog opens, when sign-in lands,
+  // or when the active-only filter flips — never because someone typed.
+  useEffect(() => {
+    if (!open || !isAuthenticated) return;
+    void fetchDirectory();
   }, [open, isAuthenticated, fetchDirectory]);
 
   const byOid = useMemo(() => {

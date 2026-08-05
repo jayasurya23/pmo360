@@ -126,6 +126,45 @@ export function useAuth() {
     [acquireToken],
   );
 
+  // ---- Convenience presets for the most common Graph calls ----
+  //
+  // THESE MUST STAY MEMOISED. They were once inline arrows in the returned
+  // object literal, which minted a brand-new function on every render of every
+  // component that called useAuth(). Callers put them in dependency arrays —
+  // and a dep that changes every render is a dep that fires every render.
+  //
+  // What that actually cost: the Add-person dialog built `fetchDirectory` as a
+  // useCallback keyed on getDirectoryToken, and an effect keyed on
+  // fetchDirectory reset the search box and refetched. So every keystroke
+  // re-rendered, minted a new getDirectoryToken, invalidated fetchDirectory,
+  // re-ran the effect, wiped what had been typed and re-read the whole Castillo
+  // directory from Microsoft — forever. The box could not be typed into at all.
+  //
+  // Six components put one of these in a dep array (OwnerPicker,
+  // AddPersonDialog, DirectoryBrowser, CalendarCard, PlannerCard x2). Keeping
+  // them stable here is what makes every one of those safe, so do not "simplify"
+  // them back into the return statement.
+  const getMailSendToken = useCallback(
+    () => getGraphToken(GRAPH_MAIL_SEND_REQUEST.scopes!),
+    [getGraphToken],
+  );
+  const getFilesToken = useCallback(
+    () => getGraphToken(GRAPH_FILES_REQUEST.scopes!),
+    [getGraphToken],
+  );
+  const getDirectoryToken = useCallback(
+    () => getGraphToken(GRAPH_DIRECTORY_REQUEST.scopes!),
+    [getGraphToken],
+  );
+  const getCalendarToken = useCallback(
+    () => getGraphToken(GRAPH_CALENDAR_REQUEST.scopes!),
+    [getGraphToken],
+  );
+  const getPlannerToken = useCallback(
+    () => getGraphToken(GRAPH_PLANNER_REQUEST.scopes!),
+    [getGraphToken],
+  );
+
   return {
     user,
     isAuthenticated: !!account,
@@ -133,11 +172,10 @@ export function useAuth() {
     signOut,
     getApiToken,
     getGraphToken,
-    // Convenience presets for the most common Graph calls:
-    getMailSendToken: () => getGraphToken(GRAPH_MAIL_SEND_REQUEST.scopes!),
-    getFilesToken: () => getGraphToken(GRAPH_FILES_REQUEST.scopes!),
-    getDirectoryToken: () => getGraphToken(GRAPH_DIRECTORY_REQUEST.scopes!),
-    getCalendarToken: () => getGraphToken(GRAPH_CALENDAR_REQUEST.scopes!),
-    getPlannerToken: () => getGraphToken(GRAPH_PLANNER_REQUEST.scopes!),
+    getMailSendToken,
+    getFilesToken,
+    getDirectoryToken,
+    getCalendarToken,
+    getPlannerToken,
   };
 }
