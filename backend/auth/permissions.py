@@ -458,26 +458,26 @@ def _other_eligible_approver_exists(
 ) -> bool:
     """Is there anyone else who could approve a CO on this portfolio?
 
-    Mirrors the real gate — active, and (admin OR holds co_approval AND is a
-    member of the portfolio) — so we never refuse a self-approval by pointing
-    at a colleague who would themselves be refused. One indexed query; this is
-    the kind of question a JSON permissions blob could not answer.
+    Mirrors the real gate — active, and (admin OR holds co_approval) — so we
+    never refuse a self-approval by pointing at a colleague who would
+    themselves be refused.
+
+    It used to also require a ProjectMember row, back when membership was half
+    of the write check. That half is gone: is_portfolio_member is disabled and
+    the enforced gate is now require_permission(CO_APPROVAL) plus a no-op
+    require_project. Leaving the membership term in did not make the mirror
+    stricter, it made it WRONG — project_members is empty in production, so
+    every non-admin approver was filtered out of "is there anyone else?", the
+    answer came back no, and the separation-of-duties refusal quietly stopped
+    firing for a sole admin approving their own change order. A control that
+    silently does not apply to the account that most needs it is worse than no
+    control, because everyone believes it is running.
     """
-    from sqlalchemy import and_, or_
+    from sqlalchemy import or_
 
-    from db.models import ProjectMember, User as UserModel
+    from db.models import User as UserModel
 
-    member_of_portfolio = (
-        db.query(ProjectMember.id)
-        .filter(
-            ProjectMember.user_id == UserModel.id,
-            ProjectMember.project_id == project_id,
-        )
-        .exists()
-    )
     holds_co_approval = UserModel.can_co_approval.is_(True)
-    if project_id is not None:
-        holds_co_approval = and_(holds_co_approval, member_of_portfolio)
     row = (
         db.query(UserModel.id)
         .filter(

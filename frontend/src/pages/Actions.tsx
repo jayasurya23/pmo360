@@ -11,12 +11,12 @@ import { useApp } from "@/lib/state";
 import {
   listActions,
   listAllActions,
-  actionsCsvUrl,
   updateAction,
   deleteAction,
   createAction,
   listMeetings,
 } from "@/lib/api";
+import { saveActionsCsv } from "@/lib/documents";
 import type { ActionItem, Meeting } from "@/lib/types";
 import { format, parseISO } from "date-fns";
 
@@ -395,17 +395,22 @@ export default function Actions() {
                 </option>
               ))}
             </select>
-            <a
+            {/* Button, not anchor — the export route is token-gated and an
+                href sends no Authorization header. See lib/documents.ts. */}
+            <button
+              type="button"
               className="btn-ghost"
-              href={actionsCsvUrl(
-                scoped ? currentProject!.id : null,
-                filter || "all",
-                ownerFilter === "__all__"
-                  ? ""
-                  : ownerFilter === "__mine__"
-                    ? me?.name || ""
-                    : ownerFilter,
-              )}
+              onClick={() =>
+                void saveActionsCsv(
+                  scoped ? currentProject!.id : null,
+                  filter || "all",
+                  ownerFilter === "__all__"
+                    ? ""
+                    : ownerFilter === "__mine__"
+                      ? me?.name || ""
+                      : ownerFilter,
+                )
+              }
               title={
                 scoped
                   ? "Download this portfolio's filtered actions as a CSV"
@@ -413,7 +418,7 @@ export default function Actions() {
               }
             >
               📥 Export CSV
-            </a>
+            </button>
             <button
               className="btn-primary"
               onClick={handleAdd}

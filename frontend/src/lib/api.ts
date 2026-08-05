@@ -315,14 +315,21 @@ export const parseTranscriptFile = async (file: File) => {
 
 
 // ---------- documents ----------
+/* The four `${API_BASE}/...` builders that used to live here are GONE on
+ * purpose. Each returned a URL for an <a href>, an <iframe> or window.open,
+ * and each pointed at a route behind `require_db_user` — so each answered 401
+ * for every user, forever. That shipped four separate times (meeting
+ * documents, attachments, the actions CSV, the agenda .ics) and the meeting
+ * one went unnoticed in production for six days.
+ *
+ * Anything the browser downloads goes through lib/documents.ts, which pulls
+ * the bytes with the token attached and hands back a blob. If you find
+ * yourself building an API URL as a string to put in an href, that is the
+ * bug. */
+
 // Note: helper returns a URL the browser can hit directly (img/iframe/a[href]).
 // We deliberately use `${API_BASE}` so production builds pick up an absolute
 // backend URL when VITE_API_BASE is set.
-export const meetingDocUrl = (
-  meetingId: number,
-  kind: "pdf" | "docx" | "xlsx" | "zip",
-) =>
-  `${API_BASE}/documents/meeting/${meetingId}?kind=${kind}`;
 export const finalizeMeeting = (meetingId: number) =>
   apiClient
     .post<{ paths: Record<string, string>; stage: string }>(
@@ -333,20 +340,6 @@ export const finalizedFileUrl = (path: string) =>
   `${API_BASE}/documents/file?path=${encodeURIComponent(path)}`;
 
 // ---------- actions ----------
-/** Direct CSV download URL for the Actions page export button. The browser
- *  hits this in a new tab and the Content-Disposition header triggers the
- *  download. Use as an anchor `href`, not via the axios client. */
-export const actionsCsvUrl = (
-  projectId: number | null,
-  status: string = "all",
-  owner: string = "",
-) => {
-  const params = new URLSearchParams({ status });
-  // Omit project_id entirely for the cross-portfolio ("All portfolios") export.
-  if (projectId != null) params.set("project_id", String(projectId));
-  if (owner) params.set("owner", owner);
-  return `${API_BASE}/actions/export.csv?${params.toString()}`;
-};
 
 export const listActions = (projectId: number, onlyOpen = false) =>
   apiClient
@@ -456,9 +449,6 @@ export const generateAgendaDoc = async (
   });
   return res.data as Blob;
 };
-/** URL helper for the .ics calendar download — anchor with this in `href`. */
-export const agendaIcsUrl = (agendaId: number) =>
-  `${API_BASE}/agendas/${agendaId}/ics`;
 
 // ---------- lead / admin overview ----------
 export const fetchLeadOverview = () =>
@@ -1229,9 +1219,6 @@ export const uploadAttachment = async (
   return res.data;
 };
 
-/** URL the browser can hit directly to download an attachment. */
-export const attachmentDownloadUrl = (id: number) =>
-  `${API_BASE}/attachments/${id}/download`;
 
 export const deleteAttachment = (id: number) =>
   apiClient.delete(`/attachments/${id}`);

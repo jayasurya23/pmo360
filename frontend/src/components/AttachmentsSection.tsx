@@ -9,10 +9,10 @@ import { useEffect, useRef, useState } from "react";
 import {
   listAttachments,
   uploadAttachment,
-  attachmentDownloadUrl,
   deleteAttachment,
   type MeetingAttachment,
 } from "@/lib/api";
+import { saveAttachment } from "@/lib/documents";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { format, parseISO } from "date-fns";
 
@@ -192,14 +192,18 @@ export default function AttachmentsSection({ meetingId }: Props) {
                 {pickIcon(att)}
               </div>
               <div className="flex-1 min-w-0">
-                <a
-                  href={attachmentDownloadUrl(att.id)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-medium text-brand-red hover:underline break-all"
+                {/* A button, not an anchor: the download route requires a
+                    bearer token an href cannot send, so this link answered 401
+                    for every attachment. The prod import filed every original
+                    meeting-minutes PDF here, so that was every imported
+                    meeting's original. See lib/documents.ts. */}
+                <button
+                  type="button"
+                  onClick={() => void saveAttachment(att.id, att.filename)}
+                  className="text-left font-medium text-brand-red hover:underline break-all"
                 >
                   {att.filename}
-                </a>
+                </button>
                 <div className="text-xs text-brand-gray mt-0.5">
                   {formatSize(att.file_size_bytes)}
                   {att.created_by?.name

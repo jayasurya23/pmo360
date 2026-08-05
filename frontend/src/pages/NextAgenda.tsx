@@ -17,10 +17,10 @@ import {
   generateAgendaDoc,
   listProjectRoster,
   listGlobalRoster,
-  agendaIcsUrl,
   fetchMyPreferences,
   autoDraftAgenda,
 } from "@/lib/api";
+import { saveAgendaIcs } from "@/lib/documents";
 import type {
   Agenda,
   Meeting,
@@ -626,13 +626,14 @@ export default function NextAgenda() {
               Export PDF
             </button>
             {agendaId && (
-              <a
+              <button
+                type="button"
                 className="btn-ghost"
-                href={agendaIcsUrl(agendaId)}
+                onClick={() => void saveAgendaIcs(agendaId)}
                 title="Download an .ics file you can add to Outlook / Google Calendar"
               >
                 📅 Add to calendar
-              </a>
+              </button>
             )}
             <button
               className="btn-ghost"
