@@ -69,6 +69,40 @@ export async function fetchMeetingDocBlob(
   return (await fetchMeetingDoc(meetingId, kind)).blob;
 }
 
+/**
+ * Fetch any authed endpoint and save the bytes as a file.
+ *
+ * THE GENERAL CASE, because the meeting-documents 401 was not a one-off. Four
+ * places in this app built an `${API_BASE}/...` string and handed it to an
+ * `<a href>`; every one of those routes requires a bearer token an anchor
+ * cannot send, so every one of them answered 401. PR #67 fixed the first and
+ * left three — meeting attachments, the Actions CSV export and the agenda
+ * .ics — which had been quietly broken since the auth sweep on 2026-07-29.
+ *
+ * Everything that downloads should come through here so there is one place to
+ * be wrong instead of five.
+ */
+export async function saveFromApi(
+  path: string,
+  fallbackName: string,
+  params?: Record<string, string | number | undefined>,
+): Promise<void> {
+  const res = await apiClient.get(path, { params, responseType: "blob" });
+  const filename = filenameFrom(
+    res.headers?.["content-disposition"],
+    fallbackName,
+  );
+  const url = URL.createObjectURL(res.data as Blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Give the browser a moment to start the download before the URL dies.
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 /** Fetch and save. Replaces `<a href={meetingDocUrl(...)} download>`, which
  *  cannot send the token. */
 export async function saveMeetingDoc(
@@ -83,9 +117,32 @@ export async function saveMeetingDoc(
   document.body.appendChild(a);
   a.click();
   a.remove();
-  // Give the browser a moment to start the download before the URL dies.
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
+
+/** A meeting attachment. Worst of the three that PR #67 missed: the prod
+ *  import filed every original meeting-minutes PDF through this API, so every
+ *  imported meeting had an original nobody could open. */
+export const saveAttachment = (id: number, name?: string) =>
+  saveFromApi(`/attachments/${id}/download`, name || `attachment-${id}`);
+
+/** The Actions page CSV export. project_id is omitted entirely for the
+ *  cross-portfolio ("All portfolios") export — the backend reads its absence,
+ *  not a null. */
+export const saveActionsCsv = (
+  projectId: number | null,
+  status = "all",
+  owner = "",
+) =>
+  saveFromApi("/actions/export.csv", "actions.csv", {
+    status,
+    ...(projectId != null ? { project_id: projectId } : {}),
+    ...(owner ? { owner } : {}),
+  });
+
+/** The pre-meeting agenda .ics. */
+export const saveAgendaIcs = (agendaId: number) =>
+  saveFromApi(`/agendas/${agendaId}/ics`, `agenda-${agendaId}.ics`);
 
 /**
  * An object URL for previewing a document inline, or null while it loads.
