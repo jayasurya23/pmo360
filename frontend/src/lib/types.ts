@@ -1016,6 +1016,35 @@ export interface MyWorkQueue {
   total: number;
 }
 
+/** A change order somebody asked THIS person, by name, to approve.
+ *
+ *  Distinct from `waiting_on_me.co_approvals`, which is every pending CO the
+ *  user's `co_approval` permission lets them decide on — a permission, not an
+ *  invitation. These rows exist only where a named request was raised, so this
+ *  is the list that answers "who is actually waiting on me". Same CO can appear
+ *  in both.
+ *
+ *  Flat rather than a `MyWorkItem`: it carries the request's own facts
+ *  (`requested_at`, `requested_by`, `stale`) which that shared shape has no room
+ *  for, and losing `stale` is losing the warning. */
+export interface MyWorkCoApproval {
+  change_order_id: number;
+  /** A LABEL, not the numeric `ChangeOrder.co_number` — the server formats it
+   *  for display and may send null. */
+  co_number: string | null;
+  title: string | null;
+  client_name: string | null;
+  project_name: string | null;
+  /** Client-inclusive total, same meaning as `ChangeOrder.total_amount`. */
+  total_amount: number | null;
+  requested_at: string;
+  requested_by: string | null;
+  /** The CO was edited after this person was asked. Approving it would be
+   *  approving a price they have not read, and the server refuses — so the row
+   *  has to say so before they click. */
+  stale: boolean;
+}
+
 export interface MyWork {
   /** The calendar date every comparison above was made against, in `timezone`.
    *  The server runs UTC in a container while the people reading it do not, so
@@ -1025,6 +1054,11 @@ export interface MyWork {
   actions: MyWorkActions;
   by_portfolio: MyWorkPortfolio[];
   waiting_on_me: MyWorkQueue;
+  /** COs where this person has an outstanding named approval request. Its own
+   *  top-level section rather than a fifth `waiting_on_me` list, because
+   *  `waiting_on_me.co_approvals` already means something different (see
+   *  `MyWorkCoApproval`) and the two totals must not be added together. */
+  co_approvals: MyWorkCoApproval[];
 }
 
 // Meeting templates — recurring-meeting boilerplate (attendees, agenda
@@ -1103,6 +1137,25 @@ export interface ChangeOrderLineItem {
   internal_notes?: string | null;
 }
 
+/** The internal money breakdown behind `total_amount`, computed server-side by
+ *  `co_pricing` and returned on every CO the API hands back.
+ *
+ *  INTERNAL ONLY. The client's PDF prints line costs that already contain both
+ *  adders and no percentage anywhere, so these four numbers exist to explain the
+ *  total to Castillo, never to the client. They always reconcile:
+ *  `base_amount + pmo_amount + admin_amount === total_amount`, in that order —
+ *  the adders are additive on the base, never compounded. */
+export interface ChangeOrderPricing {
+  /** Sum of the line items, before either adder. */
+  base_amount: number;
+  /** Dollars the PMO adder contributes — not the percentage. */
+  pmo_amount: number;
+  /** Dollars the admin adder contributes — not the percentage. */
+  admin_amount: number;
+  /** What the client pays; mirrors the stored `total_amount` column. */
+  total_amount: number;
+}
+
 export interface ChangeOrder {
   id: number;
   project_id: number;
@@ -1153,6 +1206,12 @@ export interface ChangeOrder {
   created_at?: string;
   updated_at?: string;
   project_name?: string | null;
+  /** Derived, not stored — filled in by the CO endpoints' shared `_out()` helper.
+   *  The server has always sent it; this interface just never declared it, so
+   *  anything wanting the breakdown had to cast its way to the field it was
+   *  already being given. Optional because `_out()` is the one place that can
+   *  forget it. */
+  pricing?: ChangeOrderPricing | null;
 }
 
 /** The pre-flight answer from `POST /api/change-orders/{id}/send-check`.
@@ -1176,6 +1235,93 @@ export interface ChangeOrderSendCheck {
   already_sent_to?: string | null;
   /** "graph" | "outlook" | "manual", or null on rows predating the tracking. */
   already_sent_method?: string | null;
+}
+
+/* ---------- CO approval requests ----------
+ * "Please look at this change order" — one row per person asked, on one CO.
+ *
+ * THESE ROWS ARE THE APPROVAL HISTORY. The CO itself records an approval in four
+ * mutable columns that `reject` sets back to NULL, so nothing on the change order
+ * survives a send-back to say that anyone ever approved it, or that anyone was
+ * ever asked. These rows do: they are appended, answered, and never deleted.
+ *
+ * FIRST RESPONDER DECIDES. Asking three people is not a three-signature chain —
+ * whoever acts first decides, and the other outstanding requests go
+ * "superseded". There is exactly one approval step, and the CO status machine is
+ * untouched by any of this: draft | pending | approved | sent_back.
+ */
+
+/** Where one request ended up.
+ *
+ *  `superseded` is not a refusal — it means somebody else answered first and this
+ *  person's request closed itself. `cancelled` is the requester withdrawing it.
+ *  Only `pending` rows are actionable, and only they gate the server-side
+ *  staleness check on approve. */
+export type ApprovalRequestStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "superseded"
+  | "cancelled";
+
+export interface ApprovalRequest {
+  id: number;
+  change_order_id: number;
+  /** The PMO 360 account this was addressed to, when the picker resolved one.
+   *  Null for someone asked by email address alone. */
+  requested_user_id: number | null;
+  requested_name: string | null;
+  /** The only field the server requires — it is what the request mail is
+   *  addressed to, and (lowercased) what deduping and the approve-time match
+   *  run on. */
+  requested_email: string;
+  requested_by_id: number | null;
+  requested_by_name: string | null;
+  requested_at: string;
+  /** THE CO VERSION THIS PERSON WAS ASKED ABOUT, snapshotted at request time. A
+   *  pending CO is still fully editable, so the numbers can move between the mail
+   *  and the click; this is what the server compares against to refuse an
+   *  approval of a price nobody read. */
+  co_version_at_request: number;
+  /** `total_amount` as it stood when they were asked — the figure the mail
+   *  quoted. Shown next to the current total so a re-price is visible rather
+   *  than inferred. */
+  total_at_request: number | null;
+  status: ApprovalRequestStatus;
+  responded_at: string | null;
+  responded_by_user_id: number | null;
+  /** Resolved server-side from `responded_by_user_id` — the ONLY name on this
+   *  row the server stamped itself. `requested_name` is free text on a
+   *  free-text ask, so an answered row must be captioned with this one:
+   *  "Approved" beside a name nobody verified is a claim, not a record. */
+  responded_by_name: string | null;
+  response_note: string | null;
+  /** Computed server-side (`co_version_at_request !== co.version`), not stored —
+   *  a stored copy would go wrong the moment the CO is edited again. True means
+   *  the change order moved after this person was asked. */
+  stale: boolean;
+}
+
+/** One person to ask. `email` is required; `name` is display only, and `user_id`
+ *  binds the request to a PMO 360 account when the picker resolved one, which is
+ *  what lets the approver be matched by id rather than by address. */
+export interface ApprovalRecipientInput {
+  email: string;
+  name?: string | null;
+  user_id?: number | null;
+}
+
+/** What `POST /api/change-orders/{id}/request-approval` did.
+ *
+ *  `requests` is the CURRENT ask for each person named, one row each — asking
+ *  someone who is already pending on this CO closes their old row as
+ *  "superseded" and returns a fresh one, so they are never outstanding twice
+ *  and the figure they were originally asked about survives in the history.
+ *  `approval_path` is the in-app path of the change order; the caller prefixes
+ *  the app origin to build the link it pastes into the mail. */
+export interface ApprovalRequestResult {
+  requests: ApprovalRequest[];
+  approval_path: string;
 }
 
 /* ---------- Client contacts (Settings -> Clients) ----------

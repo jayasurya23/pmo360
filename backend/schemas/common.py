@@ -1307,6 +1307,36 @@ class MyWorkWaitingOnMe(BaseModel):
     total: int = 0
 
 
+class MyWorkCOApproval(BaseModel):
+    """A change order somebody asked THIS PERSON, by name, to approve.
+
+    Deliberately a different shape from MyWorkQueueItem and a different list
+    from ``waiting_on_me.co_approvals``, because it answers a different
+    question. That one is "every pending CO you are permitted to approve" —
+    a permission-derived pile that grows with the company. This one is
+    "somebody sent you a link and is waiting on you", which is a named request
+    with a requester, a time and a price attached.
+
+    ``stale`` is the one that matters: true means the CO was edited after the
+    ask went out, so the figure in the email is not the figure on the document.
+    The backend refuses that approval outright (api/change_orders.py, guard
+    (b)); this flag is so the queue can say why before the click rather than
+    after.
+    """
+    change_order_id: int
+    # The CO's per-portfolio sequence number as a string, e.g. "4". The label
+    # ("CO-4") is the UI's to compose — see MyWorkQueueItem.label for the other
+    # convention in this file.
+    co_number: Optional[str] = None
+    title: Optional[str] = None
+    client_name: Optional[str] = None
+    project_name: Optional[str] = None
+    total_amount: Optional[float] = None   # client-inclusive, as stored
+    requested_at: datetime
+    requested_by: Optional[str] = None     # who asked, resolved for display
+    stale: bool = False
+
+
 class MyWorkOut(BaseModel):
     """GET /api/dashboard/my-work — what the signed-in user personally owns,
     across every client and portfolio.
@@ -1315,12 +1345,17 @@ class MyWorkOut(BaseModel):
     against. They ship with the payload because the server runs UTC in a
     container while the people using it do not: without saying which day the
     numbers mean, an "overdue" count is unfalsifiable.
+
+    ``co_approvals`` is top-level rather than folded into ``waiting_on_me``
+    because it is not the same list — see MyWorkCOApproval. Both names exist on
+    this response and they are not interchangeable.
     """
     as_of: date
     timezone: str
     actions: MyWorkActionCounts
     by_portfolio: list[MyWorkPortfolioRow] = Field(default_factory=list)
     waiting_on_me: MyWorkWaitingOnMe
+    co_approvals: list[MyWorkCOApproval] = Field(default_factory=list)
 
 
 # ---------- AI Home briefing ----------
@@ -1877,6 +1912,29 @@ class ChangeOrderMarkSent(BaseModel):
         return v
 
 
+class ChangeOrderApprove(BaseModel):
+    """Body of POST /{co_id}/approve — WHOLLY OPTIONAL, and that is the point.
+
+    An SPA tab loaded before this shipped posts no body at all, and an approval
+    is not something to 422 over a payload the client has never heard of. So
+    every field is optional and the route accepts a missing body entirely; the
+    staleness guard that actually protects the money
+    (api/change_orders.py, guard (b)) is server-side and needs nothing from
+    here.
+    """
+    # Same optimistic-lock field name and meaning as ChangeOrderUpdate: "this is
+    # the version I was looking at". Omitted = the client is not claiming one.
+    expected_version: Optional[int] = None
+    note: Optional[str] = None
+
+
+class ChangeOrderReject(BaseModel):
+    """Body of POST /{co_id}/reject. Optional for the same reason as
+    ChangeOrderApprove — `note` is the sent-back reason, recorded against the
+    approval request the rejecter was answering."""
+    note: Optional[str] = None
+
+
 class ChangeOrderUpdate(BaseModel):
     expected_version: Optional[int] = None
     co_version: Optional[str] = None
@@ -1901,3 +1959,85 @@ class ChangeOrderUpdate(BaseModel):
     pmo_pct: Optional[AdderPct] = None
     admin_pct: Optional[AdderPct] = None
     line_items: Optional[list[ChangeOrderLineItemIn]] = None
+
+
+# ---------- Change Order approval requests ----------
+class ApprovalRecipientIn(BaseModel):
+    """One person the PM wants to ask. ``email`` is the only required part —
+    it is what the request is keyed on for dedupe and for matching an approver
+    who has no ``users`` row yet (see db/models.py::ChangeOrderApprovalRequest).
+    ``user_id`` is filled in when the person came from the directory picker, and
+    when it is set the router takes the address and the name FROM that account
+    rather than from here.
+
+    Bounded at the column width (200) so an over-long address is a 422 naming
+    the field. SQLite ignores VARCHAR lengths and Postgres does not, so without
+    this the same payload passes locally and 500s in production.
+    """
+    email: str = Field(max_length=200)
+    name: Optional[str] = Field(default=None, max_length=200)
+    user_id: Optional[int] = None
+
+
+class RequestApprovalIn(BaseModel):
+    recipients: list[ApprovalRecipientIn] = Field(default_factory=list)
+    # Free text the PM adds to the email the SPA composes. The email is sent
+    # client-side from the PM's own mailbox, so this reaches the recipient
+    # without passing through any column here.
+    note: Optional[str] = None
+
+
+class ApprovalRequestOut(ORMModel):
+    """One row of the approval history.
+
+    ``requested_by_name``, ``responded_by_name`` and ``stale`` are DERIVED, not
+    columns. The names are resolved from the user rows at read time — a display
+    name changing must not be able to rewrite history, and the id is the
+    history.
+
+    ``responded_by_name`` is the only identity on this row the server stamped
+    itself. ``requested_name`` is whatever the requester typed unless the pick
+    resolved to an account, so an answered row must be captioned with the
+    RESPONDER: "Approved" beside a free-text name is a claim nobody checked.
+
+    ``stale`` compares the snapshot taken when the ask went out against the
+    CO's current version: true means the change order was edited after this
+    person was asked to approve it, so what they were shown is not what they
+    would be approving.
+    """
+    id: int
+    change_order_id: int
+    requested_user_id: Optional[int] = None
+    requested_name: Optional[str] = None
+    requested_email: str
+    requested_by_id: Optional[int] = None
+    requested_by_name: Optional[str] = None
+    requested_at: datetime
+    co_version_at_request: int
+    total_at_request: Optional[float] = None
+    # pending | approved | rejected | superseded | cancelled
+    status: str
+    responded_at: Optional[datetime] = None
+    responded_by_user_id: Optional[int] = None
+    responded_by_name: Optional[str] = None
+    response_note: Optional[str] = None
+    stale: bool = False
+
+
+class ApprovalRequestListOut(BaseModel):
+    requests: list[ApprovalRequestOut] = Field(default_factory=list)
+
+
+class RequestApprovalOut(ApprovalRequestListOut):
+    """POST /{co_id}/request-approval.
+
+    ``requests`` holds one row per recipient the caller asked for — newly
+    created, or the existing still-pending row it deduped onto — so the modal
+    can build its email from the response without re-reading the list.
+
+    ``approval_path`` is the app-relative path the approver lands on; the SPA
+    prefixes its own origin to make the deep link. Server-side so the link the
+    email carries and the route the SPA registers cannot drift apart, and
+    origin-free because the server behind Container Apps ingress does not
+    reliably know the origin the user typed."""
+    approval_path: str

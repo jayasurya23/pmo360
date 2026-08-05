@@ -19,12 +19,8 @@ import {
   fetchOpenRisks,
   type UserPreferences,
 } from "@/lib/api";
-import type {
-  MeResponse,
-  PermissionName,
-  Project,
-  ProjectMember,
-} from "@/lib/types";
+import { can } from "@/lib/permissions";
+import type { Project, ProjectMember } from "@/lib/types";
 import CommandPalette from "./CommandPalette";
 
 interface NavItem {
@@ -46,6 +42,23 @@ const PRIMARY_NAV: NavItem[] = [
   { to: "/proposals", label: "Proposals" },
   { to: "/change-orders", label: "Change Orders" },
 ];
+
+/**
+ * Is this nav tab the one the current URL belongs to?
+ *
+ * Not plain equality, because a tab's page can own child paths:
+ * /change-orders/:coId is where a change-order approval request emails somebody,
+ * and under equality that visitor arrived with the whole nav unlit — the one
+ * person least likely to recognise the app is shown a header that claims they
+ * are nowhere. Matching on the segment boundary (not a bare `startsWith`) is
+ * what stops a future /change-orders-archive lighting the Change Orders tab.
+ *
+ * "/" is exact-only for the obvious reason: every path starts with it.
+ */
+function navMatches(pathname: string, to: string): boolean {
+  if (to === "/") return pathname === "/";
+  return pathname === to || pathname.startsWith(to + "/");
+}
 
 // The Lead dashboard no longer has its own tab — the top-left PMO 360 logo links
 // to it (see TopNav). Visible to every signed-in user (not admin-gated).
@@ -261,7 +274,7 @@ function TopNav({ admin }: { admin: AdminActions }) {
         <nav className="hidden md:flex items-stretch gap-5 h-[58px] text-sm">
           {PRIMARY_NAV.map((item) => {
             const active =
-              location.pathname === item.to ||
+              navMatches(location.pathname, item.to) ||
               (item.to === "/capture" &&
                 ["/capture", "/review", "/preview", "/send"].includes(
                   location.pathname
@@ -380,7 +393,7 @@ function MobileNav() {
     <nav className="md:hidden border-t border-surface-hairline overflow-x-auto">
       <div className="flex items-center gap-1 px-3 py-2">
         {PRIMARY_NAV.map((item) => {
-          const active = location.pathname === item.to;
+          const active = navMatches(location.pathname, item.to);
           return (
             <NavLink
               key={item.to}
@@ -478,21 +491,8 @@ function RowDivider() {
   return <span className="w-px h-[18px] bg-surface-border mx-1.5 shrink-0" aria-hidden="true" />;
 }
 
-/**
- * One permission as this user experiences it, read off /api/me.
- *
- * `permissions` is optional on MeResponse — an /api/me older than this client
- * omits it — so an absent map falls back to the admin flag rather than locking
- * an admin out of their own console. Everyone else lands on the closed side,
- * which is the safe direction for the destructive items below.
- */
-function can(me: MeResponse | null, name: PermissionName): boolean {
-  if (!me) return false;
-  // The server already folds the admin bypass into `permissions`; keeping it
-  // here too costs nothing and covers the older-payload case above.
-  if (me.is_admin) return true;
-  return !!me.permissions?.[name];
-}
+// `can()` used to live here as a private helper. It moved to lib/permissions.ts
+// when the Change Orders page needed the same answer — see the note there.
 
 /**
  * Small gear-icon popover next to the ContextSwitcher.

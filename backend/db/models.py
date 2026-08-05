@@ -1115,6 +1115,14 @@ class ChangeOrder(Base):
         "ChangeOrderLineItem", back_populates="change_order",
         cascade="all, delete-orphan", order_by="ChangeOrderLineItem.order_index",
     )
+    # Cascade because these rows are the history OF THIS CO, not of the company:
+    # a CO can still be deleted while it is a draft or sent-back (see
+    # api/change_orders.py::delete_change_order), and leaving child rows pointing
+    # at a gone parent is an IntegrityError on Postgres rather than a tidy orphan.
+    approval_requests = relationship(
+        "ChangeOrderApprovalRequest", back_populates="change_order",
+        cascade="all, delete-orphan",
+    )
     requested_by_user = relationship("User", foreign_keys=[requested_by_user_id])
     approved_by_user = relationship("User", foreign_keys=[approved_by_user_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
@@ -1141,3 +1149,86 @@ class ChangeOrderLineItem(Base):
     internal_notes = Column(Text)
 
     change_order = relationship("ChangeOrder", back_populates="line_items")
+
+
+class ChangeOrderApprovalRequest(Base):
+    """"Please approve CO-4" — one named person, one ask, and the only durable
+    record that anybody was ever asked or ever answered.
+
+    THIS TABLE IS THE APPROVAL HISTORY. On ``change_orders`` an approval is four
+    mutable columns (``approved_by``, ``approved_by_user_id``, ``approved_at``,
+    plus the send stamps), and POST /{id}/reject NULLs every one of them —
+    deliberately, because a sent-back CO must not still look approved. The
+    consequence was that a CO approved on Tuesday and sent back on Wednesday
+    carried no trace of Tuesday: not who approved it, not at what price, not
+    that anyone had ever been asked. These rows survive a reject. They only ever
+    change ``status`` (and the ``responded_*`` stamps that close one out), and
+    nothing in the app deletes one. APPEND-ONLY IS LOAD-BEARING, not tidiness:
+    asking the same person again files a FRESH row and supersedes their old one
+    rather than re-dating it, because the old snapshot is the evidence of what
+    they were originally asked to approve — and the re-ask is exactly the moment
+    somebody would have a reason to lose it.
+
+    ``co_version_at_request`` and ``total_at_request`` are snapshots, not
+    conveniences. A PENDING change order is still fully PATCH-editable
+    (``_assert_editable`` only fires once it is approved or delivered), so the
+    number somebody was emailed can be re-priced before they click the link in
+    that email. The version snapshot is what
+    ``api/change_orders.py::approve_change_order`` compares against to refuse an
+    approval of a document that moved after the ask; the total snapshot is what
+    makes that diff legible to a human reading the history afterwards.
+
+    FIRST RESPONDER DECIDES: a CO needs ONE of the people asked, not all of
+    them. When one answers, the others go to "superseded" rather than being
+    removed — "we asked four people and Ana got there first" is a different fact
+    from "we asked Ana", and only one of them is true. "superseded" also closes
+    the older row when somebody is re-asked: both mean "this ask stopped being
+    the live one without this person answering it".
+
+    A row can also be BOTH the ask and the answer, with ``requested_by_id``
+    NULL: holding ``co_approval`` is enough to decide a CO nobody named you on,
+    and that decision needs the same durable record as an invited one.
+
+    ``status`` is pending | approved | rejected | superseded | cancelled. A
+    string rather than a boolean for exactly that reason: the five outcomes are
+    not two, and three of them mean "did not answer" for three different
+    reasons.
+    """
+    __tablename__ = "co_approval_requests"
+    id = Column(Integer, primary_key=True)
+    # Indexed: every read of this table is "the requests on this CO", and the
+    # Dashboard's per-user query joins through it on every Home load.
+    change_order_id = Column(
+        Integer, ForeignKey("change_orders.id"), nullable=False, index=True,
+    )
+    # NULLABLE, and the EMAIL is the required half. Approvers are picked out of
+    # the Entra directory, where somebody may not have a `users` row yet — rows
+    # are upserted on a person's first authenticated request, which for an
+    # invited approver happens AFTER they were asked. The link in their mail
+    # still has to find their request, so identity resolves on the address as
+    # well as on the id.
+    requested_user_id = Column(Integer, ForeignKey("users.id"))
+    requested_name = Column(String(200))
+    requested_email = Column(String(200), nullable=False)
+    requested_by_id = Column(Integer, ForeignKey("users.id"))
+    requested_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    co_version_at_request = Column(Integer, nullable=False)
+    # What the CO totalled when the ask went out, client-inclusive, matching
+    # ChangeOrder.total_amount. Nullable because that column is.
+    total_at_request = Column(Float)
+    status = Column(
+        String(20), nullable=False, default="pending", server_default="pending",
+    )
+    responded_at = Column(DateTime)
+    # WHO CLOSED THIS ROW: the person who answered it, or — on a "cancelled"
+    # row — whoever withdrew the ask. A superseded row gets a responded_at
+    # (that is when it stopped being outstanding) but never a responder: that
+    # person did not respond, someone else did. Read `status` to tell the two
+    # apart; this column only ever means "the actor", never "the approver".
+    responded_by_user_id = Column(Integer, ForeignKey("users.id"))
+    response_note = Column(Text)
+
+    change_order = relationship("ChangeOrder", back_populates="approval_requests")
+    requested_user = relationship("User", foreign_keys=[requested_user_id])
+    requested_by_user = relationship("User", foreign_keys=[requested_by_id])
+    responded_by_user = relationship("User", foreign_keys=[responded_by_user_id])

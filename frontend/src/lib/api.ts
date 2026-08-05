@@ -53,11 +53,20 @@ import type {
   ChangeOrder,
   ChangeOrderLineItem,
   ChangeOrderSendCheck,
+  ApprovalRecipientInput,
+  ApprovalRequest,
+  ApprovalRequestResult,
   ClientContact,
   ClientContactInput,
   ClientContactImportResult,
   MyWork,
 } from "./types";
+
+// Re-exported so the approval UI can pull the request shape from the same module
+// as the calls that take it — `ChangeOrderCreate` and friends live here, and
+// making one half of the CO contract come from ./types and the other from ./api
+// is a trap for the next person wiring a dialog.
+export type { ApprovalRecipientInput, ApprovalRequest } from "./types";
 
 // Honor VITE_API_BASE at build-time so the same artefact can talk to
 // a backend at /api (same origin), https://api.example.com, etc.
@@ -102,6 +111,19 @@ apiClient.interceptors.response.use(
       message = detail;
     } else if (detail && typeof detail === "object" && "message" in detail) {
       message = String((detail as any).message);
+    } else if (
+      detail &&
+      typeof detail === "object" &&
+      typeof (detail as any).detail === "string"
+    ) {
+      // Same idea one key over. Our structured 4xx payloads mostly carry the
+      // human sentence as `message`, but the approve-time staleness 409
+      // (`{error: "stale_co", ..., detail: "...re-review before approving"}`)
+      // names it `detail`. Without this branch that one reads "Request failed
+      // with status code 409" — a blank refusal on the money path, at the exact
+      // moment the sentence explaining WHY is the whole point. Reached only when
+      // there is no `message`, so nothing that works today changes.
+      message = (detail as any).detail;
     } else {
       message = err.message || "Request failed";
     }
@@ -117,6 +139,31 @@ export function isStaleVersionError(e: unknown): boolean {
     typeof e.detail === "object" &&
     e.detail !== null &&
     (e.detail as any).error === "stale_version"
+  );
+}
+
+/**
+ * True for the OTHER staleness 409 — the one only the approve path raises.
+ *
+ * `stale_version` means "you sent a version and it was old". `stale_co` means
+ * "you were ASKED to approve version N and this change order is now on N+1",
+ * which the server works out from the approver's own request row and so fires
+ * even when the client sends nothing. Two separate refusals with two
+ * separate fixes: reload vs re-read the numbers. Branching on
+ * `isStaleVersionError` alone catches only the first and drops the second into a
+ * generic failure toast, which is why this exists as its own guard.
+ *
+ * `detail` carries `current_version`, `requested_version` and the sentence to
+ * show — read it rather than writing new copy, so the app and the server can't
+ * disagree about what went wrong.
+ */
+export function isStaleCoError(e: unknown): boolean {
+  return (
+    e instanceof ApiError &&
+    e.status === 409 &&
+    typeof e.detail === "object" &&
+    e.detail !== null &&
+    (e.detail as any).error === "stale_co"
   );
 }
 
@@ -1358,10 +1405,100 @@ export const updateChangeOrder = (
 
 export const submitChangeOrder = (id: number) =>
   apiClient.post<ChangeOrder>(`/change-orders/${id}/submit`).then((r) => r.data);
-export const approveChangeOrder = (id: number) =>
-  apiClient.post<ChangeOrder>(`/change-orders/${id}/approve`).then((r) => r.data);
-export const rejectChangeOrder = (id: number) =>
-  apiClient.post<ChangeOrder>(`/change-orders/${id}/reject`).then((r) => r.data);
+/**
+ * Approve a pending CO — the money decision.
+ *
+ * `expected_version` is the version the approver was ACTUALLY LOOKING AT. Send
+ * it. A pending CO is still fully PATCH-editable (the edit freeze only starts at
+ * approved), so it can be re-priced between the request email going out and the
+ * approver clicking the link, and an approval is an approval of a number. A
+ * mismatch comes back as the same `{error: "stale_version", current_version}`
+ * 409 `updateChangeOrder` returns — `isStaleVersionError()` recognises it.
+ *
+ * The whole body is optional ONLY so an SPA tab loaded before this shipped keeps
+ * working; new callers have no reason to omit it. That backwards compatibility
+ * is also why the server does not rely on it: it independently compares the CO's
+ * current version against the one recorded on the caller's last UNANSWERED
+ * approval request — pending or withdrawn, since withdrawing is a CO_CREATION
+ * route and must not double as a way to switch the guard off — and refuses with
+ * `{error: "stale_co", ...}`. See `isStaleCoError()`. Both guards can fire;
+ * handle both.
+ *
+ * `note` is recorded on the approver's request row, which is the only place the
+ * decision survives — a later send-back NULLs the approval columns on the CO.
+ *
+ * Approving does NOT email the client, and must not be wired to. The order is
+ * approve -> send-check -> Graph -> mark-sent, deliberately and in that order —
+ * see `checkChangeOrderSendable`, which exists because getting it wrong once put
+ * the same priced change order in a client's inbox twice.
+ */
+export const approveChangeOrder = (
+  id: number,
+  body?: { expected_version?: number | null; note?: string | null },
+) =>
+  apiClient
+    .post<ChangeOrder>(`/change-orders/${id}/approve`, body ?? {})
+    .then((r) => r.data);
+
+/** Send a pending CO back to the requester. `note` is the reason, recorded on
+ *  the rejecter's own approval-request row. The rows themselves survive: reject
+ *  clears the approval stamp on the change order, so they are the only record
+ *  that anyone was ever asked or ever answered. */
+export const rejectChangeOrder = (id: number, body?: { note?: string | null }) =>
+  apiClient
+    .post<ChangeOrder>(`/change-orders/${id}/reject`, body ?? {})
+    .then((r) => r.data);
+
+/**
+ * Ask one or more named people to approve a pending CO.
+ *
+ * FIRST RESPONDER DECIDES — this is a list of people who MAY decide, not a chain
+ * that all must. The first to approve or send back settles it and every other
+ * outstanding request on that CO closes as "superseded". Adding a second name is
+ * insurance against one person being on leave, not a second signature.
+ *
+ * Re-asking somebody who is already pending on this CO closes their old request
+ * as "superseded" and files a fresh one at the CO's current version and price,
+ * so nobody is ever outstanding twice and the button is safe to press again.
+ * That is also the supported way to clear a `stale_co` refusal after a pending
+ * CO has been re-priced — the new row is what the approver is being shown now,
+ * and the old one stays on the record as what they were first asked. Send the
+ * email when you do it: the server has no way to know whether you did, and the
+ * person still holding the old figure is the one clicking Approve.
+ * 409 if the CO is not `pending` (only a submitted one can be sent for
+ * approval), 400 on an empty `recipients` list or on a `user_id` whose account
+ * does not match the address next to it.
+ *
+ * THIS DOES NOT SEND THE EMAIL. The mail goes out client-side from the PM's own
+ * mailbox over Graph, exactly like the CO delivery mail — the server never sees
+ * it. What comes back is the recorded requests plus `approval_path`, the in-app
+ * path of the change order; prefix the app origin to build the link for the mail
+ * body. The link is a normal authenticated route: the recipient signs in with
+ * Microsoft as usual and lands on the CO. No token in the URL, nothing public.
+ */
+export const requestChangeOrderApproval = (
+  coId: number,
+  body: { recipients: ApprovalRecipientInput[]; note?: string | null },
+) =>
+  apiClient
+    .post<ApprovalRequestResult>(`/change-orders/${coId}/request-approval`, body)
+    .then((r) => r.data);
+
+/** Every approval request raised on this CO, newest first — answered ones
+ *  included, because together they ARE the approval history. Open to anyone who
+ *  can read the CO, same as the other CO reads. */
+export const fetchChangeOrderApprovalRequests = (coId: number) =>
+  apiClient
+    .get<{ requests: ApprovalRequest[] }>(
+      `/change-orders/${coId}/approval-requests`,
+    )
+    .then((r) => r.data.requests);
+
+/** Withdraw one outstanding request — pending becomes "cancelled". The row is
+ *  not deleted: who was asked, and that the ask was pulled, both stay on the
+ *  record. Only a pending request can be cancelled. */
+export const cancelChangeOrderApprovalRequest = (coId: number, reqId: number) =>
+  apiClient.delete(`/change-orders/${coId}/approval-requests/${reqId}`);
 // `method` records HOW it went out ("graph" | "outlook" | "manual"). Omitted by
 // older callers, which the server stores as an unknown method.
 export const markChangeOrderSent = (
