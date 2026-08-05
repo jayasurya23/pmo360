@@ -7,6 +7,10 @@ import EmptyState from "@/components/EmptyState";
 import { StatusSelect } from "@/components/StatusPill";
 import { useConfirm } from "@/components/ConfirmDialog";
 import OwnerPicker from "@/components/actions/OwnerPicker";
+import OwnerFilterSelect, {
+  OWNER_ALL,
+  OWNER_MINE,
+} from "@/components/actions/OwnerFilterSelect";
 import { useApp } from "@/lib/state";
 import {
   listActions,
@@ -96,8 +100,12 @@ export default function Actions() {
     const s = searchParams.get("status");
     return s && STATUS_FILTERS.some((f) => f.value === s) ? s : "open_pending";
   });
-  const [ownerFilter, setOwnerFilter] = useState<string>("__all__");
+  const [ownerFilter, setOwnerFilter] = useState<string>(OWNER_ALL);
   const [loading, setLoading] = useState(false);
+  // Bumped on every completed load. The owner dropdown fetches its own grouped
+  // list from the server, so it has no way to notice that a PM just retyped an
+  // owner in the table — this is the nudge that keeps the two in step.
+  const [loadSeq, setLoadSeq] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMode, setBulkMode] = useState<null | "owner" | "due">(null);
@@ -124,6 +132,7 @@ export default function Actions() {
     setActions(a);
     setMeetings(m);
     setLoading(false);
+    setLoadSeq((n) => n + 1);
   };
 
   useEffect(() => {
@@ -135,7 +144,7 @@ export default function Actions() {
   useEffect(() => {
     setSelectedIds(new Set());
     setBulkMode(null);
-    setOwnerFilter("__all__");
+    setOwnerFilter(OWNER_ALL);
   }, [currentProject?.id]);
 
   // Apply a ?owner=mine deep-link ONCE, after the project-reset above has run
@@ -144,12 +153,14 @@ export default function Actions() {
   useEffect(() => {
     if (ownerParamApplied.current || !currentProject) return;
     ownerParamApplied.current = true;
-    if (searchParams.get("owner") === "mine") setOwnerFilter("__mine__");
+    if (searchParams.get("owner") === "mine") setOwnerFilter(OWNER_MINE);
   }, [currentProject?.id]);
 
-  // Build the deduped, case-insensitively-sorted owner list off all loaded
-  // actions (not just the visible ones — picking from a hidden owner is a
-  // legitimate use case).
+  // Deduped, case-insensitively-sorted owner names off all loaded actions (not
+  // just the visible ones — picking from a hidden owner is a legitimate use
+  // case). This used to BE the dropdown; it is now only the fallback the owner
+  // filter falls back to when /actions/owners can't be reached, so the filter
+  // degrades to "names, no companies" instead of to nothing.
   const ownerOptions = useMemo(() => {
     const seen = new Map<string, string>(); // lower -> display
     for (const a of actions) {
@@ -170,15 +181,23 @@ export default function Actions() {
     } else if (filter !== "all") {
       if (a.status !== filter) return false;
     }
-    // Owner filter. "__mine__" scopes to the signed-in user by the canonical
-    // owner_user_id link (matches Home's "Your open actions"); otherwise it's a
-    // case-insensitive substring match on the comma-split owner-name parts.
-    if (ownerFilter === "__mine__") {
+    // Owner filter. OWNER_MINE scopes to the signed-in user by the canonical
+    // owner_user_id link (matches Home's "Your open actions"); otherwise the
+    // selected name is matched EXACTLY against the comma-split owner parts.
+    //
+    // Exact, not substring, and the dropdown is why. Every option now carries
+    // the count of actions naming that person, computed by splitting on commas
+    // and folding case — so a substring match here would show "CK  3" and then
+    // return every row whose owner merely CONTAINS those letters, Nick and
+    // Rickard included. A badge that disagrees with the list beside it is worse
+    // than no badge. The options are the distinct owner parts, so exact match
+    // is also what the reader means by picking one.
+    if (ownerFilter === OWNER_MINE) {
       if (!(me && a.owner_user_id === me.id)) return false;
-    } else if (ownerFilter !== "__all__") {
-      const needle = ownerFilter.toLowerCase();
-      const hit = splitOwners(a.owner).some((p) =>
-        p.toLowerCase().includes(needle)
+    } else if (ownerFilter !== OWNER_ALL) {
+      const needle = ownerFilter.trim().toLowerCase();
+      const hit = splitOwners(a.owner).some(
+        (p) => p.toLowerCase() === needle,
       );
       if (!hit) return false;
     }
@@ -381,20 +400,17 @@ export default function Actions() {
                 </option>
               ))}
             </select>
-            <select
-              className="select w-48 rounded-lg text-[13px]"
+            {/* Custom, not a <select>: browsers ignore colour on <option>, and
+                colour-per-company was the point. See OwnerFilterSelect for
+                what that costs and what it reimplements. */}
+            <OwnerFilterSelect
               value={ownerFilter}
-              onChange={(e) => setOwnerFilter(e.target.value)}
-              aria-label="Owner filter"
-            >
-              <option value="__all__">All owners</option>
-              {me && <option value="__mine__">Mine (me)</option>}
-              {ownerOptions.map((o) => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
-            </select>
+              onChange={setOwnerFilter}
+              projectId={scoped ? currentProject!.id : null}
+              meName={me ? me.name || me.email || "" : null}
+              fallbackNames={ownerOptions}
+              reloadKey={loadSeq}
+            />
             {/* Button, not anchor — the export route is token-gated and an
                 href sends no Authorization header. See lib/documents.ts. */}
             <button
@@ -404,9 +420,9 @@ export default function Actions() {
                 void saveActionsCsv(
                   scoped ? currentProject!.id : null,
                   filter || "all",
-                  ownerFilter === "__all__"
+                  ownerFilter === OWNER_ALL
                     ? ""
-                    : ownerFilter === "__mine__"
+                    : ownerFilter === OWNER_MINE
                       ? me?.name || ""
                       : ownerFilter,
                 )

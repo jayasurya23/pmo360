@@ -1,21 +1,30 @@
 """/api/actions — rolling action items per project."""
 import csv
 import io
+import re
+from collections import Counter, defaultdict
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from api.client_contacts import CASTILLO_ORG
 from core.deps import get_db
 from auth import require_db_user
 from auth.permissions import MEETING_MINUTES, require_permission
-from db.models import ActionItem, Project, Client, Meeting
+from db.models import (
+    ActionItem, Client, ClientContact, GlobalAttendee, Meeting, Project,
+    ProjectAttendee,
+)
 from db.repository import (
     all_actions, open_actions, update_action_status,
     all_open_actions_across_portfolios, all_actions_across_portfolios,
 )
 from core.services import safe_filename_slug
-from schemas.common import ActionItemOut, ActionItemUpdate, ActionItemCreate
+from schemas.common import (
+    ActionItemOut, ActionItemUpdate, ActionItemCreate,
+    ActionOwnerGroupOut, ActionOwnerOut, ActionOwnersOut, split_display_name,
+)
 
 
 router = APIRouter(prefix="/api/actions", tags=["actions"])
@@ -161,7 +170,7 @@ _STATUS_FILTERS: dict[str, set[str]] = {
 def export_actions_csv(
     project_id: int | None = Query(None),
     status: str = Query("all"),
-    owner: str = Query("", description="Case-insensitive substring filter on owner"),
+    owner: str = Query("", description="Exact match against the comma-split owner parts, case-folded"),
     db: Session = Depends(get_db),
     _user=Depends(require_db_user),
 ):
@@ -193,11 +202,17 @@ def export_actions_csv(
     if allowed is not None:
         rows = [r for r in rows if (r.status or "open").lower() in allowed]
 
-    # Owner substring filter (case-insensitive). Owner is a comma-separated
-    # free-text string today, so substring match is the honest semantics.
+    # Owner filter — EXACT match against the comma-split parts, via the same
+    # two helpers the owner directory uses, so the dropdown's count, the table
+    # and this export cannot drift apart. It was a substring match against the
+    # whole owner string, which meant the CSV quietly contained more rows than
+    # the table the PM exported it from: "CK" also matched "Nick".
     if owner.strip():
-        needle = owner.strip().lower()
-        rows = [r for r in rows if needle in (r.owner or "").lower()]
+        needle = _owner_key(owner)
+        rows = [
+            r for r in rows
+            if needle in {_owner_key(t) for t in _owner_tokens(r.owner)}
+        ]
 
     # Build the CSV in-memory. We use csv.writer rather than concatenating
     # strings so commas / quotes / newlines inside owner names + action text
@@ -250,3 +265,334 @@ def export_actions_csv(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ============================================================
+# Owner directory — backs the grouped owner filter
+# ============================================================
+# The header the unmatched worklist renders under. Named for what it asks the
+# user to DO, because that section's whole reason to exist is that adding those
+# people to the directory fixes them permanently.
+UNMATCHED_LABEL = "Not matched to a company"
+
+# TWO FOLDINGS, DOING TWO DIFFERENT JOBS. Keeping them apart is what lets this
+# endpoint be both grouped and honest, so neither may be quietly aligned with
+# the other.
+_PUNCTUATION = re.compile(r"[.'’]")
+_INITIALS = re.compile(r"[a-z]{1,4}")
+
+
+def _owner_key(name: str) -> str:
+    """The IDENTITY of one dropdown row. Folds case, and nothing else.
+
+    That is byte-for-byte the key the Actions page already dedupes its own
+    option list on, so this endpoint returns the same set of options it would
+    have built for itself — only grouped, coloured and sorted.
+
+    Anything more aggressive would be a silent merge. The page filters actions
+    by the option's `name`, so collapsing "Dana  Reyes" (two spaces) into "Dana
+    Reyes" would hide every row spelled the other way behind a filter claiming
+    to include them, while `action_count` insisted they were there. Two
+    identical-looking rows in the dropdown is the visible version of that same
+    typo, and visible is the whole point of this feature.
+    """
+    return name.strip().casefold()
+
+
+def _match_key(name: str) -> str:
+    """The key used to ask the directory "which company is this?".
+
+    Folds harder than `_owner_key` — punctuation and repeated whitespace go, so
+    "D. Reyes" finds a roster row typed "D Reyes". Safe to be generous here
+    because this key never decides which actions are counted or what the filter
+    matches; it only picks a header. It still will not bridge "D. Reyes" and
+    "Dana Reyes", which are different strings by any measure available to us.
+    """
+    return " ".join(_PUNCTUATION.sub("", name).split()).casefold()
+
+
+def _company_key(name: str | None) -> str:
+    """Fold an employer name for comparison. `organization` is free text a human
+    typed, so case and stray spacing are noise — but nothing else is: "Heelstone"
+    and "Heelstone Energy" stay two companies, because we cannot tell a shortened
+    name from a different subsidiary."""
+    return " ".join((name or "").split()).casefold()
+
+
+def _initials_shape(match_key: str) -> bool:
+    """Short enough and letters-only to be somebody's initials. Applied to the
+    roster's `initials` column, which is initials whatever case it was typed
+    in."""
+    return bool(_INITIALS.fullmatch(match_key))
+
+
+def _owner_is_initials(token: str) -> bool:
+    """Whether an OWNER string should be allowed to match on initials at all.
+
+    Shape is not enough on its own: "Mike", "Dana" and "Ana" are all
+    initials-shaped, and a first-name-only owner that happens to collide with
+    someone's initials would be filed under a company with real confidence and
+    no way to notice. So the token must also be written in capitals, which is
+    how initials actually appear in this data ("CK, KC") and how a given name
+    does not.
+
+    A sloppily typed "Ck" therefore stays unmatched. That is the intended
+    direction: it lands in the worklist where somebody can fix it, rather than
+    quietly under a header that might be wrong.
+    """
+    return token.isupper() and _initials_shape(_match_key(token))
+
+
+def _preferred(spellings: Counter) -> str:
+    """The spelling to show when the same thing was typed several ways: the
+    commonest, ties broken alphabetically. Deterministic on purpose — a label
+    that changes between two loads of the same data is the instability this
+    endpoint exists to remove."""
+    return min(spellings.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+
+
+def _owner_tokens(raw: str | None) -> list[str]:
+    """The people one action's owner string names, deduped, first spelling wins.
+
+    Splitting on commas is the app's existing reading — "CK, KC" is two owners —
+    and the Actions page splits the same way. The cost is that a surname-first
+    entry, "Reyes, Dana", becomes two owners called "Reyes" and "Dana", and
+    nothing in the string distinguishes the two shapes. Detecting it (treating
+    the pair as one person when the directory happens to hold "Dana Reyes")
+    would produce an option the page could never match, because the page splits
+    on commas too. So the split stays literal: surname-first is a data-entry fix,
+    not a parser feature.
+    """
+    seen: dict[str, str] = {}
+    for part in (raw or "").split(","):
+        token = part.strip()
+        if token:
+            seen.setdefault(_owner_key(token), token)
+    return list(seen.values())
+
+
+def _name_keys(full_name: str | None) -> set[str]:
+    """Every spelling of a directory person an owner string might have used —
+    the stored form, plus its given-name-first reordering, so a roster row filed
+    as "Reyes, Dana" is still found by an action that says "Dana Reyes".
+
+    Widening what the DIRECTORY answers to is safe in a way that widening
+    `_owner_key` is not: it can only turn an unmatched owner into a matched one,
+    never merge two owners, and a name that reaches two employers is caught by
+    the conflict rule below.
+    """
+    raw = (full_name or "").strip()
+    if not raw:
+        return set()
+    keys = {_match_key(raw)}
+    first, last = split_display_name(raw)
+    if first and last:
+        keys.add(_match_key(f"{first} {last}"))
+    return {k for k in keys if k}
+
+
+@router.get("/owners", response_model=ActionOwnersOut)
+def list_action_owners(
+    project_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+):
+    """Every distinct owner named on an action, grouped by employer.
+
+    Open to any signed-in user, like every other GET here. Costs FIVE queries
+    regardless of how much data there is — the actions, the two attendee tables,
+    the client contacts and the client names — because the page a PM lives in
+    loads this on every visit. There is no per-owner lookup.
+
+    HOW A COMPANY IS DECIDED, strongest evidence first. Each rung is asked in
+    turn and the first one that answers wins:
+
+      1. ``owner_user_id`` — a User row is a Castillo Entra account, so this is
+         the one signal that cannot be wrong. Read only from actions naming a
+         SINGLE owner: on "CK, KC" the link belongs to one of them and the row
+         cannot say which, so it proves nothing about either.
+      2. GlobalAttendee / ProjectAttendee ``organization``, matched on name.
+      3. ClientContact, matched on name, resolving to its Client.
+      4. Attendee ``initials`` — last, because "CK" is the highest-collision
+         key in this data, and only for an owner written in capitals so a
+         four-letter given name cannot collide with somebody's initials. See
+         `_owner_is_initials`.
+
+    Two employers for one name STOPS the ladder at unmatched rather than
+    falling through to a weaker rung: the contradiction is a fault in the
+    directory, and a confident answer built on top of a known contradiction is
+    the failure this endpoint is supposed to avoid. The rosters are global, not
+    scoped to ``project_id`` — a person works for the same company in every
+    portfolio, and scoping would let the same owner be matched on one page and
+    unmatched on another.
+
+    WHERE IT WILL BE WRONG, and it is worth knowing before trusting a header:
+
+      * "Reyes, Dana" is read as two owners (see `_owner_tokens`).
+      * "D. Reyes" and "Dana Reyes" are two owners; the initials-ish one is
+        probably unmatched. Nicknames ("Dan" / "Daniel") likewise.
+      * A "CK" two people share resolves to nothing, on purpose. So does a
+        lower-cased "ck", which is not read as initials at all.
+      * A person whose roster row carries a blank ``organization`` — pervasive
+        in this data — is unmatched. Blank is absence of evidence, not conflict.
+
+    All of those land in the unmatched worklist, which is the honest place for
+    them and the one place a user can permanently fix them.
+
+    ``project_id`` scopes which ACTIONS are considered, matching the page's
+    All/Mine portfolio toggle. An id that matches no portfolio yields no owners
+    rather than a 404, which is how ``GET /api/actions`` already behaves.
+    """
+    # QUERY 1 of 5. Two columns, not whole ORM objects — nothing else about an
+    # action matters to this answer.
+    query = db.query(ActionItem.owner, ActionItem.owner_user_id)
+    if project_id is not None:
+        query = query.filter(ActionItem.project_id == project_id)
+
+    owners: dict[str, dict] = {}
+    for owner_text, owner_user_id in query.all():
+        tokens = _owner_tokens(owner_text)
+        for token in tokens:
+            entry = owners.setdefault(
+                _owner_key(token),
+                {"spellings": Counter(), "count": 0, "user_ids": set()},
+            )
+            entry["spellings"][token] += 1
+            entry["count"] += 1
+            if owner_user_id is not None and len(tokens) == 1:
+                entry["user_ids"].add(owner_user_id)
+
+    if not owners:
+        # Nobody owns anything in scope; the four directory queries would only
+        # be answering a question no one asked.
+        return ActionOwnersOut()
+
+    # ---- One pass to build the lookup, then no more queries ----
+    company_spellings: dict[str, Counter] = defaultdict(Counter)
+    by_name: dict[str, set[str]] = defaultdict(set)
+    by_initials: dict[str, set[str]] = defaultdict(set)
+    by_contact: dict[str, set[str]] = defaultdict(set)
+
+    def _record_attendee(full_name, initials, organization) -> None:
+        company = _company_key(organization)
+        if not company:
+            return          # blank org is no evidence — not conflicting evidence
+        company_spellings[company][(organization or "").strip()] += 1
+        for key in _name_keys(full_name):
+            by_name[key].add(company)
+        initials_key = _match_key(initials or "")
+        if _initials_shape(initials_key):
+            by_initials[initials_key].add(company)
+
+    for row in db.query(                                            # QUERY 2
+        GlobalAttendee.full_name, GlobalAttendee.initials,
+        GlobalAttendee.organization,
+    ).all():
+        _record_attendee(*row)
+    for row in db.query(                                            # QUERY 3
+        ProjectAttendee.full_name, ProjectAttendee.initials,
+        ProjectAttendee.organization,
+    ).all():
+        _record_attendee(*row)
+
+    client_names = dict(db.query(Client.id, Client.name).all())     # QUERY 4
+    for first, last, client_id in db.query(                         # QUERY 5
+        ClientContact.first_name, ClientContact.last_name,
+        ClientContact.client_id,
+    ).all():
+        # An unplaced contact (client_id NULL) is exactly the person this
+        # endpoint cannot name an employer for — the directory has not been
+        # told yet either.
+        company = _company_key(client_names.get(client_id))
+        if not company:
+            continue
+        company_spellings[company][client_names[client_id].strip()] += 1
+        for key in _name_keys(" ".join(p for p in (first, last) if p)):
+            by_contact[key].add(company)
+
+    castillo = _company_key(CASTILLO_ORG)
+
+    def _company_of(match_key: str, *, allow_initials: bool) -> str | None:
+        for index in (by_name, by_contact):
+            hits = index.get(match_key)
+            if not hits:
+                continue
+            # Two employers for one name is a fault in the DIRECTORY, and the
+            # directory is where it gets fixed. Picking one would file somebody
+            # under a header our own roster contradicts — and it would look
+            # settled, so nobody would ever go and fix it. Falling through to a
+            # weaker rung would be worse still: a confident answer built on top
+            # of a known contradiction.
+            return next(iter(hits)) if len(hits) == 1 else None
+        if allow_initials:
+            # Last, and only last. Initials are the highest-collision key in
+            # this data, so a "CK" two people share resolves to nothing rather
+            # than to whichever row the query happened to return first.
+            hits = by_initials.get(match_key)
+            if hits and len(hits) == 1:
+                return next(iter(hits))
+        return None
+
+    # ---- Resolve, then sort inside each group ----
+    grouped: dict[str | None, list[tuple[tuple, ActionOwnerOut]]] = defaultdict(list)
+    for entry in owners.values():
+        display = _preferred(entry["spellings"])
+        user_ids = entry["user_ids"]
+        company = castillo if user_ids else _company_of(
+            _match_key(display), allow_initials=_owner_is_initials(display),
+        )
+        first_name, last_name = split_display_name(display)
+        # First name, then surname, then the whole name. The last component is a
+        # total order on its own — owner keys are unique and case-folded — so
+        # the sequence cannot depend on dict or query order. A name with no
+        # discernible given name falls back to the whole string, which is what
+        # happens to a bare "CK": it sorts under C, alongside the Charlies.
+        sort_key = (
+            (first_name or display).casefold(),
+            (last_name or "").casefold(),
+            display.casefold(),
+        )
+        grouped[company].append((sort_key, ActionOwnerOut(
+            name=display,
+            owner_user_id=next(iter(user_ids)) if len(user_ids) == 1 else None,
+            first_name=first_name,
+            action_count=entry["count"],
+        )))
+
+    def _sorted(company: str | None) -> list[ActionOwnerOut]:
+        return [owner for _, owner in sorted(grouped[company], key=lambda p: p[0])]
+
+    def _label(company: str) -> str:
+        # Castillo is pinned to the canonical literal rather than the roster's
+        # commonest spelling: this group is the brand, and a lower-cased
+        # "castillo engineering" typed into someone's roster row should not
+        # become the header the whole company reads.
+        if company == castillo:
+            return CASTILLO_ORG
+        spellings = company_spellings.get(company)
+        return _preferred(spellings) if spellings else company
+
+    labels = {c: _label(c) for c in grouped if c is not None}
+    # ALPHABETICAL between Castillo and the unmatched worklist, not by size. A
+    # filter dropdown is a lookup device — you open it already knowing which
+    # company you want — and a count-ordered list reshuffles itself every time
+    # work moves between clients, which is exactly the "order shifts between
+    # loads" problem the grouping is meant to fix.
+    middle = sorted(
+        (c for c in grouped if c is not None and c != castillo),
+        key=lambda c: (labels[c].casefold(), labels[c]),
+    )
+
+    groups: list[ActionOwnerGroupOut] = []
+    if castillo in grouped:
+        groups.append(ActionOwnerGroupOut(
+            company=CASTILLO_ORG, is_castillo=True, owners=_sorted(castillo),
+        ))
+    groups.extend(
+        ActionOwnerGroupOut(company=labels[c], owners=_sorted(c)) for c in middle
+    )
+    if None in grouped:
+        groups.append(ActionOwnerGroupOut(
+            company=UNMATCHED_LABEL, is_unmatched=True, owners=_sorted(None),
+        ))
+    return ActionOwnersOut(groups=groups)
