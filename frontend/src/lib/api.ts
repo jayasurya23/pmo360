@@ -167,6 +167,32 @@ export function isStaleCoError(e: unknown): boolean {
   );
 }
 
+/**
+ * True for the 422 the proposal scheduler raises when a scheduled task depends
+ * on a Price Only row.
+ *
+ * Branches on `detail.error`, NOT on the bare 422, because 422 was already
+ * spoken for: the circular-dependency refusal shares the status, and the
+ * Proposals catch blocks fall back to "Circular dependency in predecessors" copy
+ * whenever a 422 arrives with no message. Telling them apart by status alone
+ * would diagnose the wrong defect out loud.
+ *
+ * `e.message` is already the server's sentence naming the offending rows, which
+ * is what the banner shows. `detail.links` carries the same pairs structurally
+ * ({successor_id, successor_name, predecessor_id, predecessor_name, ...}) for
+ * any caller that wants to highlight rows off the response — the Proposals page
+ * doesn't need it, because it runs the same rule locally and tints as you type.
+ */
+export function isPriceOnlyPredecessorError(e: unknown): boolean {
+  return (
+    e instanceof ApiError &&
+    e.status === 422 &&
+    typeof e.detail === "object" &&
+    e.detail !== null &&
+    (e.detail as any).error === "price_only_predecessor"
+  );
+}
+
 // ---------- clients / projects ----------
 export const listClients = () =>
   apiClient.get<Client[]>("/clients").then((r) => r.data);

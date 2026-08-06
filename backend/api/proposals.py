@@ -55,6 +55,8 @@ from proposal.serialization import (
 )
 from proposal.scheduling import (
     ScheduleConfig, calculate_all_dates, CircularDependencyError,
+    PriceOnlyPredecessorError, assert_no_price_only_predecessors,
+    find_price_only_predecessor_links,
     get_project_end_date,
 )
 from proposal.gantt import build_gantt_rows, render_gantt_bytes, brand_logo_path
@@ -684,6 +686,55 @@ def _enforce_locked_fields(items, locked_map: dict) -> None:
     walk(items)
 
 
+def _guard_price_only_predecessors(items, id_map) -> None:
+    """Refuse a write that leaves a scheduled task depending on a Price Only row.
+
+    Runs on the SERVER on every PM-driven write, not just behind the UI's
+    disabled dropdown options — the tree arrives as one whole-tree PUT, so a
+    stale tab, a scripted client, or the price-only toggle flipped ON under an
+    existing successor all reach here with the UI's guard bypassed.
+
+    Emits a DICT detail, matching the `stale_version` idiom above rather than
+    CircularDependencyError's bare string: `error` lets the client tell this 422
+    apart from the cycle one (which owns the "fix the loop" copy), and `links`
+    carries every offending row so the UI can name and highlight them instead of
+    making the PM hunt a 200-row table for an unnamed defect.
+
+    Deliberately NOT called on the import/duplicate paths (_parse_upload,
+    new_version, new_version_from_upload, activate_version): those are how a
+    violating proposal gets opened in the first place, and refusing them would
+    strand the PM outside the only screen where the fix exists — or, for
+    activate, stop them rolling back to an older version at all. They land in the
+    editor flagged, and cannot be saved until the link is repaired. What those
+    paths must NOT do is push the resulting geometry outward, which is why
+    _resync_proposal_timeline skips a violating version instead (see there).
+    """
+    try:
+        assert_no_price_only_predecessors(items, id_map)
+    except PriceOnlyPredecessorError as exc:
+        raise HTTPException(422, {
+            "error": "price_only_predecessor",
+            "message": str(exc),
+            "links": exc.links,
+        }) from exc
+
+
+def _version_price_only_links(v) -> list:
+    """Offending links in a STORED version, or [] if its tree can't be read.
+
+    For the paths that project a version outward rather than write it: they hold
+    a ProposalVersion, not a deserialized tree, and they must not blow up on
+    malformed tree_json (see _resync_proposal_timeline's guard rail 3 — one
+    transaction per request, so an exception here would roll back the caller's
+    own save).
+    """
+    try:
+        items, id_map = deserialize_tree(v.tree_json)
+        return find_price_only_predecessor_links(items, id_map)
+    except Exception:
+        return []
+
+
 @router.put("/{pid}/versions/{vid}/tree", response_model=ProposalVersionDetail)
 def put_tree(
     pid: int, vid: int, payload: ProposalTreePut,
@@ -699,6 +750,10 @@ def put_tree(
     locked_map = _locked_nodes_by_id(v.tree_json)
     items, id_map = deserialize_tree([n.model_dump() for n in payload.tree])
     _enforce_locked_fields(items, locked_map)
+    # AFTER the lock enforcement: a locked row's predecessor_id is force-restored
+    # from the stored tree there, so validating any earlier would judge a link the
+    # server is about to throw away (and miss the one it keeps).
+    _guard_price_only_predecessors(items, id_map)
     cfg = _cfg_from_json(payload.config or v.config_json)
     try:
         calculate_all_dates(items, id_map, cfg)
@@ -733,6 +788,11 @@ def recompute_version(
     _check_stale(payload.expected_version, v.version, "proposal version")
 
     items, id_map = deserialize_tree(v.tree_json)
+    # Recompute re-dates and re-versions the STORED tree, so letting it through
+    # would cement a schedule built on a link the engine silently ignored — and
+    # re-project it onto the Timeline below. The payload carries no tree to fix,
+    # so the message points at the editor, which is where the repair happens.
+    _guard_price_only_predecessors(items, id_map)
     cfg = _cfg_from_json(payload.config or v.config_json)
     try:
         calculate_all_dates(items, id_map, cfg, payload.unpin_all)
@@ -1491,6 +1551,18 @@ def _resync_proposal_timeline(p, v, db, actor, *, explicit: bool = False) -> "di
         return None                                    # guard rail 1
     if not explicit and not _timeline_bulk_sent(proj, db):
         return None                                    # guard rail 1b
+    # guard rail 1c — a version carrying a price-only predecessor is dated on a
+    # link the engine silently dropped, so at least one bar here is wrong by
+    # however long that predecessor was meant to take. put_tree/recompute can
+    # never reach this line in that state, but duplicate / from-upload / activate
+    # deliberately accept a violating tree so the PM can repair it in the editor,
+    # and all three resync unconditionally. Keeping the LAST good bars beats
+    # writing known-wrong ones onto a board other people plan against; the
+    # editor's banner is what tells the PM why nothing moved. send_to_timeline
+    # (explicit=True) never gets here — it 422s ahead of the call, because a PM
+    # who pressed the button is owed the reason, not silence.
+    if not explicit and _version_price_only_links(v):
+        return None
     try:
         bars, skipped = _proposal_timeline_bars(v)
         # Resolved inside the same guard: project_info_from_json reads
@@ -1617,6 +1689,22 @@ def send_to_timeline(
     v = _get_version(p, payload.version_id, db) if payload.version_id else _active_version(p, db)
     if v is None:
         raise HTTPException(422, "No version to send to the Timeline")
+
+    # Refuse BEFORE any get-or-create: this is the one endpoint that writes
+    # proposal geometry onto a board other people plan against, and a stored
+    # violation means at least one of those bars starts on day one instead of
+    # after the row it was linked to. put_tree can't produce that state, but an
+    # import can (deliberately — see _guard_price_only_predecessors), and this
+    # button is reachable from a clean editor, a stale tab or a script. Same
+    # 422 body as a refused save, so the client's existing
+    # isPriceOnlyPredecessorError branch names the rows here too.
+    po_links = _version_price_only_links(v)
+    if po_links:
+        raise HTTPException(422, {
+            "error": "price_only_predecessor",
+            "message": PriceOnlyPredecessorError.render_message(po_links),
+            "links": po_links,
+        })
 
     bars, skipped = _proposal_timeline_bars(v)
     if not bars:
