@@ -4511,14 +4511,29 @@ function Row({
           </span>
         )}
       </td>
-      {/* server-computed dates — read only. The columns are budgeted for the
-          backend's "%m/%d/%y" with ~22px to spare, so truncate is a guard rather
-          than an expected state; no title, which could only ever repeat text the
-          cell is already showing in full. */}
-      <td className="px-2.5 py-1.5 text-center tabular-nums text-brand-gray xl:truncate">
+      {/* Server-computed dates — read only, and a size smaller than the rest of
+          the table on purpose.
+
+          The budget is tight: the column is 4.875rem (78px) and px-2.5 takes 20
+          of it, leaving 58px, while the backend's "%m/%d/%y" measures ~56.4px at
+          the table's 12.5px. 1.6px is not slack — sub-pixel rounding, a slightly
+          wider font fallback before Jost loads, or a browser zoom that is not a
+          whole multiple all spend it, and `truncate` then clips a date that is
+          only eight characters long. It was reported cut off in exactly that way.
+          (An earlier comment here claimed ~22px spare, which the colgroup's own
+          measurement contradicts. Corrected rather than left to mislead again.)
+
+          11.5px scales the string to ~51.9px and buys ~6px, which absorbs all of
+          the above. tabular-nums means every date is exactly this wide, so the
+          margin is uniform rather than best-case. Kept as a local override on
+          these two cells: the columns either side are inputs whose own widths
+          budget the table's 12.5px, so shrinking the table would move them too.
+
+          No title attribute — it could only ever repeat text now shown in full. */}
+      <td className="px-2.5 py-1.5 text-center text-[11.5px] tabular-nums text-brand-gray xl:truncate">
         {node.start_date || "—"}
       </td>
-      <td className="px-2.5 py-1.5 text-center tabular-nums text-brand-gray xl:truncate">
+      <td className="px-2.5 py-1.5 text-center text-[11.5px] tabular-nums text-brand-gray xl:truncate">
         {node.end_date || "—"}
       </td>
       <td className="px-1 py-1.5">
