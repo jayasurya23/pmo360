@@ -112,8 +112,13 @@ PERMISSION_NAMES: tuple[str, ...] = tuple(p.name for p in PERMISSIONS)
 # hire get?" without importing the ORM.
 DEFAULT_GRANTS: dict[str, bool] = {
     MEETING_MINUTES: True,
-    CO_CREATION: True,
-    CO_APPROVAL: True,
+    # OFF on purpose — the two grants that can alter or authorise money. See the
+    # long note on User.can_co_creation in db/models.py: approval requests now
+    # mail a sign-in link to people who have never opened the app, so a first
+    # sign-in is no longer necessarily a new hire arriving through the front
+    # door. An admin turns these on in Settings, deliberately.
+    CO_CREATION: False,
+    CO_APPROVAL: False,
     AGENDA: True,
     PROPOSALS: True,
     TIMELINE: True,

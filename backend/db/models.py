@@ -104,11 +104,27 @@ class User(Base):
     can_meeting_minutes = Column(
         Boolean, default=True, nullable=False, server_default=true(),
     )
+    # THE TWO CHANGE-ORDER PERMISSIONS START OFF, unlike every other one here.
+    # A change order moves money, and these are the only grants on this model
+    # that let someone alter or authorise one. Everything else on a first
+    # sign-in is note-taking and planning, where a wrong default costs nothing
+    # and a too-tight one just annoys people.
+    #
+    # What changed the calculus: approval requests mail a sign-in link to people
+    # who have never opened the app, so first sign-ins stopped being new hires
+    # arriving through the front door. With these on, forwarding one link handed
+    # the recipient the power to approve, edit or delete ANY change order in the
+    # company from their very first click. An admin grants these in Settings,
+    # which is a deliberate act by someone who knows what it confers.
+    #
+    # These must stay in step with auth.permissions.DEFAULT_GRANTS —
+    # verify_permission_model() compares them at boot and refuses to start on a
+    # mismatch, so change both or neither.
     can_co_creation = Column(
-        Boolean, default=True, nullable=False, server_default=true(),
+        Boolean, default=False, nullable=False, server_default=false(),
     )
     can_co_approval = Column(
-        Boolean, default=True, nullable=False, server_default=true(),
+        Boolean, default=False, nullable=False, server_default=false(),
     )
     can_agenda = Column(
         Boolean, default=True, nullable=False, server_default=true(),
