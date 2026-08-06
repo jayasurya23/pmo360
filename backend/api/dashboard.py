@@ -7,9 +7,11 @@ Endpoints:
                                     in two contexts.
   - GET /api/dashboard/my-work   → the signed-in person's own plate, counted:
                                     action metrics, where the backlog is
-                                    concentrated, and the CO / agenda / draft
-                                    queue. Backs the Dashboard's all-clients
-                                    state, which otherwise renders nothing.
+                                    concentrated, the CO / agenda / draft
+                                    queue, and the change orders somebody
+                                    asked THEM to approve by name. Backs the
+                                    Dashboard's all-clients state, which
+                                    otherwise renders nothing.
   - GET /api/dashboard/briefing  → AI-written personalized "since you were
                                     last here..." card for the top of Home.
   - GET /api/dashboard/risks     → open risks aggregated from the most-recent
@@ -23,13 +25,14 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import and_, func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from core.deps import get_db
 from auth import require_db_user
 from auth.permissions import CO_APPROVAL, has_permission
 from db.models import (
-    ActionItem, Agenda, ChangeOrder, Client, Meeting, Note, Project,
+    ActionItem, Agenda, ChangeOrder, ChangeOrderApprovalRequest, Client, Meeting,
+    Note, Project,
 )
 from db.repository import (
     all_open_actions_across_portfolios, all_notes_with_follow_up,
@@ -39,8 +42,8 @@ from llm.providers import get_provider
 from schemas.common import (
     DashboardResponse, DashboardActionOut, DashboardNoteOut, DashboardAgendaOut,
     BriefingResponse, DashboardRisksResponse, DashboardRiskOut,
-    MyWorkActionCounts, MyWorkOut, MyWorkPortfolioRow, MyWorkQueueItem,
-    MyWorkWaitingOnMe,
+    MyWorkActionCounts, MyWorkCOApproval, MyWorkOut, MyWorkPortfolioRow,
+    MyWorkQueueItem, MyWorkWaitingOnMe,
 )
 
 
@@ -318,7 +321,7 @@ def get_my_work(
     timestamps we date the close by. A bulk re-save can therefore make old
     close-outs look like this week's.
 
-    COST: seven queries, and seven regardless of how much work the user has —
+    COST: eight queries, and eight regardless of how much work the user has —
     the older dashboard routes resolve each action's label through
     ``originating_meeting.project.client``, which is three lazy loads per row.
     ActionItem carries project_id directly, so two bulk reads answer every
@@ -411,6 +414,7 @@ def get_my_work(
     ))
 
     waiting = _waiting_on_me(db, actor, labels, today)
+    co_approvals = _co_approval_requests(db, actor, labels)
 
     return MyWorkOut(
         as_of=today,
@@ -418,7 +422,82 @@ def get_my_work(
         actions=counts,
         by_portfolio=by_portfolio,
         waiting_on_me=waiting,
+        co_approvals=co_approvals,
     )
+
+
+def _co_approval_requests(db: Session, actor, labels) -> list[MyWorkCOApproval]:
+    """Change orders where somebody asked THIS PERSON, by name, to approve
+    (query 8).
+
+    Not the same list as ``waiting_on_me.co_approvals`` and deliberately not
+    merged into it. That one is permission-derived — every pending CO in the
+    company that this user is allowed to approve — and it grows with the
+    company whether or not anyone is actually waiting on them. This one is the
+    short, sharp version: a named request, from a named person, with a price
+    and a link they were emailed.
+
+    NOT gated on CO_APPROVAL, which is the one place this rail departs from
+    ``_waiting_on_me``'s "only show what they can act on" rule. The request was
+    addressed to this person and an email has already left somebody's mailbox
+    telling them so; showing nothing in-app would make the app and the inbox
+    disagree, and the honest failure — a 403 explaining which permission is
+    missing — is more useful than silence they cannot explain.
+
+    Scoped to still-pending COs as well as still-pending requests. Approving
+    and rejecting both close out every outstanding request (api/change_orders.py
+    ::_close_out_requests), so the two conditions agree today; the CO one is
+    what keeps this rail honest if some future path ever moves a CO without
+    going through them.
+    """
+    # Matched on user id OR address, mirroring api/change_orders.py::
+    # _is_actors_request — an approver invited from the directory may have had
+    # no `users` row when the ask was made, so the id half can be NULL for
+    # exactly the people who most need to find their own request.
+    mine = ChangeOrderApprovalRequest.requested_user_id == actor.id
+    email = (getattr(actor, "email", "") or "").strip().lower()
+    if email:
+        mine = or_(
+            mine, func.lower(ChangeOrderApprovalRequest.requested_email) == email,
+        )
+
+    rows = []
+    for req, co in (
+        db.query(ChangeOrderApprovalRequest, ChangeOrder)
+        .join(ChangeOrder, ChangeOrder.id == ChangeOrderApprovalRequest.change_order_id)
+        # Eager: the loop below reads `req.requested_by_user` for the "asked by"
+        # line, which lazy-loads one SELECT per row. Home fires this on every
+        # load for every user, and the docstring above promises a fixed query
+        # count — an N+1 hiding under a comment that says otherwise is how the
+        # ninth query gets added by someone who trusted the comment.
+        .options(joinedload(ChangeOrderApprovalRequest.requested_by_user))
+        .filter(ChangeOrderApprovalRequest.status == "pending")
+        .filter(ChangeOrder.status == "pending")
+        .filter(mine)
+        .order_by(
+            ChangeOrderApprovalRequest.requested_at.desc(),
+            ChangeOrderApprovalRequest.id.desc(),
+        )
+        .all()
+    ):
+        project_name, client_name = labels.get(co.project_id, (None, None))
+        requester = req.requested_by_user
+        rows.append(MyWorkCOApproval(
+            change_order_id=co.id,
+            co_number=str(co.co_number),
+            title=(co.title or "").strip() or None,
+            client_name=client_name,
+            project_name=project_name,
+            total_amount=co.total_amount,
+            requested_at=req.requested_at,
+            requested_by=(requester.name or requester.email) if requester else None,
+            # The CO moved after this person was asked, so the figure in their
+            # email is not the figure on the document. The approve endpoint
+            # refuses outright (guard (b)); this is so the queue can say why
+            # before the click rather than after it.
+            stale=req.co_version_at_request != (co.version or 1),
+        ))
+    return rows
 
 
 def _waiting_on_me(db: Session, actor, labels, today: date) -> MyWorkWaitingOnMe:

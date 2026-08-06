@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import PdfPagePreview from "@/components/PdfPagePreview";
 import OwnerPicker from "@/components/actions/OwnerPicker";
+import RequestApprovalModal from "@/components/change-orders/RequestApprovalModal";
+import ApprovalRequestsPanel from "@/components/change-orders/ApprovalRequestsPanel";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
+import { can } from "@/lib/permissions";
 import {
   listChangeOrders,
+  getChangeOrder,
+  listAllPortfolios,
   createChangeOrder,
   updateChangeOrder,
   submitChangeOrder,
@@ -19,6 +24,11 @@ import {
   listProjectRoster,
   fetchChangeOrderPdfBlob,
   previewChangeOrderPdfBlob,
+  fetchChangeOrderApprovalRequests,
+  isStaleVersionError,
+  isStaleCoError,
+  ApiError,
+  type ApprovalRequest,
   type ChangeOrderCreate,
 } from "@/lib/api";
 import type { ChangeOrder } from "@/lib/types";
@@ -41,6 +51,83 @@ const SENT_METHOD_LABEL: Record<string, string> = {
   outlook: "via Outlook",
   manual: "marked manually",
 };
+
+/** DOM id of a change-order row, so the deep link can scroll to one. */
+const coRowDomId = (id: number) => `co-row-${id}`;
+
+/** Which tab a change order lives in. Drafts have no tab of their own — they sit
+ *  in the Create tab's "In flight" rail, which is where a deep link to one has
+ *  to land. */
+function tabForCo(co: ChangeOrder): Tab {
+  if (co.status === "pending") return "pending";
+  if (co.status === "sent_back") return "sent_back";
+  if (co.status === "approved") return isSent(co) ? "sent" : "approved";
+  return "create";
+}
+
+/**
+ * Turn a refused approve/send-back into a sentence the approver can act on.
+ *
+ * The two 409s this has to name are money guards, and a generic "something went
+ * wrong" is precisely the failure they exist to prevent — the approver retries,
+ * it refuses again, and eventually somebody approves a price nobody read.
+ *
+ *   stale_version — the CO moved while this page was open. The fix is a reload.
+ *   stale_co      — the CO was re-priced AFTER this person was asked to approve
+ *                   it, which the server works out from their own pending
+ *                   request row. The fix is to read the new numbers.
+ *
+ * Everything else already carries the server's own wording in `message` (403s
+ * name the missing permission; the separation-of-duties refusal explains
+ * itself), so it is passed straight through rather than paraphrased.
+ */
+function refusalMessage(e: unknown, fallback: string): string {
+  if (isStaleVersionError(e)) {
+    return (
+      "This change order changed while you were viewing it. Reload and " +
+      "re-review before approving."
+    );
+  }
+  if (isStaleCoError(e)) {
+    return (
+      "This change order was edited after you were asked to approve it. " +
+      "Re-review before approving."
+    );
+  }
+  return (e instanceof ApiError ? e.message : (e as any)?.message) || fallback;
+}
+
+/** True for the two refusals whose fix is "look at the change order again" —
+ *  the list is reloaded on those so the figure on screen is the current one. */
+const isStaleRefusal = (e: unknown) => isStaleVersionError(e) || isStaleCoError(e);
+
+/**
+ * Why a deep-linked change order could not be opened, in words.
+ *
+ * The person reading this followed a link out of an email and has no idea what
+ * this page is scoped to, so "nothing here" is useless and a blank page is
+ * worse. Both real outcomes get named: it is gone, or it is not theirs to see.
+ */
+function linkFailureMessage(e: unknown, id: number): string {
+  const status = e instanceof ApiError ? e.status : 0;
+  if (status === 404) {
+    return (
+      `Change order #${id} no longer exists. It may have been deleted after ` +
+      `the link was sent — ask whoever sent it.`
+    );
+  }
+  if (status === 403 || status === 401) {
+    return (
+      (e instanceof ApiError && e.message) ||
+      `You do not have access to change order #${id}. Ask whoever sent the ` +
+        `link to have you added.`
+    );
+  }
+  return (
+    ((e instanceof ApiError ? e.message : (e as any)?.message) as string) ||
+    `Could not open change order #${id}.`
+  );
+}
 
 // Standard Castillo hourly billing rates (from the request-form rate card).
 // Picking a role pre-fills the rate; the rate stays editable per line.
@@ -160,13 +247,29 @@ let lineSeq = 0;
 const newLineId = () => `l${++lineSeq}`;
 
 export default function ChangeOrders() {
-  const { currentProject, clients, selectedClientId } = useApp();
+  const {
+    currentProject,
+    clients,
+    projects,
+    selectedClientId,
+    selectedProjectId,
+    setSelectedClientId,
+    setSelectedProjectId,
+    me,
+  } = useApp();
   const confirm = useConfirm();
   // `location` is already a CO form field below, so alias the router hook.
   const routerLoc = useLocation();
   const routerNav = useNavigate();
+  const routeParams = useParams();
   const prefillApplied = useRef(false);
   const [tab, setTab] = useState<Tab>("create");
+
+  // Presentation only — every one of these is enforced server-side, and that
+  // gate is the one that matters. Hiding a control the backend would refuse
+  // just stops people walking into a 403 they can do nothing about.
+  const canApprove = can(me, "co_approval");
+  const canCreate = can(me, "co_creation");
 
   const clientName =
     clients.find((c) => c.id === selectedClientId)?.name || "";
@@ -223,6 +326,36 @@ export default function ChangeOrders() {
   const [pdfName, setPdfName] = useState("change-order.pdf");
   const [emailFor, setEmailFor] = useState<ChangeOrder | null>(null);
 
+  // ---- approvals ----
+  // The CO whose "who was asked" panel is open, and the CO the request dialog is
+  // being raised on. Separate: a PM can read one row's history while asking
+  // somebody about it.
+  const [approvalsFor, setApprovalsFor] = useState<number | null>(null);
+  const [requestFor, setRequestFor] = useState<ChangeOrder | null>(null);
+  // Bumped whenever anything changes a request row, so the open panel refetches
+  // instead of showing what was true before the click.
+  const [approvalsKey, setApprovalsKey] = useState(0);
+
+  // ---- deep link (/change-orders/:coId) ----
+  // Where an approver arrives from the request email. No token and no public
+  // route: they hit the normal MSAL gate, which renders in place without
+  // touching the URL, so this path survives sign-in.
+  const linkedId = Number(routeParams.coId);
+  const hasLink = Number.isFinite(linkedId) && linkedId > 0;
+  const [linked, setLinked] = useState<ChangeOrder | null>(null);
+  const [linkErr, setLinkErr] = useState<string | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  /** Portfolio the linked CO belongs to, held until `projects` has loaded far
+   *  enough for the context switcher to accept it. */
+  const [wantProjectId, setWantProjectId] = useState<number | null>(null);
+  /** Scrolled-to once per linked CO — the lists refetch often and a row that
+   *  yanks itself back into view every reload is unusable. */
+  const scrolledFor = useRef<number | null>(null);
+  /** Portfolio lookup attempted once per linked CO, so a CO whose portfolio
+   *  cannot be resolved doesn't re-fetch the whole portfolio list on every
+   *  refresh to fail the same way again. */
+  const resolvedFor = useRef<number | null>(null);
+
   const load = async () => {
     setLoading(true);
     try {
@@ -233,6 +366,18 @@ export default function ChangeOrders() {
       setPending(all.filter((c) => c.status === "pending"));
       setSentBack(all.filter((c) => c.status === "sent_back"));
       setApproved(all.filter((c) => c.status === "approved"));
+      // Re-read the deep-linked CO alongside the lists. The banner renders its
+      // own copy of it when it is not in any list, and a banner still offering
+      // Approve on a change order that was just approved is the same silence
+      // this page has already been bitten by.
+      if (hasLink) {
+        try {
+          setLinked(await getChangeOrder(linkedId));
+        } catch {
+          // Keep whatever the banner already has — it was readable a moment
+          // ago, and the refusal path belongs to the fetch effect below.
+        }
+      }
     } finally {
       setLoading(false);
     }
@@ -271,6 +416,105 @@ export default function ChangeOrders() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routerLoc.state]);
+
+  // ---- deep link, step 1: fetch the change order by id ----
+  // Fetched directly rather than looked for in the lists, because the lists are
+  // scoped to whatever the header happens to be pointing at and the approver
+  // arrived from an email with no context at all. This request is also the
+  // access check: the server either hands the CO over or refuses, and a refusal
+  // is what the banner reports instead of an empty page.
+  useEffect(() => {
+    if (!hasLink) {
+      setLinked(null);
+      setLinkErr(null);
+      return;
+    }
+    let cancelled = false;
+    setLinkBusy(true);
+    setLinkErr(null);
+    getChangeOrder(linkedId)
+      .then((co) => {
+        if (cancelled) return;
+        setLinked(co);
+        setTab(tabForCo(co));
+        // Open its approval history straight away — whoever followed the link
+        // was asked to decide, and "who else was asked" is half that decision.
+        setApprovalsFor(co.id);
+        scrolledFor.current = null;
+        resolvedFor.current = null;
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setLinked(null);
+        setLinkErr(linkFailureMessage(e, linkedId));
+      })
+      .finally(() => {
+        if (!cancelled) setLinkBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkedId, hasLink]);
+
+  // ---- deep link, step 2: point the app context at the CO's portfolio ----
+  // The CO carries `project_id` but no client, and `projects` only holds the
+  // selected client's portfolios — so an unrelated portfolio needs the full list
+  // to resolve which client owns it. Setting the client clears and reloads
+  // `projects`, which is why the portfolio itself is parked in `wantProjectId`
+  // for step 3 rather than set here.
+  useEffect(() => {
+    if (!linked || linked.project_id === selectedProjectId) return;
+    if (resolvedFor.current === linked.id) return;
+    resolvedFor.current = linked.id;
+    let cancelled = false;
+    (async () => {
+      let target = projects.find((p) => p.id === linked.project_id) ?? null;
+      if (!target) {
+        try {
+          const all = await listAllPortfolios(false);
+          target = all.find((p) => p.id === linked.project_id) ?? null;
+        } catch {
+          // Leave the context alone. The banner still renders the CO and its
+          // actions, so an unresolvable portfolio costs the header, not the page.
+          return;
+        }
+      }
+      if (cancelled || !target) return;
+      setWantProjectId(target.id);
+      if (target.client_id !== selectedClientId) setSelectedClientId(target.client_id);
+      else setSelectedProjectId(target.id);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linked]);
+
+  // ---- deep link, step 3: select the portfolio once its client's list lands ----
+  // state.tsx re-picks a portfolio of its own (URL slug, then localStorage, then
+  // the first one) every time the client changes, so this has to run after that
+  // and say which one it actually wanted.
+  useEffect(() => {
+    if (wantProjectId == null) return;
+    if (selectedProjectId === wantProjectId) {
+      setWantProjectId(null);
+      return;
+    }
+    if (projects.some((p) => p.id === wantProjectId)) setSelectedProjectId(wantProjectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projects, wantProjectId, selectedProjectId]);
+
+  // ---- deep link, step 4: bring the row into view ----
+  // Runs off the lists rather than the fetch: the row only exists in the DOM
+  // once `load()` has refilled the tab that holds it.
+  useEffect(() => {
+    if (!linked || scrolledFor.current === linked.id) return;
+    const el = document.getElementById(coRowDomId(linked.id));
+    if (!el) return;
+    scrolledFor.current = linked.id;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [linked, tab, drafts, pending, sentBack, approved]);
 
   const total = useMemo(() => {
     return lines.reduce((sum, l) => {
@@ -314,6 +558,14 @@ export default function ChangeOrders() {
   const inFlight = useMemo(
     () => [...pending, ...sentBack, ...drafts, ...approved],
     [pending, sentBack, drafts, approved],
+  );
+  /** Is the deep-linked CO anywhere in the lists this page has loaded? When it
+   *  is not — its portfolio would not resolve, or the person can read the CO but
+   *  not list that portfolio — the banner renders the row itself, so the link
+   *  still lands on something they can act on. */
+  const linkedVisible = useMemo(
+    () => !!linked && inFlight.some((c) => c.id === linked.id),
+    [linked, inFlight],
   );
 
   function resetForm() {
@@ -545,15 +797,97 @@ export default function ChangeOrders() {
     a.click();
   }
 
+  /**
+   * Approve — and the try/catch is the point.
+   *
+   * This ran bare, so a refusal was an unhandled rejection: the approver clicked
+   * Approve, nothing moved, nothing said why, and the CO sat pending. That is
+   * the same shape of silence that got a client two copies of one change order
+   * (see `clearedToSend` below) — a money decision that reports neither success
+   * nor failure gets retried until something gives.
+   *
+   * `expected_version` is the client half of the staleness guard: it says which
+   * version of the numbers was on screen when the button was pressed. The server
+   * runs its own check as well, from the approver's pending request row, so an
+   * older tab that sends nothing is still caught — but sending it is what makes
+   * the refusal precise instead of retrospective.
+   */
+  /**
+   * What THIS person was last asked to approve on this change order, whatever
+   * became of the ask.
+   *
+   * Deliberately not filtered to still-open requests: a withdrawn or superseded
+   * row is still the figure that landed in their inbox, and the two ways the
+   * server-side staleness guard can legitimately be cleared — withdraw the ask,
+   * or re-ask at the new price — are both moves available to whoever holds
+   * co_creation, i.e. the person raising the money. Comparing the snapshot to
+   * what is on screen at the moment of the click is the one check nobody else
+   * can switch off, so it reads the whole history and takes the newest.
+   *
+   * Never blocks the decision: a failed read returns null and the dialog falls
+   * back to its normal wording. This informs an approval, it does not gate one
+   * — the gate is server-side.
+   */
+  async function myLastAsk(coId: number): Promise<ApprovalRequest | null> {
+    if (!me) return null;
+    let rows: ApprovalRequest[];
+    try {
+      rows = await fetchChangeOrderApprovalRequests(coId);
+    } catch {
+      return null;
+    }
+    const mail = (me.email || "").trim().toLowerCase();
+    // The server returns newest first, and matches on id OR address for the
+    // same reason it does server-side: an approver invited from the directory
+    // had no user row when the ask was written.
+    return (
+      rows.find(
+        (r) =>
+          (r.requested_user_id != null && r.requested_user_id === me.id) ||
+          (!!mail && (r.requested_email || "").trim().toLowerCase() === mail),
+      ) || null
+    );
+  }
+
   async function doApprove(co: ChangeOrder) {
+    // "You were asked at X, this is Y" — the price half of the staleness story,
+    // said BEFORE the click rather than as a 409 after it. The server refuses a
+    // stale approval on the version, but the version is not what anybody
+    // remembers; the number in the email is.
+    const ask = await myLastAsk(co.id);
+    const asked = ask?.total_at_request;
+    const now = Number(co.total_amount) || 0;
+    const repriced =
+      asked != null && Math.round(asked * 100) !== Math.round(now * 100);
     const ok = await confirm({
       title: `Approve CO-${co.co_number}?`,
-      body: `Total ${money(co.total_amount)}. You'll be recorded as the approver.`,
+      body: repriced
+        ? `You were asked to approve ${money(asked)} on ` +
+          `${format(parseISO(ask!.requested_at), "MMM d, yyyy")}. This change ` +
+          `order is now ${money(co.total_amount)}. Approving records you as ` +
+          `the approver of ${money(co.total_amount)} — read it again first.`
+        : `Total ${money(co.total_amount)}. You'll be recorded as the approver.`,
       confirmLabel: "Approve",
+      destructive: repriced,
     });
     if (!ok) return;
-    await approveChangeOrder(co.id);
+    setErr(null);
+    try {
+      await approveChangeOrder(co.id, { expected_version: co.version ?? null });
+    } catch (e: any) {
+      setErr(refusalMessage(e, `Could not approve CO-${co.co_number}.`));
+      // Both staleness refusals mean "the numbers moved". Reloading is what puts
+      // the current ones in front of the approver so the re-review the message
+      // asks for is possible without a manual refresh.
+      if (isStaleRefusal(e)) {
+        await load();
+        setApprovalsKey((k) => k + 1);
+      }
+      return;
+    }
     await load();
+    // Every other request on this CO just became "superseded" server-side.
+    setApprovalsKey((k) => k + 1);
     setTab("approved");
   }
   async function doReject(co: ChangeOrder) {
@@ -563,8 +897,17 @@ export default function ChangeOrders() {
       confirmLabel: "Send back",
     });
     if (!ok) return;
-    await rejectChangeOrder(co.id);
+    setErr(null);
+    try {
+      await rejectChangeOrder(co.id);
+    } catch (e: any) {
+      // Same silence as approve had, and the same cost: the CO looks pending to
+      // everyone, so the next person sends it back again.
+      setErr(refusalMessage(e, `Could not send CO-${co.co_number} back.`));
+      return;
+    }
     await load();
+    setApprovalsKey((k) => k + 1);
     setTab("sent_back");
   }
   async function doResubmit(co: ChangeOrder) {
@@ -574,7 +917,13 @@ export default function ChangeOrders() {
       confirmLabel: "Re-submit",
     });
     if (!ok) return;
-    await submitChangeOrder(co.id);
+    setErr(null);
+    try {
+      await submitChangeOrder(co.id);
+    } catch (e: any) {
+      setErr(refusalMessage(e, `Could not re-submit CO-${co.co_number}.`));
+      return;
+    }
     await load();
     setTab("pending");
   }
@@ -610,9 +959,67 @@ export default function ChangeOrders() {
       destructive: true,
     });
     if (!ok) return;
-    await deleteChangeOrder(co.id);
+    setErr(null);
+    try {
+      await deleteChangeOrder(co.id);
+    } catch (e: any) {
+      // A refused delete used to leave the row exactly where it was with no
+      // explanation, which reads as a dead button rather than a refusal.
+      setErr(refusalMessage(e, `Could not delete CO-${co.co_number}.`));
+      return;
+    }
     if (editingId === co.id) resetForm();
     await load();
+  }
+
+  /** Everything an approval request touched changed at once — refetch the CO
+   *  lists (a request does not move a CO, but its totals may have been re-read)
+   *  and the open panel. */
+  function approvalsChanged() {
+    setApprovalsKey((k) => k + 1);
+    void load();
+  }
+
+  /** Drop back to the plain page, keeping ?client=&portfolio= so the header
+   *  stays where the link put it. */
+  function clearLink() {
+    routerNav(`/change-orders${routerLoc.search}`, { replace: true });
+  }
+
+  /**
+   * The props every tab's rows share: the deep-link marker and the collapsible
+   * approval history. In one place because four tabs each hand-rolling them is
+   * four chances for one to quietly lose the panel.
+   */
+  function approvalRow(co: ChangeOrder): {
+    highlight: boolean;
+    expanded?: boolean;
+    onToggleApprovals?: () => void;
+    children?: React.ReactNode;
+  } {
+    const highlight = linked?.id === co.id;
+    // A draft has never been submitted, so nobody can have been asked about it.
+    // The toggle would open an empty panel and cost a request to prove it.
+    if (co.status === "draft") return { highlight };
+    return {
+      highlight,
+      expanded: approvalsFor === co.id,
+      onToggleApprovals: () =>
+        setApprovalsFor((cur) => (cur === co.id ? null : co.id)),
+      children: (
+        <ApprovalRequestsPanel
+          coId={co.id}
+          refreshKey={approvalsKey}
+          canCancel={canCreate}
+          onChanged={approvalsChanged}
+          // Only a pending CO can be requested on — the server 409s otherwise,
+          // so offering the button anywhere else is offering a refusal.
+          onRequestApproval={
+            co.status === "pending" && canCreate ? () => setRequestFor(co) : undefined
+          }
+        />
+      ),
+    };
   }
 
   return (
@@ -645,6 +1052,99 @@ export default function ChangeOrders() {
           </div>
         }
       />
+
+      {/* ============ OPENED FROM A LINK ============ */}
+      {/* An approver arriving from the request email lands here. It always says
+          something — loading, the refusal, or the change order itself — because
+          the one outcome this route must never have is a blank page. */}
+      {hasLink && (
+        <section className="card border-l-[3px] border-l-brand-red px-5 py-3.5">
+          <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+            <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-gray">
+              Opened from a link
+            </span>
+            {linked && (
+              <span className="min-w-0 text-sm font-semibold text-brand-black">
+                CO-{linked.co_number}
+                <span className="font-normal text-brand-gray">
+                  {" · "}
+                  {money(linked.total_amount)}
+                  {linked.title ? ` · ${linked.title}` : ""}
+                </span>
+              </span>
+            )}
+            <button
+              className="ml-auto text-xs font-semibold text-brand-red transition hover:text-brand-darkred"
+              onClick={clearLink}
+            >
+              Show all change orders
+            </button>
+          </div>
+
+          {linkBusy && (
+            <p className="mt-1.5 text-sm text-brand-gray">
+              Opening change order #{linkedId}…
+            </p>
+          )}
+          {linkErr && !linkBusy && (
+            <p className="mt-1.5 text-sm text-brand-gray">{linkErr}</p>
+          )}
+          {linked && !linkedVisible && (
+            <>
+              {/* Not in any list on this page — usually a portfolio this person
+                  can read a change order in but not browse. The row is rendered
+                  here instead so the link still ends somewhere they can act. */}
+              <p className="mt-1.5 text-xs text-brand-gray">
+                This change order sits outside the lists below, so it is shown
+                here on its own.
+              </p>
+              <div className="mt-2 overflow-hidden rounded-lg border border-surface-border">
+                <CoRow
+                  co={linked}
+                  context
+                  {...approvalRow(linked)}
+                  actions={
+                    <>
+                      <button
+                        className="btn-ghost px-3 py-1.5 text-xs"
+                        onClick={() => openPdf(linked)}
+                      >
+                        👁 Preview PDF
+                      </button>
+                      {linked.status === "pending" && canApprove && (
+                        <>
+                          <button
+                            className="btn-primary px-3 py-1.5 text-xs"
+                            onClick={() => doApprove(linked)}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            className="btn-ghost px-3 py-1.5 text-xs"
+                            onClick={() => doReject(linked)}
+                          >
+                            Send back
+                          </button>
+                        </>
+                      )}
+                    </>
+                  }
+                />
+              </div>
+            </>
+          )}
+          {/* Only when the row is not in a list — the Pending tab carries the
+              same sentence above its own rows, and saying it twice on one
+              screen reads as two different problems. */}
+          {linked && !linkedVisible && linked.status === "pending" && !canApprove && (
+            <p className="mt-1.5 text-xs text-brand-gray">
+              You can read this change order but not decide on it — approving or
+              sending back needs the Change order approval permission. Ask an
+              admin, or reply to whoever sent the link.
+            </p>
+          )}
+        </section>
+      )}
 
       <div className="flex flex-wrap items-center gap-5 border-b border-surface-border">
         <TabBtn active={tab === "create"} onClick={() => setTab("create")}>
@@ -697,7 +1197,15 @@ export default function ChangeOrders() {
       )}
       {tab === "create" && !inAll && (
         <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[1.5fr_1fr]">
-          {!editingId && !rateChosen ? (
+          {/* Explained rather than blank: the rail beside it still lists what is
+              in flight, so someone without the permission can follow the work
+              they are part of and knows exactly what to ask for. */}
+          {!canCreate ? (
+            <EmptyState
+              title="You can't raise change orders"
+              hint="Creating, editing and submitting a change order needs the Change order creation permission. Ask an admin to grant it — the change orders already in flight are listed alongside."
+            />
+          ) : !editingId && !rateChosen ? (
             <RateChooser
               onPick={(rt) => {
                 setRateType(rt);
@@ -1248,9 +1756,14 @@ export default function ChangeOrders() {
                       <CoRow
                         key={co.id}
                         co={co}
-                        onEdit={editable ? () => loadForEdit(co) : undefined}
+                        {...approvalRow(co)}
+                        onEdit={
+                          editable && canCreate ? () => loadForEdit(co) : undefined
+                        }
                         onDelete={
-                          co.status === "draft" ? () => doDelete(co) : undefined
+                          co.status === "draft" && canCreate
+                            ? () => doDelete(co)
+                            : undefined
                         }
                         actions={
                           co.status === "approved" ? (
@@ -1261,12 +1774,23 @@ export default function ChangeOrders() {
                               📧 Email
                             </button>
                           ) : co.status === "pending" ? (
-                            <button
-                              className="btn-ghost px-2.5 py-1 text-xs"
-                              onClick={() => openPdf(co)}
-                            >
-                              👁 PDF
-                            </button>
+                            <>
+                              <button
+                                className="btn-ghost px-2.5 py-1 text-xs"
+                                onClick={() => openPdf(co)}
+                              >
+                                👁 PDF
+                              </button>
+                              {canCreate && (
+                                <button
+                                  className="btn-ghost px-2.5 py-1 text-xs"
+                                  onClick={() => setRequestFor(co)}
+                                  title="Ask one or more people to approve it. Whoever answers first decides."
+                                >
+                                  Request approval
+                                </button>
+                              )}
+                            </>
                           ) : null
                         }
                       />
@@ -1289,38 +1813,66 @@ export default function ChangeOrders() {
             hint="Submit a change order from the Create tab and it lands here."
           />
         ) : (
-          <div className="card divide-y divide-surface-hairline overflow-hidden">
-            {pending.map((co) => (
-              <CoRow
-                key={co.id}
-                co={co}
-                context={inAll}
-                onEdit={inAll ? undefined : () => loadForEdit(co)}
-                onDelete={inAll ? undefined : () => doDelete(co)}
-                actions={
-                  <>
-                    <button
-                      className="btn-ghost px-3 py-1.5 text-xs"
-                      onClick={() => openPdf(co)}
-                    >
-                      👁 Preview PDF
-                    </button>
-                    <button
-                      className="btn-primary px-3 py-1.5 text-xs"
-                      onClick={() => doApprove(co)}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      className="btn-ghost px-3 py-1.5 text-xs"
-                      onClick={() => doReject(co)}
-                    >
-                      Send back
-                    </button>
-                  </>
-                }
-              />
-            ))}
+          <div className="space-y-2.5">
+            {/* Said once above the list rather than as a disabled button on every
+                row: the decision buttons are simply absent for someone who
+                cannot make the decision, and this is what tells them why. */}
+            {!canApprove && (
+              <p className="text-xs text-brand-gray">
+                You can read these but not decide on them — approving or sending
+                back needs the Change order approval permission. Ask an admin to
+                grant it.
+              </p>
+            )}
+            <div className="card divide-y divide-surface-hairline overflow-hidden">
+              {pending.map((co) => (
+                <CoRow
+                  key={co.id}
+                  co={co}
+                  context={inAll}
+                  {...approvalRow(co)}
+                  onEdit={inAll || !canCreate ? undefined : () => loadForEdit(co)}
+                  onDelete={inAll || !canCreate ? undefined : () => doDelete(co)}
+                  actions={
+                    <>
+                      <button
+                        className="btn-ghost px-3 py-1.5 text-xs"
+                        onClick={() => openPdf(co)}
+                      >
+                        👁 Preview PDF
+                      </button>
+                      {/* The step after submitting: name the people who may
+                          decide. Gated on co_creation, same as the endpoint. */}
+                      {canCreate && (
+                        <button
+                          className="btn-ghost px-3 py-1.5 text-xs"
+                          onClick={() => setRequestFor(co)}
+                          title="Ask one or more people to approve it. Whoever answers first decides."
+                        >
+                          Request approval
+                        </button>
+                      )}
+                      {canApprove && (
+                        <>
+                          <button
+                            className="btn-primary px-3 py-1.5 text-xs"
+                            onClick={() => doApprove(co)}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            className="btn-ghost px-3 py-1.5 text-xs"
+                            onClick={() => doReject(co)}
+                          >
+                            Send back
+                          </button>
+                        </>
+                      )}
+                    </>
+                  }
+                />
+              ))}
+            </div>
           </div>
         ))}
 
@@ -1340,8 +1892,9 @@ export default function ChangeOrders() {
                 key={co.id}
                 co={co}
                 context={inAll}
-                onEdit={inAll ? undefined : () => loadForEdit(co)}
-                onDelete={inAll ? undefined : () => doDelete(co)}
+                {...approvalRow(co)}
+                onEdit={inAll || !canCreate ? undefined : () => loadForEdit(co)}
+                onDelete={inAll || !canCreate ? undefined : () => doDelete(co)}
                 actions={
                   <>
                     <button
@@ -1350,7 +1903,7 @@ export default function ChangeOrders() {
                     >
                       👁 Preview PDF
                     </button>
-                    {!inAll && (
+                    {!inAll && canCreate && (
                       <button
                         className="btn-primary px-3 py-1.5 text-xs"
                         onClick={() => doResubmit(co)}
@@ -1389,7 +1942,8 @@ export default function ChangeOrders() {
                 key={co.id}
                 co={co}
                 context={inAll}
-                onDelete={inAll ? undefined : () => doDelete(co)}
+                {...approvalRow(co)}
+                onDelete={inAll || !canCreate ? undefined : () => doDelete(co)}
                 actions={
                   <>
                     <button
@@ -1404,13 +1958,18 @@ export default function ChangeOrders() {
                     >
                       📧 Email to client
                     </button>
-                    <button
-                      className="btn-ghost px-3 py-1.5 text-xs"
-                      onClick={() => doMarkSent(co)}
-                      title="Already delivered it another way? Record it as sent."
-                    >
-                      ✓ Mark as sent
-                    </button>
+                    {/* mark-sent is gated on CO_APPROVAL server-side, same as
+                        approving — see doMarkSent. Email stays open to everyone
+                        because its own pre-flight refuses in time to matter. */}
+                    {canApprove && (
+                      <button
+                        className="btn-ghost px-3 py-1.5 text-xs"
+                        onClick={() => doMarkSent(co)}
+                        title="Already delivered it another way? Record it as sent."
+                      >
+                        ✓ Mark as sent
+                      </button>
+                    )}
                   </>
                 }
               />
@@ -1435,7 +1994,8 @@ export default function ChangeOrders() {
                 co={co}
                 context={inAll}
                 sentDetail
-                onDelete={inAll ? undefined : () => doDelete(co)}
+                {...approvalRow(co)}
+                onDelete={inAll || !canCreate ? undefined : () => doDelete(co)}
                 actions={
                   <>
                     <button
@@ -1493,6 +2053,23 @@ export default function ChangeOrders() {
             {pdfUrl && !pdfBusy && <PdfPagePreview url={pdfUrl} scale={1.3} />}
           </div>
         </div>
+      )}
+
+      {/* Ask people to approve a pending CO. Records the request first, then
+          offers the email and the link — the recorded row is what snapshots the
+          version the approver is being asked about. */}
+      {requestFor && (
+        <RequestApprovalModal
+          co={requestFor}
+          onClose={() => setRequestFor(null)}
+          onRequested={() => {
+            // Open the panel on the CO just requested, so the PM sees the rows
+            // they created without hunting for the toggle.
+            setApprovalsFor(requestFor.id);
+            setRequestFor(null);
+            approvalsChanged();
+          }}
+        />
       )}
 
       {/* Email-to-client modal */}
@@ -1644,6 +2221,10 @@ function CoRow({
   actions,
   context,
   sentDetail,
+  highlight,
+  expanded,
+  onToggleApprovals,
+  children,
 }: {
   co: ChangeOrder;
   onEdit?: () => void;
@@ -1655,86 +2236,120 @@ function CoRow({
   /** Spell out when / how / to whom it was sent, replacing the compact badge.
    *  Set on the Sent tab, where delivery is the whole point of the row. */
   sentDetail?: boolean;
+  /** This is the change order a link was followed to. Marked so the person who
+   *  arrived from an email can see which of thirty rows they were sent to. */
+  highlight?: boolean;
+  /** Approval history open beneath the row. */
+  expanded?: boolean;
+  /** Omitted on drafts, which cannot have been requested on. */
+  onToggleApprovals?: () => void;
+  /** Rendered under the row while `expanded` — the approval-requests panel. */
+  children?: React.ReactNode;
 }) {
   const sentVia = SENT_METHOD_LABEL[co.sent_method || ""];
   return (
-    <div className="flex items-center gap-3 px-5 py-3 transition hover:bg-surface-rowhover">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 text-[13.5px] font-semibold text-brand-black">
-          <span className="min-w-0 truncate">
-            CO-{co.co_number}
-            <span className="font-normal text-brand-gray">
-              {" · "}
-              {co.co_version}
-              {co.title ? ` · ${co.title}` : ""}
+    // The left rule is the app's existing "look here" mark (MyWorkPanel's error
+    // card wears the same one) rather than a ring, which renders as a hard
+    // second border against these radii.
+    <div
+      id={coRowDomId(co.id)}
+      className={clsx(
+        highlight && "border-l-[3px] border-l-brand-red bg-surface-rowhover",
+      )}
+    >
+      <div className="flex items-center gap-3 px-5 py-3 transition hover:bg-surface-rowhover">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-[13.5px] font-semibold text-brand-black">
+            <span className="min-w-0 truncate">
+              CO-{co.co_number}
+              <span className="font-normal text-brand-gray">
+                {" · "}
+                {co.co_version}
+                {co.title ? ` · ${co.title}` : ""}
+              </span>
             </span>
-          </span>
-          <span className="shrink-0 rounded bg-surface-mute px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-gray">
-            {co.rate_type === "hourly" ? "Hourly" : "Fixed"}
-          </span>
-        </div>
-        {context && (co.project_name || co.client_name) && (
-          <div className="mt-0.5 truncate text-[11px] text-brand-gray">
-            {co.client_name && (
-              <>
-                {co.client_name}
-                <span className="px-1">/</span>
-              </>
-            )}
-            <span className="font-semibold text-brand-red">
-              {co.project_name || "—"}
+            <span className="shrink-0 rounded bg-surface-mute px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-gray">
+              {co.rate_type === "hourly" ? "Hourly" : "Fixed"}
             </span>
           </div>
-        )}
-        <div className="mt-0.5 truncate text-[11px] text-brand-gray">
-          <b className="font-semibold tabular-nums text-brand-black">
-            {money(co.total_amount)}
-          </b>
-          {co.requested_by ? ` · ${co.requested_by}` : ""}
-          {co.request_date
-            ? ` · ${format(parseISO(co.request_date), "MMM d, yyyy")}`
-            : ""}
-          {co.status === "approved" && co.approved_by
-            ? ` · approved by ${co.approved_by}`
-            : ""}
-          {co.sent_at && !sentDetail ? (
-            <span className="text-brand-green">
-              {" · ✉ emailed "}
-              {format(parseISO(co.sent_at), "MMM d")}
-            </span>
-          ) : (
-            ""
+          {context && (co.project_name || co.client_name) && (
+            <div className="mt-0.5 truncate text-[11px] text-brand-gray">
+              {co.client_name && (
+                <>
+                  {co.client_name}
+                  <span className="px-1">/</span>
+                </>
+              )}
+              <span className="font-semibold text-brand-red">
+                {co.project_name || "—"}
+              </span>
+            </div>
+          )}
+          <div className="mt-0.5 truncate text-[11px] text-brand-gray">
+            <b className="font-semibold tabular-nums text-brand-black">
+              {money(co.total_amount)}
+            </b>
+            {co.requested_by ? ` · ${co.requested_by}` : ""}
+            {co.request_date
+              ? ` · ${format(parseISO(co.request_date), "MMM d, yyyy")}`
+              : ""}
+            {co.status === "approved" && co.approved_by
+              ? ` · approved by ${co.approved_by}`
+              : ""}
+            {co.sent_at && !sentDetail ? (
+              <span className="text-brand-green">
+                {" · ✉ emailed "}
+                {format(parseISO(co.sent_at), "MMM d")}
+              </span>
+            ) : (
+              ""
+            )}
+          </div>
+          {sentDetail && co.sent_at && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px]">
+              <span className="rounded bg-status-completed-bg px-1.5 py-0.5 font-semibold text-status-completed-text">
+                ✉ Sent {format(parseISO(co.sent_at), "MMM d, yyyy")}
+                {sentVia ? ` ${sentVia}` : ""}
+              </span>
+              {/* Absent for a manual mark, and for anything sent before we tracked it. */}
+              {co.sent_to && (
+                <span className="min-w-0 truncate text-brand-gray" title={co.sent_to}>
+                  to {co.sent_to}
+                </span>
+              )}
+            </div>
           )}
         </div>
-        {sentDetail && co.sent_at && (
-          <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px]">
-            <span className="rounded bg-status-completed-bg px-1.5 py-0.5 font-semibold text-status-completed-text">
-              ✉ Sent {format(parseISO(co.sent_at), "MMM d, yyyy")}
-              {sentVia ? ` ${sentVia}` : ""}
-            </span>
-            {/* Absent for a manual mark, and for anything sent before we tracked it. */}
-            {co.sent_to && (
-              <span className="min-w-0 truncate text-brand-gray" title={co.sent_to}>
-                to {co.sent_to}
-              </span>
-            )}
-          </div>
-        )}
+        <CoStatusBadge status={co.status} />
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          {actions}
+          {onToggleApprovals && (
+            <button
+              className="btn-ghost px-3 py-1.5 text-xs"
+              onClick={onToggleApprovals}
+              aria-expanded={!!expanded}
+              title="Who was asked to approve this, and what they did about it"
+            >
+              {expanded ? "Hide approvals" : "Approvals"}
+            </button>
+          )}
+          {onEdit && (
+            <button className="btn-ghost px-3 py-1.5 text-xs" onClick={onEdit}>
+              Edit
+            </button>
+          )}
+          {onDelete && (
+            <button className="btn-danger px-3 py-1.5 text-xs" onClick={onDelete}>
+              Delete
+            </button>
+          )}
+        </div>
       </div>
-      <CoStatusBadge status={co.status} />
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-        {actions}
-        {onEdit && (
-          <button className="btn-ghost px-3 py-1.5 text-xs" onClick={onEdit}>
-            Edit
-          </button>
-        )}
-        {onDelete && (
-          <button className="btn-danger px-3 py-1.5 text-xs" onClick={onDelete}>
-            Delete
-          </button>
-        )}
-      </div>
+      {expanded && (
+        <div className="border-t border-surface-hairline bg-surface-page px-5 py-3.5">
+          {children}
+        </div>
+      )}
     </div>
   );
 }

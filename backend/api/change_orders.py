@@ -18,6 +18,15 @@ path additionally calls `assert_change_order_approvable` — the creator cannot
 approve their own. Reject and mark-sent deliberately skip that rule: pulling
 back your own request, or recording a delivery a second person already
 approved, never lets you self-authorise the money.
+
+A submitted CO can also NAME the people it wants approval from
+(`co_approval_requests`, one row per person asked). Those rows are the
+append-only history — the four approval columns on `change_orders` are mutable
+and /reject NULLs all of them — and each carries a snapshot of the version and
+the price that person was shown, which is what stops a CO being re-priced out
+from under an approver between the email and the click. Naming approvers adds
+no state to the change order: only ONE of them has to answer, and the status
+machine stays draft | pending | approved | sent_back.
 """
 from datetime import datetime
 from typing import Optional
@@ -35,11 +44,15 @@ from auth.permissions import (
 from co_pricing import distribute_markup, markup_breakdown
 from core.services import safe_filename_slug
 from storage.backend import get_storage
-from db.models import ChangeOrder, ChangeOrderLineItem, Project
+from db.models import (
+    ChangeOrder, ChangeOrderApprovalRequest, ChangeOrderLineItem, Project, User,
+)
 from docgen.change_order_pdf import build_change_order_pdf
 from schemas.common import (
     ChangeOrderOut, ChangeOrderIn, ChangeOrderUpdate, ChangeOrderLineItemIn,
-    ChangeOrderMarkSent, ChangeOrderPricing,
+    ChangeOrderMarkSent, ChangeOrderPricing, ChangeOrderApprove,
+    ChangeOrderReject, ApprovalRequestOut, ApprovalRequestListOut,
+    RequestApprovalIn, RequestApprovalOut,
 )
 
 
@@ -47,6 +60,15 @@ router = APIRouter(prefix="/api/change-orders", tags=["change-orders"])
 
 _VALID_STATUS = ("draft", "pending", "approved", "sent_back")
 _VALID_RATE = ("fixed", "hourly")
+
+# Approval-request outcomes. NOT change order statuses — asking three people to
+# approve one CO is still a single approval step, and the CO's own machine stays
+# exactly draft | pending | approved | sent_back.
+_REQ_PENDING = "pending"
+_REQ_APPROVED = "approved"
+_REQ_REJECTED = "rejected"
+_REQ_SUPERSEDED = "superseded"   # somebody else answered first
+_REQ_CANCELLED = "cancelled"     # the PM withdrew the ask
 
 
 def _num(v) -> float:
@@ -123,6 +145,157 @@ def _get(db: Session, co_id: int) -> ChangeOrder:
     if not co:
         raise HTTPException(404, "Change order not found")
     return co
+
+
+def _request_out(req: ChangeOrderApprovalRequest, co: ChangeOrder) -> ApprovalRequestOut:
+    o = ApprovalRequestOut.model_validate(req)
+    # Resolved at read time rather than snapshotted: the id is the history, the
+    # name is only how it renders, and somebody changing their display name must
+    # not be able to rewrite who asked for what.
+    requester = req.requested_by_user
+    o.requested_by_name = (
+        (requester.name or requester.email) if requester else None
+    )
+    # WHO ACTUALLY ANSWERED, resolved from the server-stamped id. This is the
+    # only identity on the row the caller did not supply: `requested_name` is
+    # free text on a free-text ask, so a panel that renders it beside an
+    # "Approved" pill is captioning an outcome with a name nobody verified.
+    # Answered rows render this instead — see ApprovalRequestsPanel::RequestRow.
+    responder = req.responded_by_user
+    o.responded_by_name = (
+        (responder.name or responder.email) if responder else None
+    )
+    o.stale = req.co_version_at_request != (co.version or 1)
+    return o
+
+
+def _pending_requests(db: Session, co_id: int) -> "list[ChangeOrderApprovalRequest]":
+    """Every still-outstanding ask on this CO, oldest first."""
+    return (
+        db.query(ChangeOrderApprovalRequest)
+        .filter(ChangeOrderApprovalRequest.change_order_id == co_id)
+        .filter(ChangeOrderApprovalRequest.status == _REQ_PENDING)
+        .order_by(ChangeOrderApprovalRequest.id.asc())
+        .all()
+    )
+
+
+def _is_actors_request(req: ChangeOrderApprovalRequest, actor) -> bool:
+    """Is this row the ask that was addressed to the caller?
+
+    Two ways to match, and both are needed. The id is the strong one, but it is
+    NULL whenever the person was picked out of the Entra directory before they
+    had ever signed in — `users` rows are upserted on first authenticated
+    request, which for an invited approver happens when they click the link,
+    i.e. after the ask. Falling back to the address is what makes that first
+    click land on their own request instead of on nobody's.
+    """
+    if actor is None:
+        return False
+    if req.requested_user_id is not None and req.requested_user_id == actor.id:
+        return True
+    email = (getattr(actor, "email", "") or "").strip().lower()
+    return bool(email) and (req.requested_email or "").strip().lower() == email
+
+
+def _latest_unanswered_request(
+    db: Session, co_id: int, actor,
+) -> "ChangeOrderApprovalRequest | None":
+    """The last thing this person was ASKED about and never answered.
+
+    Reads pending AND cancelled rows, not just pending, and that is deliberate.
+    Withdrawing a request is gated on CO_CREATION — the CO's own author — so a
+    guard that only looked at pending rows could be switched off by the one
+    party it defends the approver against, with a single DELETE that notifies
+    nobody: ask at $80k, re-price to $180k, withdraw the ask, and the approver's
+    next click sails through on the strength of an email quoting the old number.
+    A withdrawn ask is still the last figure that person was shown, so it still
+    answers the only question `approve_change_order`'s guard (b) asks.
+
+    Rows the person actually ANSWERED are excluded (approved / rejected), as are
+    superseded ones: those belong to a closed round. Otherwise a CO that was
+    sent back, edited and re-submitted would refuse its previous approver
+    forever, with nothing they could do about it themselves.
+
+    Newest first, and matched with `_is_actors_request` so the id/address
+    fallback behaves identically here and in the close-out.
+    """
+    if actor is None:
+        return None
+    rows = (
+        db.query(ChangeOrderApprovalRequest)
+        .filter(ChangeOrderApprovalRequest.change_order_id == co_id)
+        .filter(ChangeOrderApprovalRequest.status.in_(
+            (_REQ_PENDING, _REQ_CANCELLED),
+        ))
+        .order_by(
+            ChangeOrderApprovalRequest.requested_at.desc(),
+            ChangeOrderApprovalRequest.id.desc(),
+        )
+        .all()
+    )
+    for req in rows:
+        if _is_actors_request(req, actor):
+            return req
+    return None
+
+
+def _close_out_requests(
+    db: Session, co: ChangeOrder, actor, *, outcome: str, note: "str | None",
+) -> None:
+    """FIRST RESPONDER DECIDES: record the answer, retire the rest.
+
+    A change order needs ONE of the people who were asked, so the moment anybody
+    answers, every other outstanding ask stops being outstanding. They go to
+    'superseded' rather than being deleted because "we asked four people and Ana
+    got there first" is a different fact from "we asked Ana", and the second one
+    is not true.
+
+    Superseded rows get a `responded_at` (that is when they stopped being open)
+    but never a `responded_by_user_id` — those people did not respond.
+
+    A DECISION FROM SOMEBODY NOBODY ASKED still gets a row. Holding CO_APPROVAL
+    is enough to approve or send back a change order without ever being named on
+    it, and until this wrote a row those decisions lived only in the four
+    columns on `change_orders` that the next /reject NULLs. That is the exact
+    hole this table exists to close, and it does not stop being a hole because
+    the decision arrived unasked: an approval on Tuesday and a send-back on
+    Wednesday has to still say, on Thursday, who approved it and at what price.
+    """
+    now = datetime.utcnow()
+    answered = False
+    for req in _pending_requests(db, co.id):
+        if _is_actors_request(req, actor):
+            answered = True
+            req.status = outcome
+            req.response_note = note
+            req.responded_by_user_id = actor.id if actor else None
+        else:
+            req.status = _REQ_SUPERSEDED
+        req.responded_at = now
+    if answered or actor is None:
+        return
+    # Recorded as its own ask-and-answer in one row: nobody requested it, so
+    # `requested_by_id` stays NULL and the requestee IS the responder. Both
+    # snapshots are taken AFTER `_bump`, so they describe the document as
+    # decided rather than as it was a moment earlier.
+    db.add(ChangeOrderApprovalRequest(
+        change_order_id=co.id,
+        requested_user_id=actor.id,
+        requested_name=actor.name or actor.email,
+        # NOT NULL. A user row with no address is possible in principle (the
+        # column is nullable), and "" is the honest value — `_is_actors_request`
+        # requires a non-empty address before it will match on one, so an empty
+        # one can never be mistaken for somebody else's ask.
+        requested_email=(actor.email or "").strip(),
+        requested_at=now,
+        co_version_at_request=co.version or 1,
+        total_at_request=co.total_amount,
+        status=outcome,
+        responded_at=now,
+        responded_by_user_id=actor.id,
+        response_note=note,
+    ))
 
 
 def _co_pdf_filename(co: ChangeOrder) -> str:
@@ -497,9 +670,244 @@ def submit_change_order(
     return _out(co, db)
 
 
+@router.post("/{co_id}/request-approval", response_model=RequestApprovalOut)
+def request_change_order_approval(
+    co_id: int,
+    payload: RequestApprovalIn,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_CREATION)),
+):
+    """Ask one or more named people to approve this CO.
+
+    AUTHORING-side permission, deliberately. Choosing who reviews your request
+    is part of raising it, not part of deciding on it — CO_APPROVAL would mean
+    a PM could submit a change order and then not be allowed to ask anybody to
+    look at it.
+
+    Only ONE of the people asked has to answer (see `_close_out_requests`), so
+    this adds no new state to the CO: its status machine stays draft | pending |
+    approved | sent_back, and these rows sit beside it as the record of who was
+    asked. There is no token and no public route anywhere in this flow — the
+    approver signs in with Entra like everybody else and the deep link is just a
+    path.
+
+    NO `_bump(co)` HERE, and that is not an oversight. This writes nothing to
+    the change order, and bumping would invalidate the very snapshot the line
+    above it just took: `co_version_at_request` would trail `co.version` from
+    the instant the ask was made, and guard (b) in approve would then reject
+    every approver who ever clicked the link.
+    """
+    co = _get(db, co_id)
+    guard.require_project(co.project_id)
+    if co.status != "pending":
+        raise HTTPException(
+            409,
+            f"CO-{co.co_number} is {co.status}, not awaiting approval. Submit it "
+            "first — asking somebody to approve a change order that is still "
+            "being written points them at a document that will have moved by "
+            "the time they open it.",
+        )
+
+    # Normalise before anything else, so a payload carrying the modal's empty
+    # trailing row is an empty request rather than a row with no address on it —
+    # an unaddressable ask is invisible to everyone including the person it was
+    # supposedly for.
+    recipients: "list[tuple[str, str | None, int | None]]" = []
+    seen: "set[str]" = set()
+    for r in payload.recipients:
+        email = (r.email or "").strip()
+        name = (r.name or "").strip() or None
+        user_id = r.user_id
+        if user_id is not None:
+            # THE ACCOUNT IS THE IDENTITY, not the label posted alongside it.
+            # These rows are the approval history and the panel renders the name
+            # on them, so free text carrying somebody else's user id — "Gary
+            # Castillo (VP)" against an address that is not Gary's — would put a
+            # name that never approved anything next to an Approved pill, and
+            # drop the ask into that person's /my-work queue as well. The picker
+            # only ever sends the id it read off the account, so taking both
+            # fields FROM the account costs one get() and makes the mismatch
+            # unrepresentable rather than merely unlikely.
+            u = db.get(User, user_id)
+            if u is None:
+                raise HTTPException(
+                    400,
+                    "One of the people you picked no longer has an account. "
+                    "Reload the page and pick them again.",
+                )
+            if not (u.email or "").strip():
+                raise HTTPException(
+                    400,
+                    f"{u.name or 'That person'} has no email address on file. "
+                    "An approval request is delivered by email, so pick "
+                    "somebody with an address or type one in.",
+                )
+            if email and email.lower() != u.email.strip().lower():
+                raise HTTPException(
+                    400,
+                    f"{email} does not match the account it was picked from "
+                    f"({u.email}). Reload the page and pick them again.",
+                )
+            email = u.email.strip()
+            name = u.name or email
+        if not email:
+            continue
+        # One ask per person per call: the same address twice in one payload is
+        # one request, not two, and deduping here keeps the loop below free to
+        # treat every remaining entry as a genuinely distinct person.
+        key = email.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        recipients.append((email, name, user_id))
+    if not recipients:
+        raise HTTPException(
+            400,
+            "Pick at least one person to request approval from.",
+        )
+
+    # Existing OUTSTANDING asks, keyed on the lowercased address — the same key
+    # the approve-time match uses. Re-asking somebody already pending must not
+    # leave two open rows for one person: both would have to be closed out on
+    # their single answer, and the panel would show them asked twice for one ask.
+    outstanding = {
+        (req.requested_email or "").strip().lower(): req
+        for req in _pending_requests(db, co.id)
+    }
+    # `payload.note` is the covering message for the email the SPA composes from
+    # this response. It is deliberately not persisted — there is no column for
+    # it, and the mail leaves from the PM's own mailbox, so their Sent items are
+    # the copy of record.
+    now = datetime.utcnow()
+    fresh: "list[ChangeOrderApprovalRequest]" = []
+    for email, name, user_id in recipients:
+        prior = outstanding.get(email.lower())
+        if prior is not None:
+            # A RE-ASK CLOSES THE OLD ROW AND FILES A NEW ONE. It does NOT edit
+            # the old one in place, and the difference is the whole point of the
+            # table.
+            #
+            # Re-dating the existing snapshot was the previous behaviour, and it
+            # meant one call — from anyone holding CO_CREATION, sending nothing
+            # to anybody, since the mail is a separate client-side step — both
+            # cleared guard (b) in `approve_change_order` AND overwrote the only
+            # evidence of what the approver had originally been asked to
+            # approve. Ask at $80k, re-price to $180k, "record without
+            # emailing", and the approver's $80k email now approves $180k with
+            # nothing anywhere recording the $80k ask. It also contradicted this
+            # table's own contract (models.py: "They only ever change status").
+            #
+            # Superseding and inserting keeps everything the re-ask was for —
+            # exactly one pending row per person, and an approver who has been
+            # re-asked at the current figure can act again — while the original
+            # ask survives at its original price, which is what makes the
+            # history worth having.
+            prior.status = _REQ_SUPERSEDED
+            prior.responded_at = now
+        req = ChangeOrderApprovalRequest(
+            change_order_id=co.id,
+            # Carry a resolved identity forward: a re-ask typed as free text
+            # must not blank the account a directory pick already bound.
+            requested_user_id=(
+                user_id if user_id is not None
+                else (prior.requested_user_id if prior else None)
+            ),
+            requested_name=name or (prior.requested_name if prior else None),
+            requested_email=email,
+            requested_by_id=actor.id if actor else None,
+            requested_at=now,
+            # THE SNAPSHOT. A pending CO is still PATCH-editable, so these two
+            # are what "the version and the price this person was shown" means
+            # once the CO has moved on.
+            co_version_at_request=co.version or 1,
+            total_at_request=co.total_amount,
+            status=_REQ_PENDING,
+        )
+        db.add(req)
+        fresh.append(req)
+    db.flush()
+    return RequestApprovalOut(
+        requests=[_request_out(r, co) for r in fresh],
+        approval_path=f"/change-orders/{co.id}",
+    )
+
+
+@router.get("/{co_id}/approval-requests", response_model=ApprovalRequestListOut)
+def list_change_order_approval_requests(
+    co_id: int,
+    db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+):
+    """The full ask-and-answer history for one CO, newest first.
+
+    Ungated beyond authentication, like every other CO read: this is the record
+    of who was asked and what they said, and hiding it from the people working
+    the change order is how two of them end up asking the same person twice.
+    """
+    co = _get(db, co_id)
+    rows = (
+        db.query(ChangeOrderApprovalRequest)
+        .filter(ChangeOrderApprovalRequest.change_order_id == co.id)
+        .order_by(
+            ChangeOrderApprovalRequest.requested_at.desc(),
+            ChangeOrderApprovalRequest.id.desc(),
+        )
+        .all()
+    )
+    return ApprovalRequestListOut(requests=[_request_out(r, co) for r in rows])
+
+
+@router.delete("/{co_id}/approval-requests/{req_id}", status_code=204)
+def cancel_change_order_approval_request(
+    co_id: int,
+    req_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_CREATION)),
+):
+    """Withdraw an outstanding ask — "actually, don't bother reviewing this".
+
+    Same authoring-side permission as making the ask. Closed out by status
+    rather than deleted, for the same reason nothing else in this table is
+    deleted: an ask that was made and withdrawn happened, and the row is the
+    only thing that can say so.
+
+    Withdrawing does NOT clear the staleness guard on approve, and must not:
+    this route is gated on CO_CREATION, i.e. exactly the person that guard
+    defends the approver against. A cancelled row still records the figure they
+    were shown, and `_latest_unanswered_request` still reads it.
+
+    No `_bump(co)`: the change order itself is untouched, and bumping would
+    strand every other approver's snapshot (see request-approval).
+    """
+    co = _get(db, co_id)
+    guard.require_project(co.project_id)
+    req = db.get(ChangeOrderApprovalRequest, req_id)
+    if req is None or req.change_order_id != co.id:
+        raise HTTPException(404, "Approval request not found")
+    if req.status != _REQ_PENDING:
+        raise HTTPException(
+            409,
+            f"That approval request is already {req.status} and cannot be "
+            "withdrawn — it is part of the record of what happened.",
+        )
+    req.status = _REQ_CANCELLED
+    req.responded_at = datetime.utcnow()
+    # WHO withdrew it. Any CO_CREATION holder may withdraw anybody's ask —
+    # that is the contracted gate — so "this request was pulled" is only half a
+    # record without the name attached to it, and it is the half somebody will
+    # want when an approver says nobody told them. The person named here did
+    # not ANSWER the request; the status is what says what happened to it.
+    if actor:
+        req.responded_by_user_id = actor.id
+    return None
+
+
 @router.post("/{co_id}/approve", response_model=ChangeOrderOut)
 def approve_change_order(
     co_id: int,
+    payload: Optional[ChangeOrderApprove] = None,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
     guard=Depends(require_permission(CO_APPROVAL)),
@@ -513,6 +921,55 @@ def approve_change_order(
             "change order that has been submitted can be approved — otherwise a "
             "second approval would re-stamp one the client already has.",
         )
+    # ---- Staleness, checked twice, on purpose ----
+    # (a) THE CLIENT'S CLAIM. Same field, shape and meaning as the PATCH's
+    # optimistic lock, so an editor and an approver disagree with the server in
+    # exactly the same way. The whole body is optional, so an SPA tab loaded
+    # before this shipped simply does not make the claim.
+    if (
+        payload is not None
+        and payload.expected_version is not None
+        and co.version != payload.expected_version
+    ):
+        raise HTTPException(409, detail={
+            "error": "stale_version",
+            "message": "This change order was saved by someone else. Reload first.",
+            "current_version": co.version,
+        })
+    # (b) THE SERVER'S OWN CHECK, independent of anything the client sends, and
+    # the reason this endpoint was touched at all.
+    #
+    # A PENDING change order is still fully PATCH-editable — `_assert_editable`
+    # only fires once it is approved or delivered — so the document can be
+    # re-priced between the moment somebody is asked to approve it and the
+    # moment they click the link in that email. Concretely: the approver is
+    # emailed CO-7 at $80k, the PM edits the lines to $180k while it sits in the
+    # approver's inbox, the approver opens the link, sees whatever is on screen,
+    # and clicks Approve. The stamp lands on $180k, the archived PDF is built
+    # from $180k, and nothing anywhere records that the person who authorised it
+    # was asked about a different number. The adders make it silent: the markup
+    # is folded into the line costs, so a re-priced CO still ties out perfectly.
+    #
+    # Guard (a) cannot cover this — it only fires if the client volunteers a
+    # version, and an approver arriving fresh on a deep link has no prior
+    # version to volunteer. So this one asks the DATABASE what that person was
+    # actually shown, and refuses when the answer moved.
+    #
+    # Reads the caller's last UNANSWERED ask, pending or withdrawn, rather than
+    # only their pending one: withdrawing is a CO_CREATION route, so a guard
+    # that ignored cancelled rows could be switched off by the CO's own author
+    # with a single DELETE. See `_latest_unanswered_request`.
+    asked = _latest_unanswered_request(db, co.id, actor)
+    if asked is not None and asked.co_version_at_request != (co.version or 1):
+        raise HTTPException(409, detail={
+            "error": "stale_co",
+            "current_version": co.version,
+            "requested_version": asked.co_version_at_request,
+            "detail": (
+                "This change order was edited after you were asked to "
+                "approve it. Re-review before approving."
+            ),
+        })
     # Separation of duties, on top of the permission: whoever raised this CO is
     # not allowed to be the one who approves it. `created_by_id` is the creator
     # of record — `updated_by_id` moves with every save (including this one) and
@@ -531,6 +988,17 @@ def approve_change_order(
     if actor:
         co.updated_by_id = actor.id
     _bump(co)
+    # The durable half of the record. The four columns above are mutable and
+    # /reject NULLs every one of them; this row is what still says, afterwards,
+    # that this person was asked and said yes at this price.
+    _close_out_requests(
+        db, co, actor,
+        outcome=_REQ_APPROVED,
+        note=((payload.note or "").strip() or None) if payload else None,
+    )
+    # DELIBERATELY NOT SENT HERE. The order is approve -> send-check -> Graph ->
+    # mark-sent, and it stays that way: an auto-send on approval is how a real
+    # client received the same priced change order twice.
     db.flush()
     _archive_pdf(co)   # file the final PDF to storage (best-effort)
     db.flush()
@@ -586,6 +1054,7 @@ def mark_change_order_sent(
 @router.post("/{co_id}/reject", response_model=ChangeOrderOut)
 def reject_change_order(
     co_id: int,
+    payload: Optional[ChangeOrderReject] = None,
     db: Session = Depends(get_db),
     actor=Depends(require_db_user),
     guard=Depends(require_permission(CO_APPROVAL)),
@@ -594,7 +1063,14 @@ def reject_change_order(
 
     Distinct 'sent_back' status (not plain 'draft') so returned COs surface in
     their own tab instead of blending in with fresh drafts. Editable + can be
-    re-submitted (submit -> pending) from there."""
+    re-submitted (submit -> pending) from there.
+
+    THE APPROVAL REQUESTS ARE NOT DELETED. This route NULLs approved_by,
+    approved_by_user_id, approved_at and all three send stamps — which is
+    exactly why those rows have to survive it. Without them, a change order
+    approved on Tuesday and sent back on Wednesday reads on Thursday as though
+    nobody had ever been asked and nobody had ever agreed. They are closed out
+    by status, and that is the whole of what happens to them."""
     co = _get(db, co_id)
     guard.require_project(co.project_id)
     if co.status not in ("pending", "approved"):
@@ -626,6 +1102,11 @@ def reject_change_order(
     if actor:
         co.updated_by_id = actor.id
     _bump(co)
+    _close_out_requests(
+        db, co, actor,
+        outcome=_REQ_REJECTED,
+        note=((payload.note or "").strip() or None) if payload else None,
+    )
     db.flush()
     return _out(co, db)
 

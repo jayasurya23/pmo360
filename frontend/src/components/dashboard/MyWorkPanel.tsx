@@ -30,7 +30,13 @@ import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
 import { fetchMyWork } from "@/lib/api";
-import type { MyWork, MyWorkItem, MyWorkPortfolio, MyWorkQueue } from "@/lib/types";
+import type {
+  MyWork,
+  MyWorkCoApproval,
+  MyWorkItem,
+  MyWorkPortfolio,
+  MyWorkQueue,
+} from "@/lib/types";
 import { money } from "@/components/home/useHomeData";
 import { nameToSlug } from "@/lib/slugs";
 import { useApp } from "@/lib/state";
@@ -46,7 +52,12 @@ const QUEUE_KEYS = [
 type QueueKey = (typeof QUEUE_KEYS)[number];
 
 const GROUP_TITLE: Record<QueueKey, string> = {
-  co_approvals: "Change orders awaiting your approval",
+  // "you can" and not "awaiting your" any more: this bucket is everything the
+  // co_approval permission lets the user decide on, which is a permission and
+  // not an invitation. The COs somebody actually asked THEM about now lead the
+  // card under the title this one used to carry, and a CO in both appears only
+  // in the named-ask group — see AskedOfMeGroup.
+  co_approvals: "Other change orders you can approve",
   co_to_send: "Approved change orders not yet sent",
   // Deliberately NOT "unsent": Agenda has no sent_at and the send path runs
   // through Graph in the browser, so the server cannot know. Upcoming is what
@@ -189,12 +200,23 @@ export default function MyWorkPanel({
           nav(`/history${q}`);
           break;
         default:
-          // Change Orders has no per-record route yet, so this lands on the page
-          // with the row's client + portfolio already selected.
-          nav(`/change-orders${q}`);
+          // `item.id` IS the change order id for both CO kinds, so this opens
+          // the record itself — the page selects the context, switches to the
+          // right tab and highlights the row. The client + portfolio query
+          // stays on the link anyway: it is what the header switcher reads, and
+          // it means the page has the context before the CO fetch resolves.
+          nav(`/change-orders/${item.id}${q}`);
       }
     },
     [contextQuery, nav],
+  );
+
+  /** The named-ask rows carry no `project_id` — the payload identifies them by
+   *  client/portfolio NAME only — so there is no context query to build. The
+   *  deep link resolves the portfolio from the change order itself. */
+  const openCo = useCallback(
+    (changeOrderId: number) => nav(`/change-orders/${changeOrderId}`),
+    [nav],
   );
 
   const actionsHref = useMemo(() => {
@@ -301,7 +323,13 @@ export default function MyWorkPanel({
             </button>{" "}
             to see everything assigned to you.
           </p>
-          <WaitingOnMeCard queue={queue} onOpen={openRow} scoped />
+          <WaitingOnMeCard
+            queue={queue}
+            asked={data.co_approvals}
+            onOpen={openRow}
+            onOpenCo={openCo}
+            scoped
+          />
         </>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.25fr] gap-[22px] items-start">
@@ -317,7 +345,12 @@ export default function MyWorkPanel({
               )
             }
           />
-          <WaitingOnMeCard queue={queue} onOpen={openRow} />
+          <WaitingOnMeCard
+            queue={queue}
+            asked={data.co_approvals}
+            onOpen={openRow}
+            onOpenCo={openCo}
+          />
         </div>
       )}
     </div>
@@ -553,26 +586,47 @@ function ConcentrationCard({
    ============================================================ */
 function WaitingOnMeCard({
   queue,
+  asked,
   onOpen,
+  onOpenCo,
   scoped = false,
 }: {
   queue: MyWorkQueue;
+  /** COs somebody asked this person by name to approve. Never narrowed by
+   *  portfolio — see AskedOfMeGroup. */
+  asked: MyWorkCoApproval[];
   onOpen: (item: MyWorkItem) => void;
+  onOpenCo: (changeOrderId: number) => void;
   scoped?: boolean;
 }) {
+  // A change order somebody asked for by name is listed once, in that group.
+  // Leaving it in the permission bucket too would put the same piece of work on
+  // the card twice, which reads as two things to do.
+  const askedIds = new Set(asked.map((a) => a.change_order_id));
+  const otherApprovals = queue.co_approvals.filter((i) => !askedIds.has(i.id));
+  // Recomputed rather than reusing `queue.co_approval_amount`: that sum covers
+  // the unfiltered bucket, and a total counting rows the list no longer shows is
+  // a wrong number on a card about money.
+  const otherApprovalAmount = otherApprovals.reduce(
+    (s, r) => s + (Number(r.amount) || 0),
+    0,
+  );
+  const total =
+    otherApprovals.length +
+    asked.length +
+    queue.co_to_send.length +
+    queue.agendas.length +
+    queue.meeting_drafts.length;
+
   return (
     <section className="card overflow-hidden">
       <div className="px-5 py-3.5 border-b border-surface-hairline">
         <CardHead
           title="Waiting on you"
-          hint={
-            queue.total > 0
-              ? `${queue.total} item${queue.total === 1 ? "" : "s"}`
-              : undefined
-          }
+          hint={total > 0 ? `${total} item${total === 1 ? "" : "s"}` : undefined}
         />
       </div>
-      {queue.total === 0 ? (
+      {total === 0 ? (
         // One calm line, not four empty cards.
         <p className="px-5 py-6 text-center text-sm text-brand-gray">
           Nothing is waiting on you{scoped ? " in this portfolio" : ""} — no
@@ -580,24 +634,118 @@ function WaitingOnMeCard({
           drafts.
         </p>
       ) : (
-        QUEUE_KEYS.map((key) => (
-          <QueueGroup
-            key={key}
-            title={GROUP_TITLE[key]}
-            withMoney={GROUP_HAS_MONEY[key]}
-            total={
-              key === "co_approvals"
-                ? queue.co_approval_amount
-                : key === "co_to_send"
-                  ? queue.co_to_send_amount
-                  : 0
-            }
-            items={queue[key]}
-            onOpen={onOpen}
-          />
-        ))
+        <>
+          {/* First, because it is the only bucket where a person is waiting on
+              a named answer rather than the work merely being available. */}
+          <AskedOfMeGroup items={asked} scoped={scoped} onOpen={onOpenCo} />
+          {QUEUE_KEYS.map((key) => (
+            <QueueGroup
+              key={key}
+              title={GROUP_TITLE[key]}
+              withMoney={GROUP_HAS_MONEY[key]}
+              total={
+                key === "co_approvals"
+                  ? otherApprovalAmount
+                  : key === "co_to_send"
+                    ? queue.co_to_send_amount
+                    : 0
+              }
+              items={key === "co_approvals" ? otherApprovals : queue[key]}
+              onOpen={onOpen}
+            />
+          ))}
+        </>
       )}
     </section>
+  );
+}
+
+/**
+ * "Sarah asked you to approve CO-14" — the named requests, not the permission.
+ *
+ * ALWAYS WHOLE-PLATE, even inside the narrowed card. Every other list here is
+ * filtered to the portfolio by `project_id`, which these rows do not carry —
+ * the payload identifies their portfolio by name only. Hiding a request
+ * addressed to someone by name because the header happens to point elsewhere
+ * would be the worst way to lose one, so the group says which scope it is in
+ * instead, the same way the date-window counts do.
+ *
+ * `stale` is the one that matters: the CO was edited after the person was
+ * asked, so the figure they were mailed is not the figure in front of them, and
+ * the server will refuse the approval. Say so on the row rather than letting
+ * them find out at the click.
+ */
+function AskedOfMeGroup({
+  items,
+  scoped,
+  onOpen,
+}: {
+  items: MyWorkCoApproval[];
+  scoped: boolean;
+  onOpen: (changeOrderId: number) => void;
+}) {
+  if (items.length === 0) return null;
+  const askedTotal = items.reduce((s, r) => s + (Number(r.total_amount) || 0), 0);
+
+  return (
+    <div className="border-b border-surface-hairline last:border-b-0">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-5 pt-3 pb-1">
+        <span className="text-[11px] uppercase tracking-[0.1em] font-semibold text-brand-gray">
+          Change orders awaiting your approval
+        </span>
+        <span className="text-[11px] text-brand-lightgray tabular-nums">
+          {items.length}
+        </span>
+        {scoped && (
+          <span className="text-[11px] text-brand-lightgray">
+            across every portfolio
+          </span>
+        )}
+        {askedTotal > 0 && (
+          <span className="ml-auto text-[11px] font-semibold tabular-nums text-brand-black">
+            {money(askedTotal)}
+          </span>
+        )}
+      </div>
+      {items.map((item) => (
+        <button
+          key={item.change_order_id}
+          type="button"
+          onClick={() => onOpen(item.change_order_id)}
+          className="w-full text-left px-5 py-2.5 grid grid-cols-[1fr_auto] gap-3 items-center
+            border-t border-surface-page hover:bg-surface-rowhover transition"
+        >
+          <span className="min-w-0">
+            <span className="block text-sm text-brand-black truncate">
+              {item.co_number ? `CO-${item.co_number}` : "Change order"}
+              {item.title ? ` — ${item.title}` : ""}
+            </span>
+            <span className="block text-xs text-brand-gray mt-px truncate">
+              {item.client_name && (
+                <>
+                  {item.client_name}
+                  <span className="px-1">/</span>
+                </>
+              )}
+              {item.project_name || "Portfolio"}
+              {item.requested_by && ` · asked by ${item.requested_by}`}
+              {` · ${safeDate(item.requested_at)}`}
+            </span>
+            {item.stale && (
+              <span className="mt-1 inline-flex rounded bg-status-pending-bg px-1.5 py-0.5
+                text-[11px] font-semibold text-status-pending-text">
+                Edited since you were asked — re-review
+              </span>
+            )}
+          </span>
+          {item.total_amount != null && (
+            <span className="text-sm font-semibold tabular-nums text-brand-black whitespace-nowrap">
+              {money(item.total_amount)}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -677,6 +825,10 @@ function isWellFormed(d: MyWork | null | undefined): d is MyWork {
     return false;
   }
   if (!Array.isArray(d.by_portfolio)) return false;
+  // Checked as strictly as the rest, for the same reason: an absent list would
+  // render as "nobody is waiting on you" on the one section where somebody
+  // named this person and is waiting for an answer.
+  if (!Array.isArray(d.co_approvals)) return false;
   const q = d.waiting_on_me;
   if (!q || typeof q.total !== "number") return false;
   return QUEUE_KEYS.every((k) => Array.isArray(q[k]));
