@@ -2462,6 +2462,33 @@ function CoEmailModal({
   // flat To+Cc list, so it all lands in To for the PM to trim.
   const [to, setTo] = useState(co.sent_to || "");
   const [cc, setCc] = useState("");
+
+  /** Every approved change order that goes to a client is copied to PO
+   *  Processing. Deliberately NOT seeded into the `cc` box: a value sitting in
+   *  an editable field is one backspace from being dropped, silently, on the
+   *  one send where it mattered. It is merged in at the moment of sending
+   *  instead — on BOTH pathways — so "all outgoing COs" is a property of the
+   *  code rather than of the PM remembering.
+   *
+   *  This modal only opens for an APPROVED change order (send-check refuses
+   *  anything else), so "after approval" needs no separate condition here.
+   *
+   *  One constant, one place to change it if the address ever moves. */
+  const PO_PROCESSING_CC = "POProcessing@castillope.com";
+
+  /** The Cc line as actually sent: whatever the PM typed, plus PO Processing,
+   *  minus the duplicate if they typed it themselves. Case-insensitive,
+   *  because mail addresses are and a doubled Cc looks like a bug. */
+  const ccWithPoProcessing = (): string => {
+    const typed = cc
+      .split(/[,;]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const already = typed.some(
+      (a) => a.toLowerCase() === PO_PROCESSING_CC.toLowerCase(),
+    );
+    return (already ? typed : [...typed, PO_PROCESSING_CC]).join(", ");
+  };
   const [subject, setSubject] = useState(
     `Change Order CO-${co.co_number} (${co.co_version || "V1"}) — ${project}`,
   );
@@ -2512,7 +2539,11 @@ function CoEmailModal({
       return have.includes(email) ? cur : cur ? `${cur}, ${email}` : email;
     });
 
-  const recipients = () => [to, cc].filter((s) => s.trim()).join(", ");
+  // What actually went out, for mark-sent's `sent_to`. Uses the same merged Cc
+  // the send used — recording the typed Cc instead would leave the audit trail
+  // quietly disagreeing with the mail.
+  const recipients = () =>
+    [to, ccWithPoProcessing()].filter((s) => s.trim()).join(", ");
 
   /**
    * The pre-flight both send pathways run BEFORE anything irreversible happens.
@@ -2587,7 +2618,11 @@ function CoEmailModal({
       setSending(false);
     }
     const q = [`subject=${encodeURIComponent(subject)}`, `body=${encodeURIComponent(body)}`];
-    if (cc.trim()) q.unshift(`cc=${encodeURIComponent(cc.trim())}`);
+    // ccWithPoProcessing() is never empty, so unlike the old `cc.trim()` this is
+    // unconditional — the Outlook fallback carries PO Processing exactly like
+    // the Graph path. Missing it here would have been the silent hole: same
+    // button, same PM, no copy.
+    q.unshift(`cc=${encodeURIComponent(ccWithPoProcessing())}`);
     setTimeout(() => {
       window.location.href = `mailto:${encodeURIComponent(to.trim())}?${q.join("&")}`;
     }, 250);
@@ -2614,7 +2649,7 @@ function CoEmailModal({
       await sendMail(
         {
           to: to.trim(),
-          cc: cc.trim() || undefined,
+          cc: ccWithPoProcessing(),
           subject,
           body,
           attachments: [
@@ -2705,6 +2740,13 @@ function CoEmailModal({
         <label className="block">
           <span className="label">Cc (optional)</span>
           <input className="input" value={cc} onChange={(e) => setCc(e.target.value)} />
+          {/* Stated, not hidden. The address is added by the code and cannot be
+              removed here, so the PM has to be able to see that the client's
+              copy also reaches PO Processing — finding out afterwards, from a
+              reply-all, is the version of this that damages trust. */}
+          <span className="mt-1 block text-[11px] text-brand-gray">
+            Always copied to <b>{PO_PROCESSING_CC}</b> on approved change orders.
+          </span>
         </label>
         <label className="block">
           <span className="label">Subject</span>
