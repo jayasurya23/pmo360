@@ -34,7 +34,7 @@ import PdfPagePreview from "@/components/PdfPagePreview";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
 import { useAuth } from "@/auth/useAuth";
-import { ApiError, isStaleVersionError } from "@/lib/api";
+import { ApiError, isStaleVersionError, isPriceOnlyPredecessorError } from "@/lib/api";
 import {
   listProposals,
   fetchProposalBoard,
@@ -186,6 +186,188 @@ function rebuild(flat: ProposalItemNode[]): ProposalItemNode[] {
     stack.push(node);
   }
   return roots;
+}
+
+// ---------------------------------------------------------------------------
+// "No Price Only row as a predecessor" — the client half of the rule enforced
+// in backend/proposal/scheduling.py (find_price_only_predecessor_links). Read
+// that docstring for WHY; keep the two in step if either moves.
+//
+// Mirrored here rather than fetched because the PM has to see the problem WHILE
+// editing — the tint and the disabled options have to react to an unsaved toggle,
+// not to the last server response. The server stays the authority: it re-checks
+// the whole tree on save and refuses it (put_tree / recompute), so a stale tab or
+// a scripted client cannot slip one past.
+// ---------------------------------------------------------------------------
+
+/** Mirror of backend is_schedulable_task — a row the date pass actually dates. */
+function isSchedulableTask(n: ProposalItemNode): boolean {
+  return !n.is_milestone && n.enabled && !n.price_only;
+}
+
+/** Mirror of the backend's _pi_name_key — punctuation-insensitive section match. */
+function isProjectInitiationSection(n: ProposalItemNode): boolean {
+  const key = (n.name || "")
+    .toLowerCase()
+    .split("")
+    .filter((c) => /[a-z0-9]/.test(c))
+    .join("");
+  return key.includes("projectinitiation");
+}
+
+/**
+ * Ids of every row inside a top-level "Project Initiation" section (the root
+ * included), mirroring the backend's project_initiation_roots.
+ *
+ * Walks indent_level exactly like `rebuild` above, because indent_level IS the
+ * hierarchy in this flat working array — `children` is only rebuilt at save
+ * time, so a parent-pointer walk would read stale nesting mid-edit.
+ *
+ * PI price-only rows are legal predecessors: that section IS day one, so a
+ * successor starting on day one is the intended schedule rather than a dropped
+ * link. Matched loosely (and without requiring the milestone flag) for the
+ * reason spelled out on the server's is_project_initiation_section — an exact
+ * match refuses saves after a harmless rename without moving any date. Keep the
+ * two predicates in step: if they disagree the editor tints rows the server
+ * accepts, or stays silent about ones it refuses.
+ */
+function projectInitiationIds(flat: ProposalItemNode[]): Set<number> {
+  const ids = new Set<number>();
+  let inside = false;
+  for (const n of flat) {
+    if (n.indent_level === 0) inside = isProjectInitiationSection(n);
+    if (inside && n.id != null) ids.add(n.id);
+  }
+  return ids;
+}
+
+/** Can `cand` legally be the predecessor of `row`? (false only for the rule.) */
+function predecessorAllowed(
+  cand: ProposalItemNode,
+  row: ProposalItemNode,
+  piIds: Set<number>,
+): boolean {
+  // Scoped to what the scheduler actually dates, same as the server: a link
+  // between two unscheduled rows (the Project Initiation chain, Additional
+  // Services) is inert and stays allowed.
+  if (!isSchedulableTask(row)) return true;
+  if (!cand.price_only) return true;
+  return cand.id != null && piIds.has(cand.id);
+}
+
+export interface PriceOnlyLinkView {
+  successor: ProposalItemNode;
+  predecessor: ProposalItemNode;
+  /** The predecessor's top-level section — what the "renamed PI" hint names. */
+  section: ProposalItemNode | null;
+}
+
+/** Every offending link in the working tree, for the banner + the row tint. */
+function findPriceOnlyPredecessorLinks(flat: ProposalItemNode[]): PriceOnlyLinkView[] {
+  const piIds = projectInitiationIds(flat);
+  const byId = new Map<number, ProposalItemNode>();
+  const idxById = new Map<number, number>();
+  flat.forEach((n, i) => {
+    if (n.id != null) {
+      byId.set(n.id, n);
+      idxById.set(n.id, i);
+    }
+  });
+
+  const out: PriceOnlyLinkView[] = [];
+  for (const n of flat) {
+    if (n.predecessor_id == null || !isSchedulableTask(n)) continue;
+    const pred = byId.get(n.predecessor_id);
+    // A predecessor id pointing at nothing is the separate missing-dependency
+    // defect, already tinted gold — not this one.
+    if (!pred) continue;
+    if (!predecessorAllowed(pred, n, piIds)) {
+      const pi = idxById.get(pred.id!);
+      out.push({
+        successor: n,
+        predecessor: pred,
+        section: pi == null ? null : indentZeroAncestor(flat, pi),
+      });
+    }
+  }
+  return out;
+}
+
+/** Does this tree still have a section the scheduler recognises as kickoff?
+ *
+ *  Mirrors the server's project_initiation_roots. When the answer is NO, every
+ *  pre-existing "30% task keys off a PI Due-Diligence row" link in the standard
+ *  structure turns into a violation — 10 of the 50 production workbooks carry
+ *  exactly one — and the generic advice ("pick a different predecessor") is
+ *  wrong for all of them. The banner has to say the section is the cause, or the
+ *  PM is hunting a defect that isn't there. */
+function hasProjectInitiationSection(flat: ProposalItemNode[]): boolean {
+  return flat.some((n) => n.indent_level === 0 && isProjectInitiationSection(n));
+}
+
+/** Rows that would depend on `row` once it becomes price-only.
+ *
+ *  Only the ones that would actually BREAK: a dependent inside Project
+ *  Initiation stays legal, so refusing the toggle for it would be an
+ *  over-block. `locked` rides along because a locked dependent can't be
+ *  repointed at all (predecessor_id is in _LOCKED_PROTECTED_FIELDS server-side),
+ *  which changes the instruction we give. */
+function schedulableDependentsOf(
+  row: ProposalItemNode,
+  flat: ProposalItemNode[],
+  piIds: Set<number>,
+): ProposalItemNode[] {
+  if (row.id == null) return [];
+  const asPriceOnly = { ...row, price_only: true };
+  return flat.filter(
+    (n) =>
+      n.predecessor_id === row.id &&
+      isSchedulableTask(n) &&
+      !predecessorAllowed(asPriceOnly, n, piIds),
+  );
+}
+
+/** The illegal predecessor `row` would end up with once `patch` is applied.
+ *
+ *  The OTHER two ways into this violation: `On` and `MS`. A disabled row, or a
+ *  milestone, may legally point at a Price Only row (isSchedulableTask is false,
+ *  so nothing is scheduled) — ticking On or unticking MS makes that dormant link
+ *  live. Both went straight through onUpdate while the neighbouring `$ only`
+ *  checkbox refused loudly, so the PM got a fresh blocking error with no
+ *  connection to the click that caused it. */
+function illegalPredecessorAfter(
+  row: ProposalItemNode,
+  patch: Partial<ProposalItemNode>,
+  flat: ProposalItemNode[],
+  piIds: Set<number>,
+): ProposalItemNode | undefined {
+  const next = { ...row, ...patch };
+  if (isSchedulableTask(row) || !isSchedulableTask(next)) return undefined;
+  if (next.predecessor_id == null) return undefined;
+  const pred = flat.find((n) => n.id === next.predecessor_id);
+  return pred && !predecessorAllowed(pred, next, piIds) ? pred : undefined;
+}
+
+/** Refusal copy for the MS / On toggles: the row itself would become the
+ *  offender, so it names the PREDECESSOR (the thing to repoint), not dependents. */
+function armsPriceOnlyMsg(
+  row: ProposalItemNode,
+  pred: ProposalItemNode,
+  what: string,
+): string {
+  return (
+    `Can't switch “${row.name || `#${row.id}`}” ${what} — it would then be scheduled, ` +
+    `and its predecessor “${pred.name || `#${pred.id}`}” is Price Only, which has no ` +
+    `schedule dates to follow. Pick a different predecessor for this row first, or ` +
+    `switch Price Only off on that one.`
+  );
+}
+
+/** "A", "A and B", "A, B and C" — 2 names then a count, so the banner stays one line. */
+function nameList(nodes: ProposalItemNode[]): string {
+  const names = nodes.map((n) => `“${n.name || `#${n.id}`}”`);
+  if (names.length <= 2) return names.join(" and ");
+  return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
 /** "Electrical Engineering · IFC" for each stranded Timeline bar. The
@@ -704,6 +886,17 @@ export default function Proposals() {
   const [linkSourceKey, setLinkSourceKey] = useState<string | undefined>(undefined);
   // transient banner shown while a predecessor link is being armed/committed.
   const [linkBanner, setLinkBanner] = useState<{ tone: "amber" | "green"; msg: string } | null>(null);
+  // Every banner on this page renders ABOVE a table that routinely runs to 200
+  // rows, while the controls that raise one live in a sticky toolbar or far down
+  // that table — so a refusal fired at row 150 (the `$ only` checkbox simply not
+  // ticking, Save just re-enabling) landed ~2000px off-screen and read as a dead
+  // control. Pull the stack into view whenever a NEW refusal arrives.
+  const bannerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (calcError || linkBanner) {
+      bannerRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+  }, [calcError, linkBanner]);
 
   // working copies of the version's info_json + config (save-only / recompute
   // drivers). Seeded from the board; flushed back on every board response.
@@ -1065,6 +1258,59 @@ export default function Proposals() {
     [flat, keyOf],
   );
 
+  // Price-only-predecessor detection, live against the working tree so an
+  // existing violation is visible the moment the proposal opens — the PM has to
+  // be able to get IN and find the row, not just be refused on save. Computed
+  // once per edit and handed down; a per-row scan would be O(rows²).
+  const piIds = useMemo(() => projectInitiationIds(flat), [flat]);
+  const priceOnlyLinks = useMemo(() => findPriceOnlyPredecessorLinks(flat), [flat]);
+  const hasPiSection = useMemo(() => hasProjectInitiationSection(flat), [flat]);
+
+  // Take the PM to a named row. Without this the banner is a list of names and
+  // nothing else: the gold tint is the only locator, and a row inside a
+  // collapsed section is filtered out of visibleNodes entirely, so for that row
+  // the locator does not exist at all. Selecting it is a second win — isPredOfSel
+  // green-tints its predecessor, which IS the Price Only row the message says to
+  // open.
+  const revealRow = useCallback(
+    (target: ProposalItemNode) => {
+      const idx = flat.indexOf(target);
+      if (idx < 0) return;
+      const key = keyOf(target);
+      // Every ancestor of the target = the rows above it whose indent_level
+      // steps down, nearest first (same shape as visibleNodes' filter, read in
+      // reverse). Un-collapse them or the row never mounts.
+      const ancestors: string[] = [];
+      let want = flat[idx].indent_level;
+      for (let i = idx - 1; i >= 0 && want > 0; i--) {
+        if (flat[i].indent_level < want) {
+          ancestors.push(keyOf(flat[i]));
+          want = flat[i].indent_level;
+        }
+      }
+      setCollapsedKeys((s) => {
+        if (!ancestors.some((k) => s.has(k))) return s;   // no-op keeps the ref stable
+        const next = new Set(s);
+        ancestors.forEach((k) => next.delete(k));
+        return next;
+      });
+      setSelectedKey(key);
+      setSelectedKeys(new Set([key]));
+      // One frame later: the un-collapse above has to render before the row exists.
+      requestAnimationFrame(() => {
+        document
+          .getElementById(`prow-${key}`)
+          ?.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+    },
+    [flat, keyOf],
+  );
+
+  // Which of the offending links the "next issue" control is pointing at.
+  // Reset whenever the set changes so it can't dangle past a repair.
+  const [issueCursor, setIssueCursor] = useState(0);
+  useEffect(() => setIssueCursor(0), [priceOnlyLinks.length]);
+
   // A row "has children" when the NEXT flat row sits at a greater indent_level.
   const hasChildren = useCallback(
     (idx: number) =>
@@ -1165,10 +1411,22 @@ export default function Proposals() {
         setLinkBanner(null);
         return;
       }
-      if (node.is_milestone || node.price_only || node.id == null) {
+      // predecessorAllowed is the SHARED half — the same predicate the dropdown
+      // and the server apply, so the price-only rule can't mean two things.
+      // `is_milestone` is NOT shared: the dropdown offers milestones (styled red
+      // precisely because they are pickable) and the server accepts them; only
+      // Alt+Click refuses them, which is a deliberate restriction of this
+      // gesture, not the rule. Which is why the branches below are ordered
+      // milestone-first: a Project Initiation section row is BOTH a milestone
+      // and price-only, and blaming Price Only for it would be a flat lie — that
+      // row is a legal predecessor from the dropdown and saves 200.
+      const milestoneBlocked = node.is_milestone || node.id == null;
+      if (milestoneBlocked || !predecessorAllowed(node, source, piIds)) {
         setLinkBanner({
           tone: "amber",
-          msg: `“${node.name || `#${node.id}`}” can't be a predecessor`,
+          msg: milestoneBlocked
+            ? `“${node.name || `#${node.id}`}” is a section/milestone — Alt+Click can't link to one. Pick it from the Predecessor dropdown instead.`
+            : `“${node.name || `#${node.id}`}” is Price Only — it's excluded from the schedule, so it has no dates to link to`,
         });
         return; // keep armed
       }
@@ -1186,7 +1444,7 @@ export default function Proposals() {
       });
       setLinkSourceKey(undefined);
     },
-    [flat, keyOf, linkSourceKey],
+    [flat, keyOf, linkSourceKey, piIds],
   );
 
   // delete every selected row (each with its subtree) after one confirm.
@@ -1596,11 +1854,16 @@ export default function Proposals() {
   }
 
   // ---- save (PUT full tree + info + config) + recompute ----
+  /** Returns whether the tree actually reached the server — callers that build a
+   *  deliverable from the PERSISTED version must not carry on after a refusal, or
+   *  the PM gets an .xlsx/.zip/Timeline of the PREVIOUS version with only an
+   *  off-screen banner to say so. Latent before; the price-only-predecessor guard
+   *  makes a refused save something PMs will actually hit. */
   async function save(opts?: {
     treeNodes?: ProposalItemNode[];
     infoPatch?: Record<string, any>;
-  }) {
-    if (!proposalId || !activeVersionId || !activeVersion || !board) return;
+  }): Promise<boolean> {
+    if (!proposalId || !activeVersionId || !activeVersion || !board) return false;
     setSaving(true);
     setCalcError(null);
     try {
@@ -1648,12 +1911,18 @@ export default function Proposals() {
       setAnchorKey(undefined);
       setLinkSourceKey(undefined);
       void loadList();
+      return true;
     } catch (e) {
       if (isStaleVersionError(e)) {
         setConflict(
           "This proposal version changed elsewhere — reloading the latest. Re-apply your edits.",
         );
         await loadBoard(proposalId);
+      } else if (isPriceOnlyPredecessorError(e)) {
+        // Its own branch, ahead of the generic 422: that fallback below asserts
+        // "circular dependency", which would be a confidently wrong diagnosis
+        // here. The server's sentence already names the rows.
+        setCalcError(e instanceof ApiError ? e.message : "Fix the Price Only predecessors.");
       } else if (e instanceof ApiError && e.status === 422) {
         setCalcError(
           e.message ||
@@ -1664,6 +1933,7 @@ export default function Proposals() {
           (e as any)?.message || "Could not save / recompute the schedule.",
         );
       }
+      return false;
     } finally {
       setSaving(false);
     }
@@ -1699,6 +1969,10 @@ export default function Proposals() {
       if (isStaleVersionError(e)) {
         setConflict("Version changed elsewhere — reloading.");
         await loadBoard(proposalId);
+      } else if (isPriceOnlyPredecessorError(e)) {
+        // See save() — recompute re-dates the STORED tree, so this fires on a
+        // violation the PM may not have touched in this session.
+        setCalcError(e instanceof ApiError ? e.message : "Fix the Price Only predecessors.");
       } else if (e instanceof ApiError && e.status === 422) {
         setCalcError(e.message || "Circular dependency in predecessors.");
       } else {
@@ -1746,11 +2020,34 @@ export default function Proposals() {
     void loadList();
   }
 
+  /** Refuse to build a deliverable out of a proposal that is in violation.
+   *
+   *  The four buttons below all render the STORED version, and they were gated
+   *  on `dirty` alone — which is false in exactly the case that matters: a
+   *  proposal imported (or opened) already violating, where loadBoard has just
+   *  set dirty=false. No save was attempted, no error was shown, and the PM got
+   *  a client PDF / .xlsx / .zip — or Timeline bars other people plan against —
+   *  built on a schedule the engine silently dropped a link out of. State check
+   *  first, THEN the save, so both holes are closed by one line each. */
+  function blockedByPriceOnly(): boolean {
+    if (priceOnlyLinks.length === 0) return false;
+    const l = priceOnlyLinks[0];
+    setCalcError(
+      `${priceOnlyLinks.length} ${
+        priceOnlyLinks.length === 1 ? "task depends" : "tasks depend"
+      } on a Price Only row (e.g. “${l.successor.name || `#${l.successor.id}`}” → “${
+        l.predecessor.name || `#${l.predecessor.id}`
+      }”), so this schedule's dates are wrong. Fix the gold rows before exporting or sending it.`,
+    );
+    return true;
+  }
+
   // ---- pdf ----
   // `kind` picks the deliverable: "sov" (Schedule of Values table only),
   // "schedule" (dated Project Schedule + Gantt), or "both" (SOV + schedule).
   async function openPdf(kind: "sov" | "schedule" | "both") {
     if (!proposalId || !activeVersionId) return;
+    if (blockedByPriceOnly()) return;
     setShowPdfChooser(false);
     setPdfKind(kind);
     setShowPdf(true);
@@ -1808,8 +2105,11 @@ export default function Proposals() {
   // pending edits first (same contract the PDF serve relies on).
   async function saveExcel() {
     if (!proposalId || !activeVersionId || !board) return;
+    if (blockedByPriceOnly()) return;
     try {
-      if (dirty) await save();
+      // Bail on a refused save — the server builds this from the STORED version,
+      // so carrying on would hand the PM an export of the previous one.
+      if (dirty && !(await save())) return;
       const blob = await downloadProposalTemplate(proposalId, activeVersionId);
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
@@ -1826,8 +2126,9 @@ export default function Proposals() {
   // ---- ZIP bundle (branded PDF + Excel template) ----
   async function saveZip() {
     if (!proposalId || !activeVersionId || !board) return;
+    if (blockedByPriceOnly()) return;
     try {
-      if (dirty) await save();
+      if (dirty && !(await save())) return;   // see saveExcel
       const blob = await downloadProposalBundle(proposalId, activeVersionId);
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
@@ -1844,6 +2145,10 @@ export default function Proposals() {
   // ---- send schedule to the Timeline capacity module ----
   async function sendToTimeline() {
     if (!proposalId || !activeVersionId || !board || sendingToTimeline) return;
+    // Ahead of the confirm dialog: asking "Send to Timeline?" and then refusing
+    // is worse than not asking. The server refuses this one too (send_to_timeline
+    // guards on the stored version), so a stale tab can't get round it either.
+    if (blockedByPriceOnly()) return;
     const ok = await confirm({
       title: "Send to Timeline?",
       body:
@@ -1853,7 +2158,9 @@ export default function Proposals() {
     if (!ok) return;
     setSendingToTimeline(true);
     try {
-      if (dirty) await save();
+      // Worse than a stale download: this WRITES the stale geometry onto the
+      // Timeline board other people plan against.
+      if (dirty && !(await save())) return;
       const r = await sendProposalToTimeline(proposalId, {
         version_id: activeVersionId,
         replace_existing: true,
@@ -2389,6 +2696,13 @@ export default function Proposals() {
 
       {loading && <div className="text-sm text-brand-gray">Loading proposals…</div>}
       {error && <div className="text-sm text-brand-red">{error}</div>}
+      {/* Anchor for the scroll-into-view above — every banner has to be inside
+          it, or a refusal raised from the bottom of the table still lands
+          off-screen. Rendered only when it holds something, so an empty wrapper
+          can't leave a stray space-y gap under the header. `scroll-mt-20`
+          clears the sticky app header the page scrolls under. */}
+      {(conflict || calcError || priceOnlyLinks.length > 0 || toast || linkBanner) && (
+      <div ref={bannerRef} className="space-y-4 scroll-mt-20">
       {conflict && (
         <Banner tone="amber" onDismiss={() => setConflict(null)}>
           ⚠️ {conflict}
@@ -2397,6 +2711,72 @@ export default function Proposals() {
       {calcError && (
         <Banner tone="red" onDismiss={() => setCalcError(null)}>
           ⚠️ {calcError}
+        </Banner>
+      )}
+      {/* Detection half of the price-only-predecessor rule: shown as soon as the
+          proposal opens, so a violation saved before this rule existed (or by a
+          stale tab) is findable BEFORE the PM does an hour of work and hits a
+          refused save. Not dismissible — it is a blocking defect, and the rows it
+          names are tinted gold in the table. */}
+      {priceOnlyLinks.length > 0 && (
+        <Banner tone="amber">
+          ⚠️ {priceOnlyLinks.length}{" "}
+          {priceOnlyLinks.length === 1 ? "task depends" : "tasks depend"} on a Price
+          Only row, which has no schedule dates to follow — this must be fixed
+          before the schedule can be saved:{" "}
+          {/* Each name is a BUTTON, not text: the gold tint was the only way to
+              find these rows, and a row inside a collapsed section isn't
+              rendered, so for that one the tint doesn't exist. */}
+          {priceOnlyLinks.slice(0, 3).map((l, i) => (
+            <span key={`${l.successor.id}-${l.predecessor.id}-${i}`}>
+              {i > 0 ? ", " : ""}
+              <button
+                type="button"
+                className="underline underline-offset-2 font-semibold hover:opacity-80"
+                title="Go to this task"
+                onClick={() => revealRow(l.successor)}
+              >
+                “{l.successor.name || `#${l.successor.id}`}”
+              </button>{" "}
+              (predecessor “{l.predecessor.name || `#${l.predecessor.id}`}”)
+            </span>
+          ))}
+          {priceOnlyLinks.length > 3 ? ` +${priceOnlyLinks.length - 3} more` : ""}.{" "}
+          {priceOnlyLinks.length > 1 && (
+            <button
+              type="button"
+              className="underline underline-offset-2 font-semibold hover:opacity-80"
+              title="Jump to the next offending row"
+              onClick={() => {
+                const n = issueCursor % priceOnlyLinks.length;
+                revealRow(priceOnlyLinks[n].successor);
+                setIssueCursor(n + 1);
+              }}
+            >
+              Next issue ▸
+            </button>
+          )}{" "}
+          {hasPiSection ? (
+            <>
+              On each gold row below, pick a different predecessor — or switch Price
+              Only off on the row it points at.
+            </>
+          ) : (
+            // The over-block the server also diagnoses: with no section named
+            // exactly "Project Initiation" the standard 30%→Due-Diligence link
+            // every workbook ships with becomes a violation, and BOTH fixes above
+            // are wrong for it. Say what actually changed.
+            <>
+              No top-level section of this proposal is named “Project Initiation”,
+              so Price Only rows no longer count as project-start rows anywhere in
+              it
+              {priceOnlyLinks[0].section
+                ? ` — if “${priceOnlyLinks[0].section!.name}” is your Project Initiation section, put “Project Initiation” back in its name and move it back to the top level`
+                : ""}
+              . Otherwise, on each gold row below pick a different predecessor, or
+              switch Price Only off on the row it points at.
+            </>
+          )}
         </Banner>
       )}
       {toast && (
@@ -2408,6 +2788,8 @@ export default function Proposals() {
         <Banner tone={linkBanner.tone} onDismiss={() => setLinkBanner(null)}>
           🔗 {linkBanner.msg}
         </Banner>
+      )}
+      </div>
       )}
       {/* What the save just did to the Timeline. Suppressed when the resync
           moved nothing and stranded nothing the PM can act on — otherwise every
@@ -2958,7 +3340,18 @@ export default function Proposals() {
                     <th className="text-center px-2.5 py-2.5">Lag</th>
                     <th className="text-center px-2.5 py-2.5" title="Milestone">MS</th>
                     <th className="text-center px-2.5 py-2.5" title="Enabled">On</th>
-                    <th className="text-center px-2.5 py-2.5" title="Price only">$ only</th>
+                    {/* Label stays "$ only" on purpose: the header comment above
+                        pins the sticky <thead> offset to a single line, and
+                        "Price only" overflows this column's 4.125rem at xl. The
+                        term the error copy uses is tied to the control by the
+                        tooltip here AND by the "$ only" pill now rendered in the
+                        Name cell of every price-only row. */}
+                    <th
+                      className="text-center px-2.5 py-2.5"
+                      title="Price Only — the row carries a price but is excluded from the schedule, so it has no dates"
+                    >
+                      $ only
+                    </th>
                     <th className="text-center px-2.5 py-2.5" title="Show start date">St</th>
                     <th className="text-center px-2.5 py-2.5" title="Show end date">Fn</th>
                     <th className="text-center px-2.5 xl:px-1 py-2.5" title="Task utilization %">Util</th>
@@ -3020,6 +3413,8 @@ export default function Proposals() {
                             onDelete={deleteRow}
                             onMove={moveRow}
                             onIndent={indentRow}
+                            onRefuse={(msg) => setLinkBanner({ tone: "amber", msg })}
+                            piIds={piIds}
                             projectUtil={Number(configDraft.utilization_percent) || 100}
                           />
                         );
@@ -3743,6 +4138,8 @@ function Row({
   onDelete,
   onMove,
   onIndent,
+  onRefuse,
+  piIds,
   projectUtil,
 }: {
   rowKey: string;
@@ -3768,6 +4165,10 @@ function Row({
   onDelete: (key: string) => void;
   onMove: (key: string, dir: -1 | 1) => void;
   onIndent: (key: string, delta: -1 | 1) => void;
+  /** Explain a refused row edit (transient banner), e.g. an illegal predecessor. */
+  onRefuse: (msg: string) => void;
+  /** Rows inside "Project Initiation" — price-only there is a legal predecessor. */
+  piIds: Set<number>;
   projectUtil: number;
 }) {
   const {
@@ -3837,6 +4238,15 @@ function Row({
     !node.is_milestone &&
     node.predecessor_id != null &&
     !flat.some((n) => n.id === node.predecessor_id && n.enabled);
+  // Same family of defect as missingDep — a predecessor that can't supply a date
+  // — so it earns the same gold "this link is broken" tint rather than a new
+  // colour. Separate flag because the fix is different (repoint the link OR clear
+  // Price Only, vs re-enable the row), and the title below has to say which.
+  const priceOnlyPred = (() => {
+    if (node.predecessor_id == null || !isSchedulableTask(node)) return undefined;
+    const pred = flat.find((n) => n.id === node.predecessor_id);
+    return pred && !predecessorAllowed(pred, node, piIds) ? pred : undefined;
+  })();
   const rowFill = isDragging
     ? "bg-surface-mute"                   // dragging_item
     : isOver
@@ -3845,8 +4255,8 @@ function Row({
         ? "bg-brand-green/15"             // predecessor_highlight
         : isSuccOfSel
           ? "bg-status-open-bg"           // successor_highlight
-          : missingDep
-            ? "bg-status-pending-bg"      // missing_dependency
+          : missingDep || priceOnlyPred
+            ? "bg-status-pending-bg"      // missing_dependency / price-only predecessor
             : base;
 
   const rowCls = clsx(
@@ -3874,10 +4284,15 @@ function Row({
   const predTitle =
     node.predecessor_id == null
       ? "No predecessor"
-      : predOption
-        ? // same blank-name fallback the option list renders
-          predOption.node.name || `#${predOption.node.id}`
-        : `Predecessor #${node.predecessor_id} no longer exists — pick a new one or clear it`;
+      : priceOnlyPred
+        ? // The row is tinted gold and the save will be refused, so the tooltip
+          // has to carry the fix, not just the name.
+          `“${priceOnlyPred.name || `#${priceOnlyPred.id}`}” is Price Only — excluded from the schedule, so it has no dates for this task to start from. ` +
+          `Pick a different predecessor, or switch Price Only off on that row.`
+        : predOption
+          ? // same blank-name fallback the option list renders
+            predOption.node.name || `#${predOption.node.id}`
+          : `Predecessor #${node.predecessor_id} no longer exists — pick a new one or clear it`;
 
   // Editable cells read as plain text until you point at them — the border only
   // appears on hover/focus, so a dense schedule stays legible.
@@ -3904,6 +4319,10 @@ function Row({
   return (
     <tr
       ref={setNodeRef}
+      // Plain id, addressed with getElementById by the banner's jump-to-row —
+      // no CSS.escape needed (and the CSS in scope here is dnd-kit's, not the
+      // DOM one). rowKey is `n<seq>`, so it is already selector-safe.
+      id={`prow-${rowKey}`}
       style={rowStyle}
       className={rowCls}
       onClick={(e) => {
@@ -3995,6 +4414,21 @@ function Row({
             list={milestone ? "ms-name-options" : undefined}
             onChange={(e) => onUpdate(rowKey, { name: e.target.value })}
           />
+          {node.price_only && (
+            /* The Name column marks `disabled`, `milestone` and `section` — but
+               had nothing for price_only, the one flag every error message in
+               this feature names. The only signal was a tick in a column headed
+               "$ only", twelve columns right and off-screen below xl, so the PM
+               was told to "switch Price Only off" on a row that looked exactly
+               like every other row. Same tokens as the gold link tint, so the
+               marker and the rows it explains read as one thing. */
+            <span
+              title="Price Only — carries a price but is excluded from the schedule, so it has no dates"
+              className="shrink-0 rounded-[3px] bg-status-pending-bg px-1 text-[9.5px] font-semibold leading-[14px] text-status-pending-text"
+            >
+              $ only
+            </span>
+          )}
           {disabled && (
             /* A dot, not the old "not contracted" pill: the pill was shrink-0 and
                so took ~87px out of the single column that absorbs the table's
@@ -4101,23 +4535,37 @@ function Row({
             }
           >
             <option value="">— none —</option>
-            {predOptions.map((o) => (
-              <option
-                key={o.key}
-                value={o.node.id!}
-                // Section headings + milestones in Castillo red (bold) so they
-                // stand out from leaf tasks and are easier to pick. Read via
-                // the variable: `color-scheme: dark` paints the native option
-                // popup dark, where the light-theme red is unreadable.
-                style={
-                  o.node.is_milestone
-                    ? { color: "rgb(var(--brand-red))", fontWeight: 600 }
-                    : undefined
-                }
-              >
-                {o.node.name || `#${o.node.id}`}
-              </option>
-            ))}
+            {predOptions.map((o) => {
+              // Price-only rows stay LISTED but disabled, with the reason in the
+              // label. Dropping them silently would leave the PM hunting for a
+              // task they can see in the table and swear was there a moment ago;
+              // this way the list explains itself and matches both the Alt+Click
+              // rule and the server's refusal.
+              const blocked = !predecessorAllowed(o.node, node, piIds);
+              return (
+                <option
+                  key={o.key}
+                  value={o.node.id!}
+                  disabled={blocked}
+                  // Section headings + milestones in Castillo red (bold) so they
+                  // stand out from leaf tasks and are easier to pick. Read via
+                  // the variable: `color-scheme: dark` paints the native option
+                  // popup dark, where the light-theme red is unreadable.
+                  // `&& !blocked` — an inline colour beats the UA's disabled
+                  // grey, so a blocked milestone (an Additional Services fee row
+                  // is one) rendered MORE emphasised than the options you can
+                  // actually pick.
+                  style={
+                    o.node.is_milestone && !blocked
+                      ? { color: "rgb(var(--brand-red))", fontWeight: 600 }
+                      : undefined
+                  }
+                >
+                  {o.node.name || `#${o.node.id}`}
+                  {blocked ? " — Price Only, no schedule dates" : ""}
+                </option>
+              );
+            })}
           </select>
         ) : (
           <span
@@ -4169,17 +4617,60 @@ function Row({
           </span>
         )}
       </td>
+      {/* MS and On are the OTHER two doors into the same violation: both make a
+          dormant link live (isSchedulableTask gates on !is_milestone && enabled
+          && !price_only, so all three flags are entry points). They used to go
+          straight through onUpdate while the `$ only` checkbox next door refused
+          loudly — so the PM got a new blocking banner with no connection to the
+          click that caused it, and learned the wrong model of the rule. */}
       <ToggleCell
         on={node.is_milestone}
-        onToggle={() => onUpdate(rowKey, { is_milestone: !node.is_milestone })}
+        onToggle={() => {
+          const bad = illegalPredecessorAfter(
+            node, { is_milestone: !node.is_milestone }, flat, piIds,
+          );
+          if (bad) return onRefuse(armsPriceOnlyMsg(node, bad, "a task"));
+          onUpdate(rowKey, { is_milestone: !node.is_milestone });
+        }}
       />
       <ToggleCell
         on={node.enabled}
-        onToggle={() => onUpdate(rowKey, { enabled: !node.enabled })}
+        onToggle={() => {
+          const bad = illegalPredecessorAfter(
+            node, { enabled: !node.enabled }, flat, piIds,
+          );
+          if (bad) return onRefuse(armsPriceOnlyMsg(node, bad, "on"));
+          onUpdate(rowKey, { enabled: !node.enabled });
+        }}
       />
+      {/* The SAME violation, arriving from the predecessor end: switching a row
+          to Price Only strips its dates out from under everything that already
+          depends on it. Refused here naming the dependents, because a successor-
+          side check can never see this edit — and silently letting it through
+          would leave the PM with rows that fail to save and no idea why. Rows
+          inside Project Initiation are exempt (they are the project-start block),
+          so only real breakage is blocked. */}
       <ToggleCell
         on={node.price_only}
-        onToggle={() => onUpdate(rowKey, { price_only: !node.price_only })}
+        onToggle={() => {
+          const turningOn = !node.price_only;
+          const dependents = turningOn ? schedulableDependentsOf(node, flat, piIds) : [];
+          if (dependents.length) {
+            onRefuse(
+              `Can't set “${node.name || `#${node.id}`}” to Price Only — ${nameList(dependents)} ` +
+                `${dependents.length === 1 ? "uses" : "use"} it as a predecessor, and a Price Only row has no ` +
+                `schedule dates to follow. Repoint ${dependents.length === 1 ? "that task" : "those tasks"} first.` +
+                // Same caveat the server's refusal carries: predecessor_id is in
+                // _LOCKED_PROTECTED_FIELDS, so on a locked dependent the repoint
+                // we just asked for is silently discarded on save.
+                (dependents.some((d) => d.locked)
+                  ? " Unlock the row first — a locked row's predecessor can't be changed."
+                  : ""),
+            );
+            return;
+          }
+          onUpdate(rowKey, { price_only: turningOn });
+        }}
       />
       <ToggleCell
         on={node.show_start_date}
@@ -4359,7 +4850,10 @@ function Banner({
 }: {
   tone: "amber" | "red" | "green";
   children: ReactNode;
-  onDismiss: () => void;
+  /** Omit for a banner the PM must not be able to wave away — one derived from
+   *  the tree's current state, where dismissing would only hide a live defect
+   *  (and the next keystroke would bring it straight back anyway). */
+  onDismiss?: () => void;
 }) {
   const cls = {
     amber: "border-status-pending-border bg-status-pending-bg text-status-pending-text",
@@ -4374,12 +4868,14 @@ function Banner({
       )}
     >
       <span className="flex-1">{children}</span>
-      <button
-        className="text-xs font-semibold uppercase tracking-wider opacity-70 hover:opacity-100"
-        onClick={onDismiss}
-      >
-        dismiss
-      </button>
+      {onDismiss && (
+        <button
+          className="text-xs font-semibold uppercase tracking-wider opacity-70 hover:opacity-100"
+          onClick={onDismiss}
+        >
+          dismiss
+        </button>
+      )}
     </div>
   );
 }

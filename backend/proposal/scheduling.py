@@ -26,6 +26,12 @@ changes (no Tkinter on the server, no behavior change):
     CircularDependencyError so the API can surface it (same abort semantics);
   * UI refresh calls (populate_tree/expand/update_project_totals) and debug
     prints are dropped.
+
+NOT ported — an ADDITIVE product rule layered on top (see
+find_price_only_predecessor_links / PriceOnlyPredecessorError below): the desktop
+tool silently tolerates a price-only predecessor, and calculate_all_dates STILL
+does, byte for byte. The new rule is a separate pure function the API calls
+before scheduling, so the ported date math is untouched.
 """
 from __future__ import annotations
 
@@ -44,6 +50,79 @@ from .models import ProposalItem
 class CircularDependencyError(ValueError):
     """Predecessor cycle detected during calculate_all_dates. The desktop tool
     showed a messagebox and returned; we raise so the caller/API surfaces it."""
+
+
+class PriceOnlyPredecessorError(ValueError):
+    """A scheduled task depends on a Price Only row (see the rule's rationale on
+    find_price_only_predecessor_links).
+
+    Mirrors CircularDependencyError's SHAPE — a ValueError subclass the API maps
+    to 422 — but not its payload. CircularDependencyError carries one fixed
+    sentence and names nothing, which on a 200-row tree tells the PM a loop
+    exists and nothing about where. This rule is far likelier to fire (the
+    predecessor dropdown offered price-only rows until now), and the whole point
+    is "prompt the PM to fix it IN the proposal", so it carries ``links`` — every
+    offending pair, by id AND name — and the API forwards that list to the UI.
+    Collect-then-raise-once, so one trip fixes every row instead of whack-a-mole.
+    """
+
+    def __init__(self, links: list[dict]):
+        self.links = links
+        super().__init__(self.render_message(links))
+
+    @staticmethod
+    def render_message(links: list[dict]) -> str:
+        """One sentence the PM can act on without expanding anything.
+
+        Names at most three pairs: the banner is a single line above a long
+        table, and a wall of names is skimmed past exactly like no names at all.
+        The full list still rides along in ``links`` for the per-row tint.
+        """
+        def pair(l):
+            # Spelled out rather than an arrow glyph: which end of "A → B" is the
+            # predecessor is exactly the thing the PM is confused about here.
+            return f"“{l['successor_name']}” (predecessor “{l['predecessor_name']}”)"
+
+        shown = ", ".join(pair(l) for l in links[:3])
+        extra = f" (+{len(links) - 3} more)" if len(links) > 3 else ""
+        noun = "task depends" if len(links) == 1 else "tasks depend"
+        msg = (
+            f"{len(links)} {noun} on a Price Only row: {shown}{extra}. "
+            "A Price Only row is excluded from the schedule, so it has no dates "
+            "for the task to start from. Pick a different predecessor for that "
+            "task, or switch Price Only off on the row it points at."
+        )
+        # "Open the proposal" used to lead that sentence, but the ONLY screen this
+        # message is ever rendered on is the open proposal editor (Proposals.tsx
+        # puts e.message straight into calcError), so it sent the PM hunting for
+        # another screen. The client banner's own wording ("on each gold row
+        # below") stays the more specific of the two.
+
+        # The carve-out is keyed to a top-level section whose name reads as
+        # "Project Initiation" (is_project_initiation_section — tolerant of
+        # numbering and suffixes, but it still has to say those words). If the
+        # section was renamed past recognition, or dragged inside another one,
+        # links that were legal for years start failing here and BOTH fixes above
+        # are wrong for them: the row is a standard PI row and the link was
+        # always fine. Name the real cause or the PM cannot act — nothing else in
+        # the UI mentions the section at all.
+        orphaned = [l for l in links
+                    if l.get("project_initiation_missing") and l.get("predecessor_section")]
+        if orphaned:
+            sect = orphaned[0].get("predecessor_section") or ""
+            msg += (
+                f" No top-level section of this proposal is named “Project "
+                f"Initiation”, so Price Only rows no longer count as project-start "
+                f"rows anywhere in it. If “{sect}” is your Project Initiation "
+                f"section, put “Project Initiation” back in its name and move it "
+                f"back to the top level — this link becomes legal again."
+            )
+        # predecessor_id is lock-protected (_LOCKED_PROTECTED_FIELDS), so on a
+        # locked row the fix above is silently rejected. Say so, or the PM
+        # retries the same edit forever.
+        if any(l.get("successor_locked") for l in links):
+            msg += " Unlock the row first — a locked row's predecessor can't be changed."
+        return msg
 
 
 @dataclass
@@ -142,6 +221,206 @@ def is_in_project_initiation(item: ProposalItem) -> bool:
     return False
 
 
+def find_project_initiation_root(template_items):
+    """The ONE Project Initiation root the ported date pass uses.
+
+    Exact port semantics, unchanged: first top-level milestone whose name is
+    exactly "project initiation", then stop. _seed_pi_dates and
+    apply_pi_show_defaults both had this loop inline and both took the first
+    match; sharing it here is a refactor, not a behaviour change.
+    """
+    for r in template_items:
+        if r.is_milestone and (r.name or "").strip().lower() == "project initiation":
+            return r
+    return None
+
+
+def _pi_name_key(name: str) -> str:
+    """Letters and digits only, lowercased — "1. Project Initiation & Mobilization"
+    and "Project Initiation" collapse to strings that share one substring."""
+    return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+
+def is_project_initiation_section(item) -> bool:
+    """Is this top-level row the project's kickoff block?
+
+    DELIBERATELY LOOSER than find_project_initiation_root above, in two ways: it
+    substring-matches a punctuation-stripped name (so "1. Project Initiation",
+    "Project Initiation Phase" and "Project Initiation & Mobilization" all still
+    count) and it does not require is_milestone. Only the price-only-predecessor
+    guard uses it. That divergence is deliberate and it is safe, for a reason
+    worth spelling out because the obvious reading says otherwise:
+
+      * What the exact-name match drives in the ENGINE is _seed_pi_dates, which
+        stamps project_start onto PI price-only rows. Rename the section and
+        those rows lose their dates.
+      * But a successor NEVER reads them. calculate_all_dates:573-575 sets
+        ``pred_item = None`` whenever the predecessor is price_only, BEFORE the
+        date branch, so a task keyed off a PI price-only row lands on
+        project_start whether or not the seeding ran. Measured: same tree, PI
+        section renamed, successor 01/05/26 -> 01/16/26 in BOTH cases.
+      * So the exemption is not "this row has seeded dates". It is "this section
+        IS day one, so starting the successor on day one is the intended answer,
+        not a dropped link" — and that stays true through a rename.
+
+    Making the guard match the engine's string exactly would therefore refuse a
+    save for an edit that provably changes no date. Ten of the fifty production
+    workbooks carry a standard 30%-task -> PI Due-Diligence link that is legal
+    only by this carve-out, and all fifty spell the section exactly, i.e. every
+    one of them was a single rename away from a permanently unsaveable proposal
+    whose 422 named a task and a row that were never the problem. Refusing a
+    legitimate edit is worse than the wrong date this rule exists to stop, so the
+    guard errs wide. "Additional Services", the other all-price-only section and
+    the one whose rows must NOT be legal predecessors, does not match.
+    """
+    return "projectinitiation" in _pi_name_key(getattr(item, "name", ""))
+
+
+def project_initiation_roots(template_items) -> list:
+    """Every TOP-LEVEL row that reads as the kickoff block (see above).
+
+    "Top-level" is read off the TREE — this list is ``template_items``, i.e. the
+    rows deserialize_tree/build_tree left with no parent. Deliberately NOT off
+    ``item.indent_level``: that field arrives from the client and is only
+    advisory once the nesting has been rebuilt, so a row buried inside Electrical
+    Engineering can declare indent_level 0 and, under a predicate that trusts it,
+    win the carve-out for every price-only row beneath it. is_in_project_initiation
+    still reads indent_level because the desktop tool did and it feeds the ported
+    utilization math; this predicate is new code and does not inherit that.
+
+    All matches, not just the first: refusing a PM's save is a far harsher answer
+    than skipping a date seed, and a tree with two kickoff sections is a
+    malformed structure, not something to hard-block on.
+    """
+    return [r for r in template_items if is_project_initiation_section(r)]
+
+
+def top_level_ancestor(item):
+    """The root section an item hangs under (itself when it is already a root)."""
+    cur = item
+    while cur.parent is not None:
+        cur = cur.parent
+    return cur
+
+
+def walk_tree(nodes):
+    """Every node in the forest, parents before children.
+
+    The same traversal serialize_tree persists with — which is the point: a guard
+    that iterates item_id_map instead cannot see a row whose id is shadowed by a
+    later duplicate (``item_id_map[it.id] = it`` is last-write-wins), yet that row
+    is stored all the same.
+    """
+    for n in nodes:
+        yield n
+        yield from walk_tree(n.children)
+
+
+def is_schedulable_task(t) -> bool:
+    """A row the date pass actually schedules.
+
+    Lifted out of apply_default_link_rules' closure (unchanged body) so the
+    price-only-predecessor guard below and the default-link rules cannot drift
+    apart on what "a real task" means — the guard has to agree with the engine
+    or it flags rows the scheduler never touches. Same filter calculate_all_dates
+    builds ``all_tasks`` from.
+    """
+    return t is not None and not t.is_milestone and t.enabled and not t.price_only
+
+
+def find_price_only_predecessor_links(template_items, item_id_map) -> list[dict]:
+    """Every link where a SCHEDULED task depends on a Price Only row.
+
+    Why this is an error at all: a price-only row carries a price but is excluded
+    from the date pass, so it has no end date for a successor to build on. The
+    engine's response (calculate_all_dates:387 ``pass``, :435 ``pred_item =
+    None``) is to drop the edge and start the successor at project_start — i.e.
+    the link the PM drew is silently ignored and the task lands on day one. That
+    is a wrong date with no warning anywhere, which is what this rule ends.
+
+    Scoped narrowly, on purpose — a blanket "no price-only predecessor" check
+    rejects the SHIPPED standard structure and no proposal could be created:
+
+      * Successor must be schedulable. A price-only → price-only link (the whole
+        Project Initiation chain, the whole Additional Services chain, both
+        generated by parsing.py) is inert at both ends and harmless. Milestones
+        never chain off a predecessor either (calculate_all_dates nulls those).
+      * Predecessor must be OUTSIDE Project Initiation. PI is the kickoff block:
+        parsing.py:869-875 wires each discipline's first 30% task to a PI
+        Due-Diligence row on purpose, and the engine's answer for those — start
+        the successor at project_start — is the intended one, because the whole
+        section IS the project start. See is_project_initiation_section for why
+        that carve-out is matched loosely, and why matching it as strictly as the
+        engine does would refuse legitimate saves without changing a single date.
+
+    Verified against all 50 desktop template workbooks imported into prod: this
+    predicate flags 0 links; dropping the two clauses above flags 85 across 23
+    files. Pure read — mutates nothing, so it is safe to call before scheduling.
+
+    Takes the TREE as well as the id map. Iterating the map alone missed any row
+    whose id a later duplicate had overwritten (serialization.py:211 is
+    last-write-wins) even though serialize_tree walks the tree and stores it — so
+    a payload with two rows sharing an id could park an illegal link in the
+    database through this very guard. Predecessors are still resolved THROUGH the
+    map, because that is the object calculate_all_dates:524 resolves too: the
+    guard and the engine have to agree about which row an id means.
+
+    Returns one dict per offending link (sorted by successor id for a stable
+    message), carrying ids AND names because the UI has to name the row the PM
+    must open, plus the predecessor's top-level section so the message can
+    diagnose a Project Initiation section that no longer matches by name.
+    """
+    pi_roots = project_initiation_roots(template_items)
+    out: list[dict] = []
+    for item in walk_tree(template_items):
+        # `is None`, not falsy: predecessor_id 0 is a real key in the map, and a
+        # falsy test quietly exempted it while the client's own mirror flagged it.
+        if item.predecessor_id is None or not is_schedulable_task(item):
+            continue
+        pred = item_id_map.get(item.predecessor_id)
+        # A dangling id (predecessor row deleted) is a different defect the
+        # engine already tolerates and the UI already tints gold — not ours.
+        if pred is None or not pred.price_only:
+            continue
+        section = top_level_ancestor(pred)
+        # Identity, not ==: ProposalItem is an eq-able dataclass whose children
+        # compare recursively, so `section in pi_roots` would walk the subtree.
+        if any(section is r for r in pi_roots):
+            continue
+        out.append({
+            "successor_id": item.id,
+            "successor_name": item.name or f"#{item.id}",
+            "successor_locked": bool(getattr(item, "locked", False)),
+            "predecessor_id": pred.id,
+            "predecessor_name": pred.name or f"#{pred.id}",
+            # Diagnostics for render_message: which section the predecessor lives
+            # in, and whether this tree has ANY recognised Project Initiation at
+            # all. Together they tell "you pointed at an Additional Services fee"
+            # apart from "you renamed Project Initiation past recognition", which
+            # need opposite fixes and used to produce the same sentence.
+            "predecessor_section": section.name or "",
+            "project_initiation_missing": not pi_roots,
+        })
+    out.sort(key=lambda l: (l["successor_id"] is None, l["successor_id"] or 0))
+    return out
+
+
+def assert_no_price_only_predecessors(template_items, item_id_map) -> None:
+    """Raise PriceOnlyPredecessorError if any link violates the rule above.
+
+    Deliberately NOT called from calculate_all_dates: that function is the
+    verbatim port and must keep tolerating these links, so that reading, opening,
+    importing, exporting and re-dating an existing proposal all still work. Only
+    the PM-driven write paths call this (see api/proposals.py put_tree /
+    recompute_version), which is what lets a PM open a violating proposal, see
+    the offending rows, and fix them — rather than being locked out of the very
+    screen where the fix lives.
+    """
+    links = find_price_only_predecessor_links(template_items, item_id_map)
+    if links:
+        raise PriceOnlyPredecessorError(links)
+
+
 def apply_pi_show_defaults(template_items) -> None:
     """Port of _apply_pi_show_defaults — hide Start/End for PI descendants."""
     def walk(node):
@@ -149,13 +428,15 @@ def apply_pi_show_defaults(template_items) -> None:
             yield c
             yield from walk(c)
 
-    for root in template_items:
-        if root.is_milestone and (root.name or "").strip().lower() == "project initiation":
-            for d in walk(root):
-                if not d.is_milestone:
-                    d.show_start_date = False
-                    d.show_end_date = False
-            break
+    # Same "first PI root, then stop" the port had inline — now via the shared
+    # resolver so this, _seed_pi_dates and the price-only carve-out cannot
+    # disagree about which section is Project Initiation.
+    root = find_project_initiation_root(template_items)
+    if root is not None:
+        for d in walk(root):
+            if not d.is_milestone:
+                d.show_start_date = False
+                d.show_end_date = False
 
 
 def apply_default_link_rules(template_items, only_type_defaults: bool = False) -> None:
@@ -168,8 +449,10 @@ def apply_default_link_rules(template_items, only_type_defaults: bool = False) -
     Rule 2 (always): under "Electrical Engineering", tasks whose name contains
     "study" default to FS (unless the user explicitly set the type).
     """
-    def is_schedulable(t):
-        return t is not None and not t.is_milestone and t.enabled and not t.price_only
+    # Body moved to module scope (is_schedulable_task) so the price-only
+    # predecessor guard shares this exact definition. Same predicate, same
+    # behaviour — the alias just keeps the ported code below reading verbatim.
+    is_schedulable = is_schedulable_task
 
     def find_last_client_review(items):
         for t in reversed(items):
@@ -468,11 +751,11 @@ def calculate_all_dates(template_items, item_id_map, cfg: ScheduleConfig, unpin_
             if c.children:
                 _seed_pi_dates(c)
 
-    for root in template_items:
-        if (root.is_milestone
-                and (root.name or "").strip().lower() == "project initiation"):
-            _seed_pi_dates(root)
-            break
+    # Unchanged selection (first top-level milestone named "Project Initiation",
+    # then stop) — routed through the shared resolver, see project_initiation_roots.
+    pi_root = find_project_initiation_root(template_items)
+    if pi_root is not None:
+        _seed_pi_dates(pi_root)
 
     def calculate_milestone_rollup(items):
         for item in items:
