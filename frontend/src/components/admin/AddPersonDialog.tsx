@@ -36,9 +36,38 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { useAuth } from "@/auth/useAuth";
-import { listOrgDirectory, type DirectoryUser } from "@/lib/graph";
+import { listOrgDirectory, sendMail, type DirectoryUser } from "@/lib/graph";
 import { listAdminUsers, provisionUser, ApiError } from "@/lib/api";
 import type { AdminUser } from "@/lib/types";
+
+/** Subject + body of the invite. Plain text, because Graph sends text/plain
+ *  here and every other mail this app sends is plain too.
+ *
+ *  It says what the app is, who added them, and what to do — an invite that
+ *  only says "you've been added to PMO 360" reads like spam from an internal
+ *  tool nobody has heard of. It also sets expectations about permissions:
+ *  change-order rights are OFF for new accounts, so somebody invited purely to
+ *  approve a change order would otherwise sign in, find nothing they can do,
+ *  and assume the link was broken. */
+function inviteText(person: AdminUser, invitedBy: string): { subject: string; body: string } {
+  const appUrl = window.location.origin;
+  const first = (person.name || "").trim().split(/\s+/)[0] || "there";
+  return {
+    subject: "You've been added to PMO 360",
+    body:
+      `Hi ${first},\n\n` +
+      `${invitedBy} has set you up with an account on PMO 360, Castillo ` +
+      `Engineering's project management workspace. It's where we run meeting ` +
+      `minutes, agendas, rolling action items, proposals and change orders.\n\n` +
+      `Sign in here with your Castillo account — no separate password:\n` +
+      `${appUrl}\n\n` +
+      `You'll land with access to meetings, agendas, proposals and the ` +
+      `timeline. Change-order permissions are granted separately, so if you've ` +
+      `been asked to approve a change order and can't yet, reply to this email ` +
+      `and we'll switch it on.\n\n` +
+      `— ${invitedBy}`,
+  };
+}
 
 interface Props {
   open: boolean;
@@ -51,7 +80,7 @@ interface Props {
 type Existing = { user: AdminUser; matchedOn: "oid" | "email" };
 
 export default function AddPersonDialog({ open, onClose, onAdded }: Props) {
-  const { isAuthenticated, getDirectoryToken } = useAuth();
+  const { isAuthenticated, user, getDirectoryToken, getMailSendToken } = useAuth();
 
   const [directory, setDirectory] = useState<DirectoryUser[] | null>(null);
   const [appUsers, setAppUsers] = useState<AdminUser[]>([]);
@@ -68,6 +97,17 @@ export default function AddPersonDialog({ open, onClose, onAdded }: Props) {
   // the whole tenant, which is how you find someone whose account is still
   // being set up.
   const [activeOnly, setActiveOnly] = useState(true);
+  // Invite on by default: adding someone who is never told is how an account
+  // sits unused for a month. Still a toggle, because setting up a team in
+  // advance of a launch is a real thing and mailing them all six weeks early
+  // is not helpful.
+  const [sendInvite, setSendInvite] = useState(true);
+  /** Per-person invite outcome from the last submit, keyed by Graph id.
+   *  Separate from `failures`: a failed invite is NOT a failed add — the
+   *  account exists either way, and conflating them would have the admin
+   *  retrying a provisioning that already succeeded. */
+  const [inviteResults, setInviteResults] = useState<Record<string, string>>({});
+  const [inviting, setInviting] = useState(false);
 
   const fetchDirectory = useCallback(async () => {
     setLoading(true);
@@ -223,7 +263,66 @@ export default function AddPersonDialog({ open, onClose, onAdded }: Props) {
     setFailures(failed);
     setSelected(new Set(Object.keys(failed)));
     setSaving(false);
-    if (Object.keys(failed).length === 0) onClose();
+
+    // ---- Invites, AFTER provisioning and deliberately decoupled from it ----
+    //
+    // The accounts already exist and the grid has already been told. Mail is
+    // best-effort on top: Graph can fail, the admin can dismiss the Mail.Send
+    // consent popup, or a mailbox can bounce, and none of that should undo or
+    // cast doubt on a provisioning that succeeded. So a send failure is
+    // REPORTED, per person, and never rolled into `failures`.
+    //
+    // It also must not silently no-op. "I ticked invite and nobody got one" is
+    // the failure mode worth engineering against, which is why the dialog stays
+    // open and names whoever was not reached instead of closing on success.
+    let inviteFailed = false;
+    if (sendInvite && created.length) {
+      setInviting(true);
+      const invitedBy = user?.name || user?.email || "A PMO 360 admin";
+      const results: Record<string, string> = {};
+      let token: string | null = null;
+      try {
+        token = await getMailSendToken();
+      } catch (e: any) {
+        // One failure for the whole batch — no point asking N times.
+        inviteFailed = true;
+        setError(
+          /consent|AADSTS/i.test(e?.message || "")
+            ? "The accounts were created, but Microsoft didn't approve sending " +
+              "mail on this sign-in, so no invites went out. Reopen this dialog " +
+              "to retry, or email them yourself."
+            : `The accounts were created, but the invites could not be sent: ${
+                e?.message || "couldn't get permission to send mail"
+              }`,
+        );
+      }
+      if (token) {
+        for (const person of created) {
+          const gid = picks.find(
+            (p) => (p.mail || p.userPrincipalName || "").trim().toLowerCase()
+              === (person.email || "").toLowerCase(),
+          )?.id;
+          if (!person.email) {
+            if (gid) results[gid] = "No email address — not invited.";
+            inviteFailed = true;
+            continue;
+          }
+          try {
+            const { subject, body } = inviteText(person, invitedBy);
+            await sendMail({ to: person.email, subject, body }, token);
+            if (gid) results[gid] = "Invite sent.";
+          } catch (e: any) {
+            inviteFailed = true;
+            if (gid) results[gid] = `Added, but the invite failed: ${e?.message || "send error"}`;
+          }
+        }
+      }
+      setInviteResults(results);
+      setInviting(false);
+    }
+
+    // Stay open if anything at all needs the admin's attention.
+    if (Object.keys(failed).length === 0 && !inviteFailed) onClose();
   }
 
   if (!open) return null;
@@ -302,6 +401,19 @@ export default function AddPersonDialog({ open, onClose, onAdded }: Props) {
               Only active employees with an M365 licence
             </label>
 
+            <label
+              className="flex select-none items-center gap-2 text-xs text-brand-gray"
+              title="Sends from your own mailbox, so it arrives from you rather than a service account"
+            >
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 accent-brand-red"
+                checked={sendInvite}
+                onChange={(e) => setSendInvite(e.target.checked)}
+              />
+              Email them an invite from your mailbox
+            </label>
+
             {error && (
               <div className="rounded-md border border-status-open-border bg-status-open-bg px-3 py-2 text-sm text-status-open-text">
                 {error}
@@ -330,6 +442,7 @@ export default function AddPersonDialog({ open, onClose, onAdded }: Props) {
                       existing={existingFor(u)}
                       selected={selected.has(u.id)}
                       failure={failures[u.id]}
+                      inviteResult={inviteResults[u.id]}
                       onToggle={() => toggle(u.id)}
                     />
                   ))}
@@ -337,15 +450,21 @@ export default function AddPersonDialog({ open, onClose, onAdded }: Props) {
               )}
             </div>
 
-            {/* Said plainly, because "Add" next to a list of colleagues reads
-                as "invite" and this sends nothing to anyone. */}
+            {/* Says exactly what "Add" does and does not do. It used to end
+                "...or email them", which stopped being true when the invite
+                was added — copy that contradicts the behaviour is worse than
+                no copy, because an admin reads it and trusts it. */}
             <p className="text-[11px] leading-relaxed text-brand-gray">
               Adding someone creates their PMO 360 account with the standard
               starting permissions — the same ones they would get by signing in
               themselves — so you can set up their access and portfolios now.
-              It does <strong>not</strong> create a Microsoft account, assign a
-              licence, or email them. They sign in with their Castillo account
-              whenever they are ready.
+              Change-order permissions are <strong>not</strong> included; grant
+              those here afterwards if they need them. It does{" "}
+              <strong>not</strong> create a Microsoft account or assign a
+              licence. They sign in with their Castillo account.
+              {sendInvite
+                ? " They'll get an invite from your mailbox with the sign-in link."
+                : " Nobody will be emailed."}
             </p>
 
             <div className="flex items-center justify-between gap-2 border-t border-surface-hairline pt-3">
@@ -367,9 +486,13 @@ export default function AddPersonDialog({ open, onClose, onAdded }: Props) {
                   type="button"
                   className="btn-primary"
                   onClick={() => void handleAdd()}
-                  disabled={saving || selected.size === 0}
+                  disabled={saving || inviting || selected.size === 0}
                 >
-                  {saving ? "Adding…" : addLabel(selected.size)}
+                  {saving
+                    ? "Adding…"
+                    : inviting
+                      ? "Sending invites…"
+                      : addLabel(selected.size, sendInvite)}
                 </button>
               </div>
             </div>
@@ -386,12 +509,17 @@ function DirectoryRow({
   existing,
   selected,
   failure,
+  inviteResult,
   onToggle,
 }: {
   person: DirectoryUser;
   existing: Existing | null;
   selected: boolean;
   failure?: string;
+  /** Outcome of the invite email, if one was attempted. Rendered separately
+   *  from `failure` because "added but not emailed" is a different situation
+   *  from "not added", and needs a different action from the admin. */
+  inviteResult?: string;
   onToggle: () => void;
 }) {
   const email = person.mail || person.userPrincipalName || "";
@@ -442,6 +570,18 @@ function DirectoryRow({
         {failure && (
           <div className="mt-1 text-[11px] text-status-open-text">{failure}</div>
         )}
+        {inviteResult && !failure && (
+          <div
+            className={clsx(
+              "mt-1 text-[11px]",
+              inviteResult.startsWith("Invite sent")
+                ? "text-status-completed-text"
+                : "text-status-pending-text",
+            )}
+          >
+            {inviteResult}
+          </div>
+        )}
       </div>
     </li>
   );
@@ -471,9 +611,13 @@ function ExistingTag({ existing }: { existing: Existing }) {
   );
 }
 
-function addLabel(count: number): string {
+/** The button says whether mail is about to leave. "Add 3 people" and
+ *  "Add 3 people + invite" are different acts and the admin should not have to
+ *  re-check a tickbox above to know which one they are about to perform. */
+function addLabel(count: number, willInvite: boolean): string {
   if (count === 0) return "Add";
-  return count === 1 ? "Add 1 person" : `Add ${count} people`;
+  const who = count === 1 ? "1 person" : `${count} people`;
+  return willInvite ? `Add ${who} + invite` : `Add ${who}`;
 }
 
 function initialsFor(name: string): string {
