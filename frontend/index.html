@@ -2,21 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!-- The Castillo "C", not the PMO 360 wordmark. A wide logo scaled into a
-         16px tab is an unreadable smear — the mark has to be legible at the
-         size it is actually drawn at, and a single letter is. The .ico bundles
-         16/32/48/64 so the browser picks a real layer instead of resampling
-         one; the 256px layer from the source file is dropped because nothing
-         renders a favicon that large and it was 98% of the weight.
+    <!-- The Castillo seal, not the PMO 360 wordmark. A wide logo scaled into a
+         16px tab is an unreadable smear; the mark has to hold up at the size it
+         is actually drawn at.
+
+         The .ico bundles 16/32/48/64 as FOUR SEPARATE RENDERS, not one image
+         resampled by the browser. That matters here: the seal's two
+         interlocking Cs bleed into each other under a plain downscale, so the
+         16 and 32 layers are rendered from the source and then unsharp-masked,
+         while the larger ones are left alone (they are crisp already and
+         sharpening only adds halos). PIL's ICO writer derives every layer from
+         a single image, which silently throws that away — hence the hand-built
+         container in the commit that added this file.
 
          Served from /assets/logo/ rather than /favicon.ico deliberately: the
          root path is handled by the SPA catch-all, which sets no-cache and
          does no conditional-request handling, so the icon would be refetched
-         in full on every page load. Under /assets it gets a week and a 304. -->
+         in full on every page load. Under /assets it gets a week and a 304.
+
+         The filename changes whenever the artwork does. Favicons are cached
+         hard and by URL, so reusing a name would leave the old mark on screen
+         for up to the max-age — a week here. -->
     <link
       rel="icon"
       type="image/x-icon"
-      href="/assets/logo/castillo_favicon.ico"
+      href="/assets/logo/castillo_seal_favicon.ico"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PMO 360 — Castillo Engineering</title>
