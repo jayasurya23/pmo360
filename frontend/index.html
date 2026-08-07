@@ -2,7 +2,22 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/assets/logo/pmo360_logo.png" />
+    <!-- The Castillo "C", not the PMO 360 wordmark. A wide logo scaled into a
+         16px tab is an unreadable smear — the mark has to be legible at the
+         size it is actually drawn at, and a single letter is. The .ico bundles
+         16/32/48/64 so the browser picks a real layer instead of resampling
+         one; the 256px layer from the source file is dropped because nothing
+         renders a favicon that large and it was 98% of the weight.
+
+         Served from /assets/logo/ rather than /favicon.ico deliberately: the
+         root path is handled by the SPA catch-all, which sets no-cache and
+         does no conditional-request handling, so the icon would be refetched
+         in full on every page load. Under /assets it gets a week and a 304. -->
+    <link
+      rel="icon"
+      type="image/x-icon"
+      href="/assets/logo/castillo_favicon.ico"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PMO 360 — Castillo Engineering</title>
     <!-- Jost is self-hosted via @font-face in src/styles/index.css.
