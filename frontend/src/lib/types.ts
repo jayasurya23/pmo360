@@ -327,6 +327,44 @@ export interface ActionItem {
   originating_meeting_date?: string | null;
 }
 
+/**
+ * How wide the Actions page is looking — the ONE scope vocabulary shared by
+ * the page, the list call, the owner directory and the CSV export.
+ *
+ * It is a three-way LEVEL rather than a boolean because the old boolean could
+ * only say "this portfolio" or "the whole company", and client calls are run
+ * per portfolio with the client's other portfolios one click away. A level
+ * also survives a header change in a way an id pair cannot: the user picked
+ * "this client", so switching clients keeps them at client level rather than
+ * silently widening or narrowing the view under them.
+ *
+ * A row of actions belongs to exactly one portfolio (`ActionItem.project_id`
+ * IS the portfolio), so "client" means "every portfolio under that client" —
+ * there is no sub-portfolio tier to filter on here.
+ */
+export type ActionScopeLevel = "portfolio" | "client" | "all";
+
+/**
+ * A resolved scope: the level plus the ids the header currently has selected.
+ *
+ * The ids are carried at every level, not only the one in use, so a caller can
+ * hand the same object to the list, the owners directory and the export and
+ * trust all three to look at the same rows. Whichever id the level doesn't
+ * need is simply not sent.
+ *
+ * Both ids are nullable because the header genuinely may have nothing picked.
+ * A level whose id is missing degrades to the next wider query rather than
+ * throwing — the page disables those buttons, but a hand-edited URL is not
+ * something to crash on.
+ */
+export interface ActionScope {
+  level: ActionScopeLevel;
+  /** Portfolio (`projects.id`) — used when level is "portfolio". */
+  projectId?: number | null;
+  /** Client (`clients.id`) — used when level is "client". */
+  clientId?: number | null;
+}
+
 /** One distinct action owner in the owner-filter dropdown.
  *
  *  `name` is a VALUE, not a label: the Actions filter and the CSV export both

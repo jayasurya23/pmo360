@@ -14,14 +14,18 @@ import OwnerFilterSelect, {
 import { useApp } from "@/lib/state";
 import {
   listActions,
-  listAllActions,
   updateAction,
   deleteAction,
   createAction,
   listMeetings,
 } from "@/lib/api";
 import { saveActionsCsv } from "@/lib/documents";
-import type { ActionItem, Meeting } from "@/lib/types";
+import type {
+  ActionItem,
+  ActionScope,
+  ActionScopeLevel,
+  Meeting,
+} from "@/lib/types";
 import { format, parseISO } from "date-fns";
 
 const STATUS_FILTERS = [
@@ -33,10 +37,49 @@ const STATUS_FILTERS = [
   { value: "cancelled", label: "Cancelled only" },
 ] as const;
 
+/**
+ * The scope segmented control, narrow → wide.
+ *
+ * A segmented control rather than a toggle because there are three answers now,
+ * and because the old two-state toggle was the discoverability half of the bug:
+ * the view a client call needs took two separate steps (pick the portfolio in
+ * the header, then find and flip a control on the page), so it read as though
+ * the only choices were one portfolio or the entire company.
+ */
+const SCOPE_OPTIONS: { value: ActionScopeLevel; label: string }[] = [
+  { value: "portfolio", label: "This portfolio" },
+  { value: "client", label: "This client" },
+  { value: "all", label: "All" },
+];
+
+/** `?scope=` lives beside the header's own `?client=` / `?portfolio=` params so
+ *  the level survives a reload and travels in a pasted link. */
+const SCOPE_PARAM = "scope";
+
+function isScopeLevel(v: string | null): v is ActionScopeLevel {
+  return v === "portfolio" || v === "client" || v === "all";
+}
+
 // One grid definition shared by the header row and every action row so the
 // columns can never drift apart: checkbox / action / owner / due / status /
 // delete.
 const ROW_GRID = "md:grid-cols-[36px_1fr_170px_150px_150px_44px]";
+
+/** One portfolio's slice of a multi-portfolio result. `ActionItem.project_id`
+ *  IS the portfolio (actions have no sub-portfolio tier), so it is the key. */
+interface PortfolioGroup {
+  key: number;
+  portfolio: string;
+  client: string | null;
+  rows: ActionItem[];
+  /** Counted over everything in scope for this portfolio, NOT over the rows
+   *  the status filter left visible — the header states a fact about the
+   *  portfolio, which is what makes it useful while filtered to "Completed".
+   *  The OWNER filter is honoured though: once the page is narrowed to one
+   *  person, a number on their group header reads as theirs. */
+  open: number;
+  pending: number;
+}
 
 /**
  * Split a comma-separated owner string into trimmed, non-empty parts.
@@ -87,74 +130,231 @@ function CellLabel({ children }: { children: string }) {
 }
 
 export default function Actions() {
-  const { currentProject, me } = useApp();
-  const [searchParams] = useSearchParams();
+  const { clients, projects, currentClient, currentProject, me } = useApp();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [actions, setActions] = useState<ActionItem[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
-  // Default: all actions across every portfolio. Toggle on to scope the list to
-  // the header's selected portfolio (the Client > Portfolio picker up top).
-  const [scopeToProject, setScopeToProject] = useState(false);
+
+  /**
+   * What the URL asked for AT ARRIVAL, read once.
+   *
+   * `searchParams` is reactive and the header rewrites `?client=` / `?portfolio=`
+   * as soon as the user touches it, so anything that means "how did we get
+   * here" has to be captured on mount or it turns into "where are we now".
+   */
+  const [entry] = useState(() => ({
+    ownerMine: searchParams.get("owner") === "mine",
+    namesPortfolio: searchParams.get("portfolio") != null,
+  }));
+
+  // ---------- scope ----------
+  // The level the user PICKED, or null while they haven't. Null is not "all":
+  // it means "follow the header", which is what makes the default below work.
+  const [chosenLevel, setChosenLevel] = useState<ActionScopeLevel | null>(() => {
+    const raw = searchParams.get(SCOPE_PARAM);
+    return isScopeLevel(raw) ? raw : null;
+  });
+
+  // THE DEFAULT IS THE FIX — do not "restore" the old one.
+  //
+  // Client calls are run per portfolio ("the calls with client are usually per
+  // portfolio"), so the view a PM needs for a call must be the view they LAND
+  // on. This page used to default to every action in the company with
+  // per-portfolio as an opt-in toggle, which inverted that: the common view was
+  // two steps away and the page read as "one project or everything".
+  //
+  // Derived rather than seeded-once on purpose: the header hydrates
+  // asynchronously (clients, then that client's portfolios), so a one-shot seed
+  // fires in the gap and pins "this client" on a header that is a tick away
+  // from selecting a portfolio. It stops being derived the moment the user
+  // picks a level, which is the persistence rule below.
+  //
+  // THE ONE EXCEPTION: a `?owner=mine` link that names no portfolio. "What is
+  // assigned to me" is a PERSON-shaped question, not a portfolio-shaped one —
+  // Home and MyWorkPanel count it across every client and portfolio and print
+  // that number on the button ("View all 12 open actions →"). Those links
+  // predate `?scope=`, and the header auto-selects a first client and a first
+  // portfolio when nothing is stored, so following the header here would land a
+  // button labelled 12 on a page showing 2. MyWorkPanel's portfolio-scoped
+  // branch DOES send `?portfolio=`, and that one still means one portfolio.
+  const defaultLevel: ActionScopeLevel =
+    entry.ownerMine && !entry.namesPortfolio
+      ? "all"
+      : currentProject
+        ? "portfolio"
+        : currentClient
+          ? "client"
+          : "all";
+  const scopeLevel = chosenLevel ?? defaultLevel;
+
+  /**
+   * HYBRID PERSISTENCE: the header owns WHICH client/portfolio, this control
+   * owns HOW WIDE, and a header change must not silently rewrite the width.
+   * Switching from Utopian Power to another client while on "This client"
+   * leaves you on "This client" for the new client.
+   *
+   * The level goes in the URL so it survives a reload and can be shared. That
+   * write also re-runs the header's own URL watchers in lib/state, but they
+   * re-resolve `?client=` / `?portfolio=` — untouched here — to the ids they
+   * already hold, so it is a no-op there.
+   */
+  const pickScope = (level: ActionScopeLevel) => {
+    setChosenLevel(level);
+    setSearchParams(
+      (sp) => {
+        const next = new URLSearchParams(sp);
+        next.set(SCOPE_PARAM, level);
+        return next;
+      },
+      { replace: true },
+    );
+  };
+
+  // The one scope object handed to the list call and the CSV export, so the
+  // file a PM downloads is always the rows on their screen.
+  const scope: ActionScope = {
+    level: scopeLevel,
+    projectId: currentProject?.id ?? null,
+    clientId: currentClient?.id ?? null,
+  };
+  // A level the header can't satisfy (a hand-edited URL, or a client cleared
+  // out from under us) shows an empty state rather than quietly widening —
+  // quietly widening to the whole company is the behaviour being fixed.
+  const scopeReady =
+    scopeLevel === "all" ||
+    (scopeLevel === "portfolio" && !!currentProject) ||
+    (scopeLevel === "client" && !!currentClient);
+  // Two portfolios or more can be on screen, so the rows need grouping.
+  const grouping = scopeLevel !== "portfolio";
+
   // Honour a deep-link from Home's "Your open actions" card: ?status= sets the
   // status filter, ?owner=mine scopes to the signed-in user (by owner_user_id).
   const [filter, setFilter] = useState<string>(() => {
     const s = searchParams.get("status");
     return s && STATUS_FILTERS.some((f) => f.value === s) ? s : "open_pending";
   });
-  const [ownerFilter, setOwnerFilter] = useState<string>(OWNER_ALL);
+  // ?owner=mine is read here, synchronously, exactly like ?status= above — NOT
+  // in an effect. It used to be applied by a latched effect that raced the
+  // header's two-stage hydration: the reset effect below fires again when the
+  // portfolio resolves a round-trip after the client, by which point the
+  // apply-once effect had already spent itself, so the deep link was silently
+  // reset to "All owners" on every load.
+  const [ownerFilter, setOwnerFilter] = useState<string>(
+    entry.ownerMine ? OWNER_MINE : OWNER_ALL,
+  );
   const [loading, setLoading] = useState(false);
   // Bumped on every completed load. The owner dropdown fetches its own grouped
   // list from the server, so it has no way to notice that a PM just retyped an
   // owner in the table — this is the nudge that keeps the two in step.
   const [loadSeq, setLoadSeq] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMode, setBulkMode] = useState<null | "owner" | "due">(null);
   const [bulkOwnerValue, setBulkOwnerValue] = useState("");
   const [bulkDueValue, setBulkDueValue] = useState("");
   const confirm = useConfirm();
 
-  const scoped = scopeToProject && !!currentProject;
+  /**
+   * The header is still arriving. `clients` is empty only before `listClients`
+   * resolves (or on a genuinely empty install, where there are no actions to
+   * show either), so this is the one signal that separates "nothing selected"
+   * from "not selected YET".
+   *
+   * Worth having because `defaultLevel` is derived: without it the first commit
+   * has no client and no portfolio, resolves to "all", and fires a full-company
+   * query that is always superseded — the heaviest request on the page, issued
+   * on every visit, purely to render a flash of the exact view this change
+   * exists to stop landing on.
+   */
+  const headerHydrating = clients.length === 0 && !currentClient;
+
+  // Monotonic request token. Header hydration produces three commits — nothing
+  // selected, then the client, then that client's portfolio — and because the
+  // default is derived, those are three DIFFERENT scopes: "all", "this client",
+  // "this portfolio". The widest is issued first and is by far the slowest, so
+  // without a token its response can land last and leave every client's rows on
+  // screen under a kicker, a segmented control and a CSV export that all say one
+  // portfolio — and a bulk "mark completed" would then reach rows the PM
+  // believes are inside a single portfolio.
+  const reqSeq = useRef(0);
 
   const load = async () => {
-    // Scoped-but-no-portfolio: nothing to load, the render shows a hint.
-    if (scopeToProject && !currentProject) {
+    const seq = ++reqSeq.current;
+    // Unsatisfiable scope (or a header that hasn't landed): nothing to load,
+    // the render shows a hint.
+    if (headerHydrating || !scopeReady) {
       setActions([]);
+      setLoading(false);
       return;
     }
     setLoading(true);
-    const [a, m] = await Promise.all([
-      scoped ? listActions(currentProject!.id) : listAllActions(),
-      // Meetings back the "Add action" picker + raised-date lookup; only the
-      // selected portfolio's are needed (cross-portfolio rows carry their own
-      // originating_meeting_date from the API).
-      currentProject ? listMeetings(currentProject.id) : Promise.resolve([] as Meeting[]),
-    ]);
-    setActions(a);
-    setMeetings(m);
-    setLoading(false);
-    setLoadSeq((n) => n + 1);
+    try {
+      const [a, m] = await Promise.all([
+        // One call for all three levels — `listActions` sends the id the level
+        // needs and nothing for "all".
+        listActions(scope),
+        // Meetings back the "Add action" picker + raised-date lookup; only the
+        // selected portfolio's are needed (cross-portfolio rows carry their own
+        // originating_meeting_date from the API).
+        currentProject ? listMeetings(currentProject.id) : Promise.resolve([] as Meeting[]),
+      ]);
+      // Superseded: a newer scope is already in flight or already rendered.
+      // Dropping the whole commit (rows, meetings, loading, loadSeq) keeps the
+      // table, the kicker and the owner dropdown describing one scope.
+      if (seq !== reqSeq.current) return;
+      setActions(a);
+      setMeetings(m);
+      setLoading(false);
+      setLoadSeq((n) => n + 1);
+    } catch (e) {
+      if (seq !== reqSeq.current) return;
+      console.error(e);
+      // Clear the spinner rather than leaving "Loading…" on screen forever —
+      // an empty table is at least an honest one.
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentProject?.id, scopeToProject]);
+  }, [currentProject?.id, currentClient?.id, scopeLevel, headerHydrating]);
 
-  // Reset selection + bulk panels whenever the project changes.
+  // Reset selection + bulk panels + collapse state whenever the rows underneath
+  // them change — a bulk op must never reach rows that have left the view, and
+  // group keys are portfolio ids, so a collapse carried into a different client
+  // would fold away portfolios the user never touched. Widening or narrowing
+  // the scope counts as changing the rows.
   useEffect(() => {
     setSelectedIds(new Set());
+    setCollapsedGroups(new Set());
     setBulkMode(null);
-    setOwnerFilter(OWNER_ALL);
-  }, [currentProject?.id]);
+  }, [currentProject?.id, currentClient?.id, scopeLevel]);
 
-  // Apply a ?owner=mine deep-link ONCE, after the project-reset above has run
-  // (so it isn't clobbered back to "__all__" when the portfolio first hydrates).
-  const ownerParamApplied = useRef(false);
+  // The owner filter is reset by a HEADER change only, not by a scope change:
+  // "show me everything Dylan owns across this client" is the reason someone
+  // widens the scope, and clearing the owner would answer a different question.
+  //
+  // A header CHANGE, not the header ARRIVING. Hydration walks null -> client,
+  // then null -> portfolio one round-trip later, and treating either as a user
+  // action is what used to reset a `?owner=mine` deep link to "All owners" on
+  // essentially every load. So: reset only when an id that had already resolved
+  // becomes a different value (a different portfolio, a different client, or
+  // cleared to "All"). An id going null -> something is the header landing.
+  const prevHeader = useRef<{ c: number | null; p: number | null }>({
+    c: null,
+    p: null,
+  });
   useEffect(() => {
-    if (ownerParamApplied.current || !currentProject) return;
-    ownerParamApplied.current = true;
-    if (searchParams.get("owner") === "mine") setOwnerFilter(OWNER_MINE);
-  }, [currentProject?.id]);
+    const c = currentClient?.id ?? null;
+    const p = currentProject?.id ?? null;
+    const prev = prevHeader.current;
+    prevHeader.current = { c, p };
+    const clientChanged = prev.c !== null && c !== prev.c;
+    const portfolioChanged = prev.p !== null && p !== prev.p;
+    if (clientChanged || portfolioChanged) setOwnerFilter(OWNER_ALL);
+  }, [currentProject?.id, currentClient?.id]);
 
   // Deduped, case-insensitively-sorted owner names off all loaded actions (not
   // just the visible ones — picking from a hidden owner is a legitimate use
@@ -174,37 +374,109 @@ export default function Actions() {
     );
   }, [actions]);
 
-  const filtered = actions.filter((a) => {
-    // Status filter
-    if (filter === "open_pending") {
-      if (!(a.status === "open" || a.status === "pending")) return false;
-    } else if (filter !== "all") {
-      if (a.status !== filter) return false;
-    }
-    // Owner filter. OWNER_MINE scopes to the signed-in user by the canonical
-    // owner_user_id link (matches Home's "Your open actions"); otherwise the
-    // selected name is matched EXACTLY against the comma-split owner parts.
-    //
-    // Exact, not substring, and the dropdown is why. Every option now carries
-    // the count of actions naming that person, computed by splitting on commas
-    // and folding case — so a substring match here would show "CK  3" and then
-    // return every row whose owner merely CONTAINS those letters, Nick and
-    // Rickard included. A badge that disagrees with the list beside it is worse
-    // than no badge. The options are the distinct owner parts, so exact match
-    // is also what the reader means by picking one.
-    if (ownerFilter === OWNER_MINE) {
-      if (!(me && a.owner_user_id === me.id)) return false;
-    } else if (ownerFilter !== OWNER_ALL) {
-      const needle = ownerFilter.trim().toLowerCase();
-      const hit = splitOwners(a.owner).some(
-        (p) => p.toLowerCase() === needle,
-      );
-      if (!hit) return false;
-    }
-    return true;
-  });
+  const matchesStatus = (a: ActionItem) => {
+    if (filter === "open_pending")
+      return a.status === "open" || a.status === "pending";
+    if (filter === "all") return true;
+    return a.status === filter;
+  };
 
-  const visibleIds = filtered.map((a) => a.id);
+  /**
+   * Owner filter. OWNER_MINE scopes to the signed-in user by the canonical
+   * owner_user_id link (matches Home's "Your open actions"); otherwise the
+   * selected name is matched EXACTLY against the comma-split owner parts.
+   *
+   * Exact, not substring, and the dropdown is why. Every option now carries
+   * the count of actions naming that person, computed by splitting on commas
+   * and folding case — so a substring match here would show "CK  3" and then
+   * return every row whose owner merely CONTAINS those letters, Nick and
+   * Rickard included. A badge that disagrees with the list beside it is worse
+   * than no badge. The options are the distinct owner parts, so exact match
+   * is also what the reader means by picking one.
+   *
+   * Split out from the status predicate because the group headers need one and
+   * not the other — see `portfolioTotals`.
+   */
+  const matchesOwner = (a: ActionItem) => {
+    if (ownerFilter === OWNER_MINE) return !!me && a.owner_user_id === me.id;
+    if (ownerFilter === OWNER_ALL) return true;
+    const needle = ownerFilter.trim().toLowerCase();
+    return splitOwners(a.owner).some((p) => p.toLowerCase() === needle);
+  };
+
+  const filtered = actions.filter((a) => matchesStatus(a) && matchesOwner(a));
+
+  // Open/pending per portfolio, over everything in scope rather than over the
+  // status-filtered rows — see PortfolioGroup for why that asymmetry is the
+  // useful one.
+  //
+  // The OWNER filter is applied though, unlike the status filter. Once a reader
+  // has narrowed the page to one person, a count sitting on a group header
+  // reads as that person's count; "7 open · 3 pending" above Dylan's single row
+  // is a claim about Dylan that the rows underneath contradict, and it is the
+  // number a PM scans to decide which portfolio he is behind on.
+  const portfolioTotals = useMemo(() => {
+    const totals = new Map<number, { open: number; pending: number }>();
+    for (const a of actions) {
+      if (!matchesOwner(a)) continue;
+      const t = totals.get(a.project_id) || { open: 0, pending: 0 };
+      if (a.status === "open") t.open += 1;
+      else if (a.status === "pending") t.pending += 1;
+      totals.set(a.project_id, t);
+    }
+    return totals;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actions, ownerFilter, me?.id]);
+
+  // Group by portfolio under the two wide scopes. This is the "sort the
+  // portfolios" half of the ask: a client call still walks one portfolio at a
+  // time even with the whole client on screen, and an undifferentiated list of
+  // 200 rows is exactly what sends people back to picking one portfolio.
+  //
+  // Not memoised: `filtered` is rebuilt every render anyway, so a memo here
+  // would only pretend to save work.
+  const groups: PortfolioGroup[] | null = grouping
+    ? (() => {
+        const byPortfolio = new Map<number, PortfolioGroup>();
+        for (const a of filtered) {
+          let g = byPortfolio.get(a.project_id);
+          if (!g) {
+            const totals = portfolioTotals.get(a.project_id);
+            g = {
+              key: a.project_id,
+              // The name comes from the list endpoint; the id is the honest
+              // fallback rather than a blank header.
+              portfolio: a.project_name || `Portfolio #${a.project_id}`,
+              client: a.client_name || null,
+              rows: [],
+              open: totals?.open || 0,
+              pending: totals?.pending || 0,
+            };
+            byPortfolio.set(a.project_id, g);
+          }
+          g.rows.push(a);
+        }
+        return Array.from(byPortfolio.values()).sort(
+          (x, y) =>
+            (x.client || "").localeCompare(y.client || "") ||
+            x.portfolio.localeCompare(y.portfolio),
+        );
+      })()
+    : null;
+
+  // Rows the table is actually SHOWING. Collapsed groups are excluded so
+  // "select all visible" cannot reach rows nobody can see — a bulk complete
+  // that silently swept up a folded-away portfolio would be unrecoverable.
+  // `toggleGroup` handles the other half of that promise: it drops a group's
+  // rows from the selection as they fold away, because the bulk bar acts on
+  // `selectedIds` and not on this list.
+  const renderedActions = groups
+    ? groups
+        .filter((g) => !collapsedGroups.has(g.key))
+        .flatMap((g) => g.rows)
+    : filtered;
+
+  const visibleIds = renderedActions.map((a) => a.id);
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
   const someVisibleSelected =
@@ -235,6 +507,29 @@ export default function Actions() {
       } else {
         for (const id of visibleIds) next.delete(id);
       }
+      return next;
+    });
+  };
+
+  const toggleGroup = (key: number) => {
+    const collapsing = !collapsedGroups.has(key);
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+    if (!collapsing) return;
+    // Drop this group's rows from the selection as they leave the screen. The
+    // bulk bar operates on `selectedIds`, not on what is rendered, so a
+    // selection made BEFORE the collapse would otherwise let "Mark cancelled"
+    // or a bulk owner overwrite sweep up a folded-away portfolio the user
+    // cannot see and cannot undo row by row.
+    const rows = groups?.find((g) => g.key === key)?.rows ?? [];
+    if (!rows.length) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const r of rows) next.delete(r.id);
       return next;
     });
   };
@@ -351,42 +646,229 @@ export default function Actions() {
     cancelled: actions.filter((a) => a.status === "cancelled").length,
   };
 
+  // The kicker NAMES the active scope, so a screenshot pasted into a call is
+  // unambiguous about which rows it is showing.
+  const scopeLabel =
+    scopeLevel === "portfolio"
+      ? currentProject
+        ? currentProject.name
+        : "No portfolio selected"
+      : scopeLevel === "client"
+        ? currentClient
+          ? `${currentClient.name} — all portfolios`
+          : "No client selected"
+        : "All portfolios";
+
+  // A client that genuinely has no portfolios. `projects` is also empty for the
+  // one round-trip between the client resolving and its portfolios arriving, so
+  // this settles by the time the first result renders.
+  const clientHasNoPortfolios = !!currentClient && projects.length === 0;
+
+  // Why a segment is greyed out, in the page rather than in a tooltip: this
+  // page is used on phones, where a title attribute never appears.
+  //
+  // Derived from WHICH SEGMENT is blocked, not from which id is missing. Keying
+  // it on the ids told a client with zero portfolios to "pick a portfolio in
+  // the header" — from a dropdown that has none in it — and told someone in
+  // "All clients" mode with a portfolio pinned from the URL that they could not
+  // scope to a portfolio, which they can.
+  const portfolioSegmentBlocked = !currentProject;
+  const clientSegmentBlocked = !currentClient;
+  const scopeHints: string[] = [];
+  if (portfolioSegmentBlocked)
+    scopeHints.push(
+      clientHasNoPortfolios
+        ? `${currentClient!.name} has no portfolios yet, so “This portfolio” has nothing to scope to.`
+        : "Pick a portfolio in the header to use “This portfolio”.",
+    );
+  if (clientSegmentBlocked)
+    scopeHints.push("Pick a client in the header to use “This client”.");
+  const scopeHint = scopeHints.length ? scopeHints.join(" ") : null;
+
+  /** One action row. Extracted so the grouped and ungrouped layouts render
+   *  the identical row rather than two copies that drift. */
+  const renderRow = (a: ActionItem) => {
+    // Prefer the date the API attached (works cross-portfolio); fall back to
+    // the loaded meetings list when scoped to one portfolio.
+    const raisedDate =
+      a.originating_meeting_date ||
+      meetings.find((m) => m.id === a.originating_meeting_id)?.meeting_date ||
+      null;
+    const checked = selectedIds.has(a.id);
+    return (
+      <div
+        key={a.id}
+        // Mobile: stacked card layout with explicit labels.
+        // Desktop (md+): the shared 6-col grid. The left border is the
+        // overdue rail — always 3px so nothing reflows when a due date
+        // slips past today.
+        className={clsx(
+          "flex flex-col gap-2 border-b border-l-[3px] border-surface-page px-4 py-3",
+          "last:border-b-0 md:grid md:items-start md:gap-3 md:px-5 md:py-[13px]",
+          isOverdue(a) ? "border-l-brand-red" : "border-l-transparent",
+          a.status === "completed" && "opacity-[0.65]",
+          ROW_GRID,
+        )}
+      >
+        {/* Top row on mobile: select checkbox + delete, far ends */}
+        <div className="flex items-center justify-between md:justify-center md:pt-2">
+          <input
+            type="checkbox"
+            className="accent-brand-red"
+            aria-label={`Select action ${a.id}`}
+            tabIndex={-1}
+            checked={checked}
+            onChange={(e) => toggleOne(a.id, e.target.checked)}
+          />
+          {/* Delete button shown on mobile next to the checkbox; on
+              desktop the dedicated delete cell at the end of the row
+              handles it (this one stays hidden via md:hidden). */}
+          <button
+            className="btn-danger md:hidden"
+            onClick={() => handleDelete(a)}
+            title="Delete"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="min-w-0 space-y-1">
+          <CellLabel>Action</CellLabel>
+          {/* No per-row portfolio label any more — the group header above
+              carries it, and repeating it on every row was noise. */}
+          <textarea
+            className="textarea text-[13.5px] leading-[1.5]"
+            rows={2}
+            value={a.text}
+            onChange={(e) =>
+              setActions(
+                actions.map((x) =>
+                  x.id === a.id ? { ...x, text: e.target.value } : x
+                )
+              )
+            }
+            onBlur={(e) =>
+              a.text !== e.target.value
+                ? handlePatch(a.id, { text: e.target.value })
+                : null
+            }
+          />
+          {/* Provenance on one line — raised date + who filed it. */}
+          <div className="text-[11px] text-brand-lightgray">
+            Raised{" "}
+            {raisedDate ? format(parseISO(raisedDate), "MMM d, yyyy") : "—"}
+            {a.created_by?.name ? ` · created by ${a.created_by.name}` : ""}
+          </div>
+        </div>
+
+        <div>
+          <CellLabel>Owner</CellLabel>
+          <OwnerPicker
+            value={a.owner || ""}
+            ownerUserId={a.owner_user_id ?? null}
+            onChange={({ owner, owner_user_id }) => {
+              setActions(
+                actions.map((x) =>
+                  x.id === a.id ? { ...x, owner, owner_user_id } : x,
+                ),
+              );
+              void handlePatch(a.id, { owner, owner_user_id });
+            }}
+          />
+        </div>
+
+        <div>
+          <CellLabel>Due</CellLabel>
+          <input
+            type="date"
+            className="input text-[13px]"
+            value={a.due_date || ""}
+            onChange={(e) =>
+              handlePatch(a.id, { due_date: e.target.value || null })
+            }
+          />
+        </div>
+
+        <div>
+          <CellLabel>Status</CellLabel>
+          <StatusSelect
+            value={a.status}
+            onChange={(v) => handlePatch(a.id, { status: v })}
+          />
+        </div>
+
+        {/* Desktop-only delete (mobile's is in the top row) — a bare
+            glyph, so the row's only strong colour stays the overdue rail. */}
+        <button
+          className="hidden justify-center pt-2 text-[15px] leading-none text-brand-lightgray transition hover:text-brand-brightred md:flex"
+          onClick={() => handleDelete(a)}
+          title="Delete"
+        >
+          ✕
+        </button>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-[18px]">
       <PageHeader
-        kicker={`${scoped ? currentProject!.name : "All portfolios"} · ${actions.length} total — ${counts.open} open, ${counts.pending} pending, ${counts.completed} completed, ${counts.cancelled} cancelled`}
+        kicker={`${scopeLabel} · ${actions.length} total — ${counts.open} open, ${counts.pending} pending, ${counts.completed} completed, ${counts.cancelled} cancelled`}
         title="Rolling action items"
         actions={
           <>
-            {/* Scope toggle: all portfolios (default) vs the header-selected one. */}
-            <div className="inline-flex overflow-hidden rounded-lg border border-surface-border text-[13px]">
-              <button
-                type="button"
-                onClick={() => setScopeToProject(false)}
-                className={
-                  !scopeToProject
-                    ? "bg-brand-red px-3.5 py-[7px] font-semibold text-white"
-                    : "bg-surface-card px-3.5 py-[7px] text-brand-gray transition hover:bg-surface-page"
-                }
+            {/* Scope: this portfolio (the default when one is selected) /
+                this client / everything. */}
+            <div className="flex flex-col items-start gap-1 sm:items-end">
+              <div
+                role="group"
+                aria-label="Action scope"
+                className="inline-flex overflow-hidden rounded-lg border border-surface-border text-[13px]"
               >
-                All portfolios
-              </button>
-              <button
-                type="button"
-                onClick={() => setScopeToProject(true)}
-                title={
-                  currentProject
-                    ? `Scope to ${currentProject.name}`
-                    : "Pick a portfolio in the header to scope"
-                }
-                className={
-                  scopeToProject
-                    ? "bg-brand-red px-3.5 py-[7px] font-semibold text-white"
-                    : "bg-surface-card px-3.5 py-[7px] text-brand-gray transition hover:bg-surface-page"
-                }
-              >
-                {currentProject ? "This portfolio" : "Selected portfolio"}
-              </button>
+                {SCOPE_OPTIONS.map((opt) => {
+                  const blocked =
+                    (opt.value === "portfolio" && !currentProject) ||
+                    (opt.value === "client" && !currentClient);
+                  const active = scopeLevel === opt.value;
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      disabled={blocked}
+                      aria-pressed={active}
+                      onClick={() => pickScope(opt.value)}
+                      title={
+                        blocked
+                          ? opt.value === "portfolio"
+                            ? clientHasNoPortfolios
+                              ? `${currentClient!.name} has no portfolios yet`
+                              : "Pick a portfolio in the header first"
+                            : "Pick a client in the header first"
+                          : opt.value === "portfolio"
+                            ? `Only ${currentProject!.name}`
+                            : opt.value === "client"
+                              ? `Every portfolio under ${currentClient!.name}`
+                              : "Every portfolio in the company"
+                      }
+                      className={clsx(
+                        "whitespace-nowrap px-3 py-[7px] transition sm:px-3.5",
+                        active
+                          ? "bg-brand-red font-semibold text-white"
+                          : "bg-surface-card text-brand-gray hover:bg-surface-page",
+                        blocked &&
+                          "cursor-not-allowed opacity-50 hover:bg-surface-card",
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {scopeHint && (
+                <p className="max-w-[260px] text-[11px] leading-tight text-brand-gray sm:text-right">
+                  {scopeHint}
+                </p>
+              )}
             </div>
             <select
               className="select w-44 rounded-lg text-[13px]"
@@ -406,7 +888,12 @@ export default function Actions() {
             <OwnerFilterSelect
               value={ownerFilter}
               onChange={setOwnerFilter}
-              projectId={scoped ? currentProject!.id : null}
+              // THE SAME scope object the table and the export get. Handing it
+              // a portfolio id would have been right at two levels out of three
+              // and a company-wide superset at "This client" — the dropdown
+              // would offer people this client has no rows for, with counts the
+              // table beside it contradicts.
+              scope={scope}
               meName={me ? me.name || me.email || "" : null}
               fallbackNames={ownerOptions}
               reloadKey={loadSeq}
@@ -416,21 +903,35 @@ export default function Actions() {
             <button
               type="button"
               className="btn-ghost"
+              // Disabled while the scope is unsatisfiable. An id-less
+              // "portfolio" scope sends no filter at all, so the export would
+              // quietly hand back every client in the company under a filename
+              // and a screen that both say one portfolio.
+              disabled={!scopeReady}
               onClick={() =>
                 void saveActionsCsv(
-                  scoped ? currentProject!.id : null,
+                  // The scope ON SCREEN, not the header's selection: an export
+                  // that ignores it hands back a plausible-looking file of the
+                  // wrong rows.
+                  scope,
                   filter || "all",
-                  ownerFilter === OWNER_ALL
+                  ownerFilter === OWNER_ALL || ownerFilter === OWNER_MINE
                     ? ""
-                    : ownerFilter === OWNER_MINE
-                      ? me?.name || ""
-                      : ownerFilter,
+                    : ownerFilter,
+                  // "Mine" travels as the USER ID, because that is the key the
+                  // table filtered on (`a.owner_user_id === me.id`). Sending
+                  // `me.name` instead — as this used to — silently swapped rows
+                  // in both directions: a row reading "D. Wraga" linked to Dylan
+                  // dropped out, a stale "Dylan Wraga" with no link appeared,
+                  // and the counts could still match.
+                  ownerFilter === OWNER_MINE ? (me?.id ?? null) : null,
                 )
               }
               title={
-                scoped
-                  ? "Download this portfolio's filtered actions as a CSV"
-                  : "Download all portfolios' filtered actions as a CSV"
+                scopeReady
+                  ? `Download the filtered actions for ${scopeLabel} as a CSV` +
+                    " — the whole scope, including any collapsed groups"
+                  : "Pick a scope the header can fill before exporting"
               }
             >
               📥 Export CSV
@@ -564,17 +1065,29 @@ export default function Actions() {
         </div>
       )}
 
-      {scopeToProject && !currentProject ? (
+      {!scopeReady ? (
         <EmptyState
-          title="Pick a portfolio to scope"
-          hint="Choose a client + portfolio in the header, or switch back to All portfolios."
+          title={
+            scopeLevel === "portfolio"
+              ? "Pick a portfolio to scope"
+              : "Pick a client to scope"
+          }
+          hint={
+            scopeLevel === "portfolio"
+              ? "Choose a client + portfolio in the header, or widen the scope."
+              : "Choose a client in the header, or widen the scope."
+          }
           action={
-            <button
-              className="btn-primary mt-2"
-              onClick={() => setScopeToProject(false)}
-            >
-              Show all portfolios
-            </button>
+            <div className="mt-2 flex flex-wrap justify-center gap-2">
+              {scopeLevel === "portfolio" && currentClient && (
+                <button className="btn-ghost" onClick={() => pickScope("client")}>
+                  Show {currentClient.name}
+                </button>
+              )}
+              <button className="btn-primary" onClick={() => pickScope("all")}>
+                Show all portfolios
+              </button>
+            </div>
           }
         />
       ) : loading ? (
@@ -582,7 +1095,7 @@ export default function Actions() {
       ) : filtered.length === 0 ? (
         <EmptyState
           title="No actions match this filter"
-          hint="Try a different status or owner filter, or add a new item."
+          hint="Try a different status or owner filter, widen the scope, or add a new item."
         />
       ) : (
         <div className="card overflow-hidden">
@@ -630,148 +1143,63 @@ export default function Actions() {
               onChange={(e) => toggleAllVisible(e.target.checked)}
             />
             <span className="text-brand-gray">
-              Select all visible ({filtered.length})
+              Select all visible ({renderedActions.length})
             </span>
           </div>
-          {filtered.map((a) => {
-            // Prefer the date the API attached (works cross-portfolio); fall
-            // back to the loaded meetings list when scoped to one portfolio.
-            const raisedDate =
-              a.originating_meeting_date ||
-              meetings.find((m) => m.id === a.originating_meeting_id)
-                ?.meeting_date ||
-              null;
-            const checked = selectedIds.has(a.id);
-            return (
-              <div
-                key={a.id}
-                // Mobile: stacked card layout with explicit labels.
-                // Desktop (md+): the shared 6-col grid. The left border is the
-                // overdue rail — always 3px so nothing reflows when a due date
-                // slips past today.
-                className={clsx(
-                  "flex flex-col gap-2 border-b border-l-[3px] border-surface-page px-4 py-3",
-                  "last:border-b-0 md:grid md:items-start md:gap-3 md:px-5 md:py-[13px]",
-                  isOverdue(a) ? "border-l-brand-red" : "border-l-transparent",
-                  a.status === "completed" && "opacity-[0.65]",
-                  ROW_GRID,
-                )}
-              >
-                {/* Top row on mobile: select checkbox + delete, far ends */}
-                <div className="flex items-center justify-between md:justify-center md:pt-2">
-                  <input
-                    type="checkbox"
-                    className="accent-brand-red"
-                    aria-label={`Select action ${a.id}`}
-                    tabIndex={-1}
-                    checked={checked}
-                    onChange={(e) => toggleOne(a.id, e.target.checked)}
-                  />
-                  {/* Delete button shown on mobile next to the checkbox; on
-                      desktop the dedicated delete cell at the end of the row
-                      handles it (this one stays hidden via md:hidden). */}
-                  <button
-                    className="btn-danger md:hidden"
-                    onClick={() => handleDelete(a)}
-                    title="Delete"
+
+          {groups
+            ? groups.map((g, gi) => {
+                const collapsed = collapsedGroups.has(g.key);
+                return (
+                  <div
+                    key={g.key}
+                    // The rows' `last:border-b-0` strips the hairline off the
+                    // final row of every group, so the separator between two
+                    // groups has to live on the header instead.
+                    className={clsx(gi > 0 && "border-t border-surface-border")}
                   >
-                    ✕
-                  </button>
-                </div>
-
-                <div className="min-w-0 space-y-1">
-                  <CellLabel>Action</CellLabel>
-                  {/* Which portfolio this action belongs to — only meaningful in
-                      the cross-portfolio "All portfolios" view. */}
-                  {!scoped && a.project_name && (
-                    <div className="text-[11px] leading-tight">
-                      {a.client_name && (
-                        <span className="text-brand-gray">
-                          {a.client_name} ·{" "}
-                        </span>
-                      )}
-                      <span className="font-semibold text-brand-red">
-                        {a.project_name}
+                    <button
+                      type="button"
+                      onClick={() => toggleGroup(g.key)}
+                      aria-expanded={!collapsed}
+                      className="flex w-full items-center gap-2.5 border-b border-surface-hairline bg-surface-mute px-4 py-2 text-left transition hover:bg-surface-rowhover md:px-5"
+                    >
+                      <svg
+                        className={clsx(
+                          "h-3 w-3 shrink-0 text-brand-lightgray transition-transform",
+                          collapsed && "-rotate-90",
+                        )}
+                        viewBox="0 0 12 12"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        aria-hidden
+                      >
+                        <path
+                          d="M3 4.5 6 7.5 9 4.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-brand-black">
+                        {/* The client only earns a mention when more than one
+                            can be on screen. */}
+                        {scopeLevel === "all" && g.client && (
+                          <span className="font-normal text-brand-gray">
+                            {g.client} ·{" "}
+                          </span>
+                        )}
+                        {g.portfolio}
                       </span>
-                    </div>
-                  )}
-                  <textarea
-                    className="textarea text-[13.5px] leading-[1.5]"
-                    rows={2}
-                    value={a.text}
-                    onChange={(e) =>
-                      setActions(
-                        actions.map((x) =>
-                          x.id === a.id ? { ...x, text: e.target.value } : x
-                        )
-                      )
-                    }
-                    onBlur={(e) =>
-                      a.text !== e.target.value
-                        ? handlePatch(a.id, { text: e.target.value })
-                        : null
-                    }
-                  />
-                  {/* Provenance on one line — raised date + who filed it. */}
-                  <div className="text-[11px] text-brand-lightgray">
-                    Raised{" "}
-                    {raisedDate
-                      ? format(parseISO(raisedDate), "MMM d, yyyy")
-                      : "—"}
-                    {a.created_by?.name ? ` · created by ${a.created_by.name}` : ""}
+                      <span className="shrink-0 text-[11px] tabular-nums text-brand-gray">
+                        {g.open} open · {g.pending} pending
+                      </span>
+                    </button>
+                    {!collapsed && g.rows.map(renderRow)}
                   </div>
-                </div>
-
-                <div>
-                  <CellLabel>Owner</CellLabel>
-                  <OwnerPicker
-                    value={a.owner || ""}
-                    ownerUserId={a.owner_user_id ?? null}
-                    onChange={({ owner, owner_user_id }) => {
-                      setActions(
-                        actions.map((x) =>
-                          x.id === a.id
-                            ? { ...x, owner, owner_user_id }
-                            : x,
-                        ),
-                      );
-                      void handlePatch(a.id, { owner, owner_user_id });
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <CellLabel>Due</CellLabel>
-                  <input
-                    type="date"
-                    className="input text-[13px]"
-                    value={a.due_date || ""}
-                    onChange={(e) =>
-                      handlePatch(a.id, { due_date: e.target.value || null })
-                    }
-                  />
-                </div>
-
-                <div>
-                  <CellLabel>Status</CellLabel>
-                  <StatusSelect
-                    value={a.status}
-                    onChange={(v) => handlePatch(a.id, { status: v })}
-                  />
-                </div>
-
-                {/* Desktop-only delete (mobile's is in the top row) — a bare
-                    glyph, so the row's only strong colour stays the overdue rail. */}
-                <button
-                  className="hidden justify-center pt-2 text-[15px] leading-none text-brand-lightgray transition hover:text-brand-brightred md:flex"
-                  onClick={() => handleDelete(a)}
-                  title="Delete"
-                >
-                  ✕
-                </button>
-              </div>
-            );
-          })}
+                );
+              })
+            : filtered.map(renderRow)}
         </div>
       )}
     </div>

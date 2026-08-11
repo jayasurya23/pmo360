@@ -21,7 +21,8 @@
  * should use the helpers here.
  */
 import { useEffect, useState } from "react";
-import { apiClient } from "./api";
+import { actionScopeParams, apiClient } from "./api";
+import type { ActionScope } from "./types";
 
 export type MeetingDocKind = "pdf" | "docx" | "xlsx" | "zip";
 
@@ -126,18 +127,42 @@ export async function saveMeetingDoc(
 export const saveAttachment = (id: number, name?: string) =>
   saveFromApi(`/attachments/${id}/download`, name || `attachment-${id}`);
 
-/** The Actions page CSV export. project_id is omitted entirely for the
- *  cross-portfolio ("All portfolios") export — the backend reads its absence,
- *  not a null. */
+/**
+ * The Actions page CSV export.
+ *
+ * MUST be handed the scope the table is currently showing, not the header's
+ * selection: an export that ignores scope hands a PM reviewing one portfolio
+ * either a different portfolio or every client in the company, and the file
+ * looks entirely plausible either way. `actionScopeParams` is the same builder
+ * the list call uses, so the two cannot drift.
+ *
+ * Whichever id the scope doesn't need is omitted entirely rather than sent as
+ * null — the backend reads absence, not a null. The fallback filename here is
+ * only ever used if the response arrives without a Content-Disposition; the
+ * server names the file after the scope so the download is self-identifying.
+ *
+ * The owner filter has to travel by the SAME key the table filtered on.
+ * `ownerUserId` is the canonical User link, which is what the page's "Mine"
+ * filter matches; `owner` is the free-text string. Sending the name for a
+ * screen filtered by link swaps rows in both directions — a row reading
+ * "D. Wraga" linked to Dylan drops out, a stale "Dylan Wraga" with no link
+ * appears — and the row counts can match, so nothing on screen or in the file
+ * gives the substitution away.
+ */
 export const saveActionsCsv = (
-  projectId: number | null,
+  scope: number | ActionScope | null,
   status = "all",
   owner = "",
+  ownerUserId: number | null = null,
 ) =>
   saveFromApi("/actions/export.csv", "actions.csv", {
     status,
-    ...(projectId != null ? { project_id: projectId } : {}),
-    ...(owner ? { owner } : {}),
+    ...actionScopeParams(scope),
+    ...(ownerUserId != null
+      ? { owner_user_id: ownerUserId }
+      : owner
+        ? { owner }
+        : {}),
   });
 
 /** The pre-meeting agenda .ics. */
