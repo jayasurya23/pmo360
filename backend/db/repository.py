@@ -220,10 +220,49 @@ def all_actions(session: Session, project_id: int) -> list[ActionItem]:
 
 def all_actions_across_portfolios(session: Session) -> list[ActionItem]:
     """Every action across every portfolio (all statuses), newest first.
-    Backs the Actions page 'All portfolios' default view."""
+    Backs the Actions page 'All portfolios' view."""
     return (
         session.query(ActionItem)
         .order_by(desc(ActionItem.created_at))
+        .all()
+    )
+
+
+def all_actions_for_client(session: Session, client_id: int) -> list[ActionItem]:
+    """Every action (all statuses) in every portfolio under one client, newest
+    first — the Actions page's "This client" scope.
+
+    ONE join, never a portfolio-by-portfolio loop: a client with twenty
+    portfolios costs one round-trip here and twenty in the loop version, on the
+    page a PM opens before every client call.
+
+    An unknown client_id matches no portfolios and returns []. That is
+    deliberate, not an oversight — nothing here can tell "client was deleted"
+    from "client has no portfolios yet", and neither is an error.
+    """
+    return (
+        session.query(ActionItem)
+        .join(Project, ActionItem.project_id == Project.id)
+        .filter(Project.client_id == client_id)
+        .order_by(desc(ActionItem.created_at))
+        .all()
+    )
+
+
+def open_actions_for_client(session: Session, client_id: int) -> list[ActionItem]:
+    """Open/pending actions across one client's portfolios, soonest due first.
+
+    Sorts like `all_open_actions_across_portfolios` (nulls last) rather than
+    like the per-portfolio `open_actions`, because this IS the cross-portfolio
+    query narrowed to one client — two views of the same rolled-up list should
+    not order themselves differently depending on how wide the scope is.
+    """
+    return (
+        session.query(ActionItem)
+        .join(Project, ActionItem.project_id == Project.id)
+        .filter(Project.client_id == client_id)
+        .filter(ActionItem.status.in_(("open", "pending")))
+        .order_by(ActionItem.due_date.asc().nullslast())
         .all()
     )
 

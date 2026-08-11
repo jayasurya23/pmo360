@@ -19,6 +19,7 @@ from db.models import (
 from db.repository import (
     all_actions, open_actions, update_action_status,
     all_open_actions_across_portfolios, all_actions_across_portfolios,
+    all_actions_for_client, open_actions_for_client,
 )
 from core.services import safe_filename_slug
 from schemas.common import (
@@ -52,14 +53,43 @@ def _with_context(db: Session, rows: list[ActionItem]) -> list[ActionItemOut]:
 @router.get("", response_model=list[ActionItemOut])
 def list_actions(
     project_id: int | None = Query(None),
+    client_id: int | None = Query(None),
     only_open: bool = Query(False),
     db: Session = Depends(get_db),
     _user=Depends(require_db_user),
 ):
-    """List actions. With ``project_id`` -> that portfolio only; without it ->
-    every action across all portfolios (the Actions page default view)."""
+    """List actions at one of three widths:
+
+        project_id  -> that portfolio only
+        client_id   -> every portfolio under that client
+        neither     -> every action in the company
+
+    An action hangs off a portfolio (`project_id`) and nothing finer, so those
+    three are genuinely all the widths there are — there is no sub-project tier
+    below this for actions.
+
+    PRECEDENCE, when BOTH ids arrive: project_id wins, and we do not 400. Both
+    ids come from the header's client + portfolio pickers, so a bookmarked or
+    shared Actions URL routinely carries both; falling back to the NARROWER of
+    the two shows the reader less than they asked for and never more, which is
+    the only safe direction for a stale link to be wrong in.
+
+    An unknown client_id returns an empty list, NOT a 404. A client with no
+    portfolios and a client that no longer exists look identical from here, and
+    neither is an error condition for a list.
+
+    Scope is a FILTER, not a permission. This read is company-wide for any
+    signed-in user (require_db_user, no per-portfolio gate) and client_id
+    neither widens nor narrows that.
+    """
     if project_id is not None:
         rows = open_actions(db, project_id) if only_open else all_actions(db, project_id)
+    elif client_id is not None:
+        rows = (
+            open_actions_for_client(db, client_id)
+            if only_open
+            else all_actions_for_client(db, client_id)
+        )
     else:
         rows = (
             all_open_actions_across_portfolios(db)
@@ -169,19 +199,45 @@ _STATUS_FILTERS: dict[str, set[str]] = {
 @router.get("/export.csv")
 def export_actions_csv(
     project_id: int | None = Query(None),
+    client_id: int | None = Query(None),
     status: str = Query("all"),
     owner: str = Query("", description="Exact match against the comma-split owner parts, case-folded"),
+    owner_user_id: int | None = Query(
+        None,
+        description="Match the canonical owner LINK. Wins over `owner` when both arrive.",
+    ),
     db: Session = Depends(get_db),
     _user=Depends(require_db_user),
 ):
-    """Stream a CSV of action items. With ``project_id`` it's scoped to that
-    portfolio; without it, every portfolio's actions (the 'All portfolios'
-    view). Portfolio + Client columns are appended so the cross-portfolio
-    export stays self-describing.
+    """Stream a CSV of action items, at the SAME three widths as ``GET
+    /api/actions`` and with the same project_id-wins precedence — see that
+    docstring for why both ids may legitimately arrive together.
+
+    The export must take scope, and must take the same scope the list does. A
+    CSV that quietly ignored it would hand a PM reviewing one portfolio either
+    a different portfolio or every client in the company, and a plausible-looking
+    file with the wrong rows in it is worse than no file: nothing downstream
+    would flag it.
+
+    For the same reason the filename NAMES the scope — "Utopian_Power_All_
+    Portfolios_Actions_2026-08-11.csv" vs "Snapdragon_Actions_2026-08-11.csv" —
+    so a download sitting in someone's Downloads folder a week later still says
+    what it covers. Portfolio + Client columns are appended per row for the same
+    reason at row level.
 
     Filters mirror what the Actions page renders so the export matches the
     table the PM is looking at when they click Export. Existing columns keep
     their position so PMs' pivot tables / Power BI / Excel formulas don't break.
+
+    OWNER FILTERING TAKES TWO KEYS because the page has two. `owner` matches the
+    free-text string; `owner_user_id` matches the canonical User link, which is
+    what the page's "Mine" filter uses. They are NOT interchangeable: a row can
+    read "D. Wraga" and be linked to Dylan, and another can read "Dylan Wraga"
+    with no link at all (a stale owner never re-linked — the reason the
+    owner_user_id backfill exists). Exporting by name from a screen filtered by
+    link silently swaps one set of rows for another, with matching row counts
+    and nothing in the file to flag it, so `owner_user_id` wins outright when
+    supplied rather than being ANDed with a name that may not agree.
     """
     if project_id is not None:
         project = db.get(Project, project_id)
@@ -189,6 +245,25 @@ def export_actions_csv(
             raise HTTPException(404, "Project not found")
         rows = all_actions(db, project_id)
         scope_slug = safe_filename_slug(project.name or "project")
+    elif client_id is not None:
+        rows = all_actions_for_client(db, client_id)
+        client = db.get(Client, client_id)
+        # Deliberately NOT a 404 the way an unknown project_id is, matching
+        # `list_actions`: an unknown client is an empty scope, so the download
+        # still succeeds and arrives as a header row with nothing under it —
+        # visibly empty beats a failed download the browser reports as a
+        # network error.
+        #
+        # An unknown id names ITSELF rather than falling back to a bare
+        # "Client_All_Portfolios": the whole point of putting the scope in the
+        # filename is that the download still says what it covers a week later,
+        # and a placeholder that reads like a real client name defeats that on
+        # exactly the file that came back empty.
+        scope_slug = (
+            f"{safe_filename_slug(client.name or 'Client')}_All_Portfolios"
+            if client
+            else f"Unknown_Client_{client_id}_All_Portfolios"
+        )
     else:
         rows = all_actions_across_portfolios(db)
         scope_slug = "All_Portfolios"
@@ -202,12 +277,16 @@ def export_actions_csv(
     if allowed is not None:
         rows = [r for r in rows if (r.status or "open").lower() in allowed]
 
-    # Owner filter — EXACT match against the comma-split parts, via the same
-    # two helpers the owner directory uses, so the dropdown's count, the table
-    # and this export cannot drift apart. It was a substring match against the
-    # whole owner string, which meant the CSV quietly contained more rows than
-    # the table the PM exported it from: "CK" also matched "Nick".
-    if owner.strip():
+    # Owner filter. The canonical link first — see the docstring for why it is
+    # not ANDed with the name.
+    if owner_user_id is not None:
+        rows = [r for r in rows if r.owner_user_id == owner_user_id]
+    # EXACT match against the comma-split parts, via the same two helpers the
+    # owner directory uses, so the dropdown's count, the table and this export
+    # cannot drift apart. It was a substring match against the whole owner
+    # string, which meant the CSV quietly contained more rows than the table the
+    # PM exported it from: "CK" also matched "Nick".
+    elif owner.strip():
         needle = _owner_key(owner)
         rows = [
             r for r in rows
@@ -394,6 +473,7 @@ def _name_keys(full_name: str | None) -> set[str]:
 @router.get("/owners", response_model=ActionOwnersOut)
 def list_action_owners(
     project_id: int | None = Query(None),
+    client_id: int | None = Query(None),
     db: Session = Depends(get_db),
     _user=Depends(require_db_user),
 ):
@@ -439,15 +519,24 @@ def list_action_owners(
     All of those land in the unmatched worklist, which is the honest place for
     them and the one place a user can permanently fix them.
 
-    ``project_id`` scopes which ACTIONS are considered, matching the page's
-    All/Mine portfolio toggle. An id that matches no portfolio yields no owners
-    rather than a 404, which is how ``GET /api/actions`` already behaves.
+    ``project_id`` / ``client_id`` scope which ACTIONS are considered, and MUST
+    be passed the same scope the table is rendering — same three widths and the
+    same project_id-wins precedence as ``GET /api/actions``. A mismatch is not
+    cosmetic: the dropdown would offer people the table holds no rows for, each
+    carrying an `action_count` the list beside it contradicts, and picking one
+    would empty the table for no visible reason. An id matching nothing yields
+    no owners rather than a 404, exactly as the list endpoint behaves.
     """
     # QUERY 1 of 5. Two columns, not whole ORM objects — nothing else about an
-    # action matters to this answer.
+    # action matters to this answer. The client join adds no query: it narrows
+    # this one.
     query = db.query(ActionItem.owner, ActionItem.owner_user_id)
     if project_id is not None:
         query = query.filter(ActionItem.project_id == project_id)
+    elif client_id is not None:
+        query = query.join(Project, ActionItem.project_id == Project.id).filter(
+            Project.client_id == client_id
+        )
 
     owners: dict[str, dict] = {}
     for owner_text, owner_user_id in query.all():
@@ -496,17 +585,22 @@ def list_action_owners(
         _record_attendee(*row)
 
     client_names = dict(db.query(Client.id, Client.name).all())     # QUERY 4
-    for first, last, client_id in db.query(                         # QUERY 5
+    # `contact_client_id`, NOT `client_id`: that name is this endpoint's scope
+    # PARAMETER. Rebinding it here happens to be harmless only because the
+    # scoped query above has already been executed — a landmine for whoever next
+    # needs the scope further down, who would silently get the last contact's
+    # employer instead.
+    for first, last, contact_client_id in db.query(                 # QUERY 5
         ClientContact.first_name, ClientContact.last_name,
         ClientContact.client_id,
     ).all():
         # An unplaced contact (client_id NULL) is exactly the person this
         # endpoint cannot name an employer for — the directory has not been
         # told yet either.
-        company = _company_key(client_names.get(client_id))
+        company = _company_key(client_names.get(contact_client_id))
         if not company:
             continue
-        company_spellings[company][client_names[client_id].strip()] += 1
+        company_spellings[company][client_names[contact_client_id].strip()] += 1
         for key in _name_keys(" ".join(p for p in (first, last) if p)):
             by_contact[key].add(company)
 

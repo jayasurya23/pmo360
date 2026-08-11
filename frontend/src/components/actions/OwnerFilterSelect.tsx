@@ -26,8 +26,12 @@
  */
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import clsx from "clsx";
-import { fetchActionOwners } from "@/lib/api";
-import type { ActionOwnerEntry, ActionOwnerGroup } from "@/lib/types";
+import {
+  actionScopeIsResolved,
+  actionScopeParams,
+  fetchActionOwners,
+} from "@/lib/api";
+import type { ActionOwnerEntry, ActionOwnerGroup, ActionScope } from "@/lib/types";
 
 /** The two non-name values. Exported so the page and this component cannot
  *  drift apart on a magic string. */
@@ -117,10 +121,14 @@ interface Props {
   /** OWNER_ALL | OWNER_MINE | a raw owner name. */
   value: string;
   onChange: (next: string) => void;
-  /** Must mirror the table's scope: a portfolio id when scoped, null for the
-   *  cross-portfolio view. Otherwise the dropdown lists owners the table has no
-   *  rows for and picking one empties the list for no visible reason. */
-  projectId: number | null;
+  /** Must mirror the table's scope — the SAME `ActionScope` the page hands
+   *  `listActions`, or a bare portfolio id for a caller that only ever means one
+   *  portfolio. Otherwise the dropdown lists owners the table has no rows for,
+   *  each carrying an `action_count` the list beside it contradicts, and picking
+   *  one empties the table for no visible reason. All three widths are real now
+   *  ("this client" is not "this portfolio" and not "all"), so this cannot be a
+   *  portfolio id alone. */
+  scope: number | ActionScope | null;
   /** Signed-in user's display name, or null when nobody is signed in — decides
    *  whether "Mine" is offered at all, exactly as the old <select> did. */
   meName: string | null;
@@ -136,7 +144,7 @@ interface Props {
 export default function OwnerFilterSelect({
   value,
   onChange,
-  projectId,
+  scope,
   meName,
   fallbackNames,
   reloadKey = 0,
@@ -160,13 +168,32 @@ export default function OwnerFilterSelect({
   const listboxId = `${uid}-listbox`;
   const optionId = (i: number) => `${uid}-opt-${i}`;
 
+  // A PRIMITIVE effect dep, because `scope` is an OBJECT the page rebuilds on
+  // every render — depending on it directly would refetch the directory forever.
+  // Keyed on the params that actually reach the server rather than on the scope
+  // itself, so a change the request cannot see (a different client while still
+  // scoped to one portfolio) costs no fetch.
+  const scopeKey = JSON.stringify(actionScopeParams(scope));
+
+  // A level the header can't fill sends NO params, which the server reads as
+  // "every owner in the company" — so the dropdown would fill with people while
+  // the table beside it renders its "pick a portfolio" empty state. Skip the
+  // fetch instead and stay empty with the table.
+  const resolved = actionScopeIsResolved(scope);
+
   // Fetched on mount rather than on first open: the TRIGGER carries the
   // selected owner's company colour, so the data is needed before the popup is.
   useEffect(() => {
     let alive = true;
+    if (!resolved) {
+      setGroups(null);
+      setFailed(false);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setFailed(false);
-    fetchActionOwners(projectId)
+    fetchActionOwners(scope)
       .then((d) => {
         if (!alive) return;
         setGroups(d.groups ?? []);
@@ -181,7 +208,11 @@ export default function OwnerFilterSelect({
     return () => {
       alive = false;
     };
-  }, [projectId, reloadKey]);
+    // `scope` is deliberately absent: `scopeKey` is its request-shaped digest,
+    // and the effect re-runs on the same render the key changes on, so the
+    // closure's `scope` is always the one the key describes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scopeKey, reloadKey, resolved]);
 
   // Degraded mode: names with no company rather than an empty dropdown. The
   // note rendered above the list is what stops this reading as the truth.

@@ -199,11 +199,17 @@ export default function Home() {
       {/* ----- Resume in-progress meeting draft ----- */}
       <DraftResumeBanner />
 
-      {/* ----- What's going wrong this week, before any counts ----- */}
+      {/* ----- What's going wrong this week, before any counts -----
+          The &scope=all on "Review all" is load-bearing. This spotlight is fed
+          by the rollup above, which is NOT scoped to the header, so the link
+          has to open the same breadth the card just counted. Without it the
+          Actions page applies its portfolio-first default and lands on a single
+          portfolio — a link labelled with a company-wide number opening a
+          fraction of it, and nothing on screen to say so. */}
       <AtRiskSpotlight
         risks={risks}
         actions={openActions}
-        onReviewAll={() => nav("/actions?status=open_pending")}
+        onReviewAll={() => nav("/actions?status=open_pending&scope=all")}
       />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">

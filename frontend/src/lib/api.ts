@@ -6,6 +6,7 @@ import type {
   MeetingDetail,
   ActionItem,
   ActionOwners,
+  ActionScope,
   Note,
   Agenda,
   Schedule,
@@ -415,15 +416,89 @@ export const finalizedFileUrl = (path: string) =>
 
 // ---------- actions ----------
 
-export const listActions = (projectId: number, onlyOpen = false) =>
+/**
+ * The scope query params for `/actions`, `/actions/owners` and
+ * `/actions/export.csv`. ONE builder for all three on purpose: the way scope
+ * filtering fails is that the table, the owner dropdown and the exported file
+ * quietly stop describing the same rows, and a CSV of the wrong portfolio
+ * looks exactly as plausible as a CSV of the right one.
+ *
+ * Only the WINNING id is sent. project_id beats client_id — narrower beats
+ * broader, matching the backend's documented precedence — so a scope that
+ * somehow carries both never leaves it to the server to break the tie.
+ *
+ * A level whose id is missing sends nothing and so widens to the next query
+ * rather than throwing; the page disables those buttons, but a hand-edited URL
+ * is not worth a crash over.
+ *
+ * It also NORMALISES the legacy positional form, so this is the single place
+ * that knows a bare number means "this one portfolio". Callers that only ever
+ * meant that (the delete-portfolio pre-check, the agenda's open-action pull,
+ * the owner dropdown) keep passing an id and keep working, and there is still
+ * exactly one function deciding what reaches the server.
+ */
+export function actionScopeParams(scope?: number | ActionScope | null): {
+  project_id?: number;
+  client_id?: number;
+} {
+  const s: ActionScope | null =
+    typeof scope === "number" ? { level: "portfolio", projectId: scope } : (scope ?? null);
+  if (!s) return {};
+  if (s.level === "portfolio" && s.projectId != null)
+    return { project_id: s.projectId };
+  if (s.level === "client" && s.clientId != null)
+    return { client_id: s.clientId };
+  return {};
+}
+
+/**
+ * Can this scope actually be asked for? A "portfolio" level with no portfolio
+ * id (or "client" with no client id) sends NO params, which the server reads as
+ * "every action in the company" — the widest possible answer to the narrowest
+ * possible question.
+ *
+ * `actionScopeParams` degrades rather than throwing, deliberately; this is how
+ * callers tell the two apart. The page uses it to disable the export and show
+ * an empty state, and the owner dropdown uses it to not fetch a company-wide
+ * directory to sit beside a table that is showing nothing. Both must agree, so
+ * they read the same predicate.
+ */
+export function actionScopeIsResolved(
+  scope?: number | ActionScope | null,
+): boolean {
+  // A bare id and an absent scope are the two legacy forms; both are resolved
+  // by construction ("this portfolio" / "everything").
+  if (scope == null || typeof scope === "number") return true;
+  if (scope.level === "portfolio") return scope.projectId != null;
+  if (scope.level === "client") return scope.clientId != null;
+  return true;
+}
+
+/**
+ * Actions in scope. Takes either a bare portfolio id (the original form) or an
+ * `ActionScope`, which additionally allows "every portfolio under this client"
+ * — the shape a client call actually has, and the reason this took a scope at
+ * all. Rows carry project_name / client_name so a multi-portfolio result can
+ * label and group itself.
+ *
+ * `undefined` is NOT accepted: a forgotten argument would typecheck and quietly
+ * return every action in the company, which is the wrong way for this call to
+ * fail (the delete-portfolio dialog counts rows with it before offering a
+ * destructive confirmation). `null` still means "all", explicitly.
+ */
+export const listActions = (
+  scope: number | ActionScope | null,
+  onlyOpen = false,
+) =>
   apiClient
     .get<ActionItem[]>("/actions", {
-      params: { project_id: projectId, only_open: onlyOpen },
+      params: { ...actionScopeParams(scope), only_open: onlyOpen },
     })
     .then((r) => r.data);
 
-/** Every action across all portfolios (the Actions page default view). Each
- *  row carries project_name / client_name so the table can label its portfolio. */
+/** Every action across every portfolio in the company. Identical to
+ *  `listActions({ level: "all" })`; kept because callers that mean "all" read
+ *  better saying so. */
 export const listAllActions = (onlyOpen = false) =>
   apiClient
     .get<ActionItem[]>("/actions", { params: { only_open: onlyOpen } })
@@ -431,14 +506,14 @@ export const listAllActions = (onlyOpen = false) =>
 
 /** Distinct action owners in scope, grouped by the company they resolve to.
  *
- *  Pass the SAME scope the table is showing — a project id when the page is
- *  scoped to one portfolio, nothing for the cross-portfolio view. Mismatch it
- *  and the dropdown offers owners the table has no rows for, so picking one
- *  empties the list for no visible reason. */
-export const fetchActionOwners = (projectId?: number | null) =>
+ *  Pass the SAME scope the table is showing. Mismatch it and the dropdown
+ *  offers owners the table has no rows for, so picking one empties the list for
+ *  no visible reason — which is why this takes the same scope object as
+ *  `listActions` rather than its own idea of one. */
+export const fetchActionOwners = (scope?: number | ActionScope | null) =>
   apiClient
     .get<ActionOwners>("/actions/owners", {
-      params: projectId != null ? { project_id: projectId } : undefined,
+      params: actionScopeParams(scope),
     })
     .then((r) => r.data);
 
