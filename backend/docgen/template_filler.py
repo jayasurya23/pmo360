@@ -729,7 +729,7 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
 
     # --- Action Items table ---
     act_rows = []
-    for idx, a in enumerate(meeting.raised_actions, start=1):
+    for idx, a in enumerate(meeting.client_facing_actions, start=1):
         act_rows.append([
             str(idx),
             a.text,
@@ -744,7 +744,7 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
     _rewrite_table(doc, "Action Items", act_rows,
                    header_labels=["#", "Action", "Owner", "Due", "Status"],
                    col_widths=[570, 5750, 2220, 1320, 1300])
-    _color_action_status(doc, meeting.raised_actions)
+    _color_action_status(doc, meeting.client_facing_actions)
     # Compact Due column: smaller font (matches the PDF), so a full m/d/yyyy
     # date fits on one line despite the narrower column.
     _shrink_action_due_font(doc)

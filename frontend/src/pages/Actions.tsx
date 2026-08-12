@@ -9,6 +9,10 @@ import { StatusSelect } from "@/components/StatusPill";
 import { useConfirm } from "@/components/ConfirmDialog";
 import OwnerPicker from "@/components/actions/OwnerPicker";
 import SubProjectSelect from "@/components/SubProjectSelect";
+import MoveActionDialog, {
+  type ReassignMode,
+  type ReassignTarget,
+} from "@/components/actions/MoveActionDialog";
 import OwnerFilterSelect, {
   OWNER_ALL,
   OWNER_MINE,
@@ -20,6 +24,8 @@ import {
   deleteAction,
   createAction,
   listMeetings,
+  moveAction,
+  copyAction,
 } from "@/lib/api";
 import { serialWrite } from "@/lib/serialWrite";
 import { saveActionsCsv } from "@/lib/documents";
@@ -66,7 +72,10 @@ function isScopeLevel(v: string | null): v is ActionScopeLevel {
 // One grid definition shared by the header row and every action row so the
 // columns can never drift apart: checkbox / action / owner / due / status /
 // delete.
-const ROW_GRID = "md:grid-cols-[36px_1fr_170px_150px_150px_44px]";
+// Last column holds two glyphs (move, delete) rather than one. Widened for
+// both and applied to every row, so the controls sit in the same place on
+// every row in every state — nothing slides sideways as rows change.
+const ROW_GRID = "md:grid-cols-[36px_1fr_170px_150px_150px_64px]";
 
 /** One portfolio's slice of a multi-portfolio result. `ActionItem.project_id`
  *  IS the portfolio (actions have no sub-portfolio tier), so it is the key. */
@@ -308,6 +317,10 @@ export default function Actions() {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMode, setBulkMode] = useState<null | "owner" | "due">(null);
+  /** Rows awaiting a move/copy destination. Holds ids rather than the action
+   *  objects so a refetch underneath the open dialog cannot leave it acting on
+   *  stale copies. */
+  const [reassigning, setReassigning] = useState<null | { ids: number[] }>(null);
   const [bulkDueValue, setBulkDueValue] = useState("");
   // Inline-edit save failures. Deliberately not an alert(): see commitText.
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -700,6 +713,44 @@ export default function Actions() {
     }
   };
 
+  /**
+   * Move or copy the rows the dialog was opened for.
+   *
+   * Serial, not `Promise.all`, and that is the one place this differs from the
+   * bulk handlers above. A partial failure here is not "one row kept its old
+   * owner" — it is rows scattered across two portfolios with no record of which
+   * landed. Stopping at the first error leaves a prefix that moved and a
+   * suffix that did not, and re-throwing lets the dialog say so while the
+   * refetch shows exactly where everything ended up.
+   */
+  const handleReassign = async (mode: ReassignMode, target: ReassignTarget) => {
+    const ids = reassigning?.ids ?? [];
+    if (!ids.length) return;
+    const fn = mode === "move" ? moveAction : copyAction;
+    let done = 0;
+    try {
+      for (const id of ids) {
+        await fn(id, target);
+        done += 1;
+      }
+    } catch (e: any) {
+      await load();
+      clearSelection();
+      if (done > 0) {
+        // Say what actually happened. "Failed" alone would leave the PM
+        // assuming nothing moved when some of it did.
+        const detail = e?.response?.data?.detail || e?.message || "";
+        throw new Error(
+          `${done} of ${ids.length} ${mode === "move" ? "moved" : "copied"} before this failed: ${detail}`,
+        );
+      }
+      throw e;
+    }
+    await load();
+    clearSelection();
+    setReassigning(null);
+  };
+
   const bulkMarkCompleted = async () => {
     const ok = await confirm({
       title: `Mark ${selectedIds.size} action${selectedIds.size === 1 ? "" : "s"} as completed?`,
@@ -813,16 +864,26 @@ export default function Actions() {
             checked={checked}
             onChange={(e) => toggleOne(a.id, e.target.checked)}
           />
-          {/* Delete button shown on mobile next to the checkbox; on
-              desktop the dedicated delete cell at the end of the row
-              handles it (this one stays hidden via md:hidden). */}
-          <button
-            className="btn-danger md:hidden"
-            onClick={() => handleDelete(a)}
-            title="Delete"
-          >
-            ✕
-          </button>
+          {/* Move + delete shown on mobile next to the checkbox; on desktop
+              the dedicated cell at the end of the row handles both (these stay
+              hidden via md:hidden). */}
+          <div className="flex items-center gap-1.5 md:hidden">
+            <button
+              className="btn-ghost px-2 py-1 text-[13px]"
+              onClick={() => setReassigning({ ids: [a.id] })}
+              title="Move or copy to another portfolio"
+              aria-label={`Move or copy action ${a.id}`}
+            >
+              ⇄
+            </button>
+            <button
+              className="btn-danger"
+              onClick={() => handleDelete(a)}
+              title="Delete"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         <div className="min-w-0 space-y-1">
@@ -905,15 +966,26 @@ export default function Actions() {
           />
         </div>
 
-        {/* Desktop-only delete (mobile's is in the top row) — a bare
-            glyph, so the row's only strong colour stays the overdue rail. */}
-        <button
-          className="hidden justify-center pt-2 text-[15px] leading-none text-brand-lightgray transition hover:text-brand-brightred md:flex"
-          onClick={() => handleDelete(a)}
-          title="Delete"
-        >
-          ✕
-        </button>
+        {/* Desktop-only row controls (mobile's are in the top row) — bare
+            glyphs, so the row's only strong colour stays the overdue rail.
+            Both always render, so neither ever shifts under the cursor. */}
+        <div className="hidden items-start justify-center gap-2 pt-2 md:flex">
+          <button
+            className="text-[14px] leading-none text-brand-lightgray transition hover:text-brand-red"
+            onClick={() => setReassigning({ ids: [a.id] })}
+            title="Move or copy to another portfolio"
+            aria-label={`Move or copy action ${a.id}`}
+          >
+            ⇄
+          </button>
+          <button
+            className="text-[15px] leading-none text-brand-lightgray transition hover:text-brand-brightred"
+            onClick={() => handleDelete(a)}
+            title="Delete"
+          >
+            ✕
+          </button>
+        </div>
       </div>
     );
   };
@@ -1112,6 +1184,12 @@ export default function Actions() {
           >
             Change due date…
           </BulkButton>
+          <BulkButton
+            onClick={() => setReassigning({ ids: Array.from(selectedIds) })}
+            disabled={bulkBusy}
+          >
+            Move / copy…
+          </BulkButton>
           <button
             className="ml-auto text-xs font-semibold text-brand-gray transition hover:text-brand-red disabled:opacity-50"
             onClick={clearSelection}
@@ -1300,6 +1378,24 @@ export default function Actions() {
             : filtered.map(renderRow)}
         </div>
       )}
+
+      {/* Move / copy. `sourceProjectId` is the portfolio the selection shares,
+          or null when it spans several — a mixed selection has no single
+          "already lives here", so the dialog must not claim one. */}
+      <MoveActionDialog
+        open={!!reassigning}
+        count={reassigning?.ids.length ?? 0}
+        sourceProjectId={(() => {
+          const ids = new Set(reassigning?.ids ?? []);
+          const owners = new Set(
+            actions.filter((a) => ids.has(a.id)).map((a) => a.project_id),
+          );
+          return owners.size === 1 ? [...owners][0] : null;
+        })()}
+        clients={clients}
+        onCancel={() => setReassigning(null)}
+        onSubmit={handleReassign}
+      />
     </div>
   );
 }
