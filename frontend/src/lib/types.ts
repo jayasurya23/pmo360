@@ -488,6 +488,10 @@ export interface ParsedActionItem {
   /** Set when the owner is picked from the PMO 360 team — carried through to
    *  the saved ActionItem so it shows in "Mine" / dashboards. */
   owner_user_id?: number | null;
+  /** Sub-project under the MEETING's portfolio. null = the portfolio as a
+   *  whole, which is the default. Carried through to the saved ActionItem and
+   *  round-tripped on reopen, so a saved meeting keeps its tags. */
+  portfolio_project_id?: number | null;
   due_date: string | null;
   status: string;
 }

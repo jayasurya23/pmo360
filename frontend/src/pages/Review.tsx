@@ -13,6 +13,7 @@ import { StatusPill, StatusSelect } from "@/components/StatusPill";
 import SaveStatus from "@/components/SaveStatus";
 import { SortableList } from "@/components/SortableList";
 import OwnerPicker from "@/components/actions/OwnerPicker";
+import SubProjectSelect from "@/components/SubProjectSelect";
 import ScheduleItemPicker from "@/components/ScheduleItemPicker";
 import { SaveTemplateModal } from "@/components/TemplateModals";
 import AttachmentsSection from "@/components/AttachmentsSection";
@@ -777,7 +778,7 @@ export default function Review() {
                   onCommit={commitAction}
                   onKeyDown={handleTextareaTab}
                 />
-                <div className="min-w-0">
+                <div className="min-w-0 space-y-1">
                   <OwnerPicker
                     value={a.owner}
                     ownerUserId={a.owner_user_id ?? null}
@@ -789,6 +790,27 @@ export default function Review() {
                       )
                     }
                   />
+                  {/* Sub-project, under THIS MEETING's portfolio. Renders
+                      nothing when the portfolio has none — most have none, and
+                      an empty dropdown in the middle of a live minutes editor
+                      is noise during a call. Tagging stays an extra step. */}
+                  {/* currentProject is the meeting's portfolio — the page
+                      early-returns when it is null, so it is safe here. */}
+                  {currentProject && (
+                    <SubProjectSelect
+                      portfolioId={currentProject.id}
+                      value={a.portfolio_project_id ?? null}
+                      ariaLabel={`Project for action ${idx + 1}`}
+                      className="select h-7 w-full text-[11.5px]"
+                      onChange={(next) =>
+                        setActionItems(
+                          actionItems.map((x, i) =>
+                            i === idx ? { ...x, portfolio_project_id: next } : x
+                          )
+                        )
+                      }
+                    />
+                  )}
                 </div>
                 <input
                   type="date"

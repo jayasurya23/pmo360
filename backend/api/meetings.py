@@ -288,6 +288,10 @@ def regenerate_summary(
         action_items=[ParsedActionItem(
             text=a.text or "", owner=a.owner or "",
             owner_user_id=a.owner_user_id,
+            # Round-trip the tag so reopening a saved meeting shows the
+            # sub-projects it was filed with, rather than silently reverting
+            # every action to portfolio-wide on the next save.
+            portfolio_project_id=a.portfolio_project_id,
             due_date=a.due_date.isoformat() if a.due_date else None,
             status=a.status or "open",
         ) for a in meeting.raised_actions],

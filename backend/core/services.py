@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from db.models import (
     Meeting, MeetingAttendee, AgendaItem, DiscussionPoint, ActionItem,
-    Project, ProjectAttendee, Deliverable, MeetingDeliverable,
+    PortfolioProject, Project, ProjectAttendee, Deliverable, MeetingDeliverable,
     GeneratedDocument,
 )
 from db.repository import (
@@ -133,6 +133,13 @@ def _write_meeting_children(session: Session, meeting: Meeting,
     for idx, dp in enumerate(parsed.discussion_points):
         _persist_dp(dp, None, idx)
 
+    # Sub-projects of THIS portfolio, fetched once. Anything else in the payload
+    # is not ours to honour — see below.
+    valid_sub_projects = {
+        pid for (pid,) in session.query(PortfolioProject.id)
+        .filter(PortfolioProject.portfolio_id == project.id)
+        .all()
+    }
     for a in parsed.action_items:
         due = None
         if a.due_date:
@@ -140,8 +147,19 @@ def _write_meeting_children(session: Session, meeting: Meeting,
                 due = date.fromisoformat(a.due_date)
             except ValueError:
                 due = None
+        # An unrecognised sub-project DROPS THE TAG, it does not fail the save.
+        # This runs while a PM is saving a whole set of meeting minutes, and the
+        # only way to get an invalid id here is a stale payload (a project
+        # deleted or moved while the tab was open) — refusing the write would
+        # cost the PM the entire minutes over a piece of metadata. The action
+        # lands on the portfolio as a whole, which is the default anyway, and
+        # the tag can be reapplied in a second. Losing the notes cannot.
+        sub_id = getattr(a, "portfolio_project_id", None)
+        if sub_id is not None and sub_id not in valid_sub_projects:
+            sub_id = None
         session.add(ActionItem(
             project_id=project.id,
+            portfolio_project_id=sub_id,
             originating_meeting_id=meeting.id,
             text=a.text, owner=a.owner,
             owner_user_id=getattr(a, "owner_user_id", None),

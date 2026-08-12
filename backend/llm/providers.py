@@ -45,6 +45,11 @@ class ParsedActionItem(BaseModel):
     # Not produced by the LLM (it only knows names); set when a PM picks the
     # owner from the team in the UI, and carried through to the saved ActionItem.
     owner_user_id: Optional[int] = Field(default=None, exclude=False)
+    # Same deal: never produced by the LLM, set when a PM picks a sub-project in
+    # Review, carried through to the saved ActionItem. None means the action
+    # belongs to the portfolio as a whole, which is the default and the common
+    # case — the model is not asked to guess a project from the notes.
+    portfolio_project_id: Optional[int] = Field(default=None, exclude=False)
     due_date: Optional[str] = Field(default=None, description="ISO date YYYY-MM-DD if stated")
     status: str = Field(default="open", description="open / pending / completed / cancelled")
 
