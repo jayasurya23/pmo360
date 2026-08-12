@@ -674,6 +674,10 @@ class ParsedActionItemOut(BaseModel):
     # First-class link when the owner is picked from the PMO 360 team (so the
     # saved ActionItem shows in "Mine" / dashboards). null for free-form owners.
     owner_user_id: Optional[int] = None
+    # Sub-project this action belongs to, under the meeting's own portfolio.
+    # null = the portfolio as a whole (the default). Round-trips so a saved
+    # meeting reopens with its tags intact.
+    portfolio_project_id: Optional[int] = None
     due_date: Optional[str] = None
     status: str = "open"
 
