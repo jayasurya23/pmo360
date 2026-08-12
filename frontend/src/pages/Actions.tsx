@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ButtonHTMLAttributes } from "react";
 import { useSearchParams } from "react-router-dom";
 import clsx from "clsx";
@@ -128,6 +128,50 @@ function CellLabel({ children }: { children: string }) {
     </span>
   );
 }
+
+/**
+ * The action's text box — its own memoised component holding its own draft.
+ *
+ * THIS IS A THROUGHPUT FIX, not a tidy-up. Typing used to call setActions() on
+ * the page for EVERY KEYSTROKE, and that one call re-ran the status/owner
+ * filter, invalidated the portfolioTotals memo (a full scan of every action in
+ * scope), rebuilt every portfolio group and re-rendered every row — per
+ * character. At ten rows nobody noticed. At the fifty-seven "This client" puts
+ * on screen for a real client it misses the frame budget, and typing degrades
+ * to about one character at a time, which is exactly how it was reported.
+ *
+ * Keystrokes now stay inside this component. The page is told once, on blur —
+ * which is when the text was already being sent to the server anyway, so no
+ * save behaviour changes.
+ */
+const ActionTextCell = memo(function ActionTextCell({
+  id,
+  value,
+  onCommit,
+}: {
+  id: number;
+  value: string;
+  onCommit: (id: number, text: string) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  // Follow the server value when it changes underneath us — a reload, a bulk
+  // update, someone else's edit. Keyed on the id as well so a recycled row can
+  // never show the previous action's text.
+  useEffect(() => setDraft(value), [id, value]);
+  return (
+    <textarea
+      className="textarea text-[13.5px] leading-[1.5]"
+      rows={2}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      // Only on a real change: blurring an untouched row must not fire a PATCH
+      // or push a no-op render through the page.
+      onBlur={() => {
+        if (draft !== value) onCommit(id, draft);
+      }}
+    />
+  );
+});
 
 export default function Actions() {
   const { clients, projects, currentClient, currentProject, me } = useApp();
@@ -539,6 +583,19 @@ export default function Actions() {
     setBulkMode(null);
   };
 
+  /** Commit an edited action text. Stable (empty deps + functional setState) so
+   *  ActionTextCell's memo actually holds — a handler rebuilt every render
+   *  would re-render every row on every keystroke and undo the whole point. */
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const commitText = useCallback((id: number, text: string) => {
+    setActions((prev) => prev.map((x) => (x.id === id ? { ...x, text } : x)));
+    void updateAction(id, { text } as any).catch((e: any) => {
+      alert(e.message);
+      void loadRef.current();
+    });
+  }, []);
+
   const handlePatch = async (id: number, patch: Partial<ActionItem>) => {
     // Optimistic update
     setActions(actions.map((a) => (a.id === id ? { ...a, ...patch } : a)));
@@ -736,23 +793,7 @@ export default function Actions() {
           <CellLabel>Action</CellLabel>
           {/* No per-row portfolio label any more — the group header above
               carries it, and repeating it on every row was noise. */}
-          <textarea
-            className="textarea text-[13.5px] leading-[1.5]"
-            rows={2}
-            value={a.text}
-            onChange={(e) =>
-              setActions(
-                actions.map((x) =>
-                  x.id === a.id ? { ...x, text: e.target.value } : x
-                )
-              )
-            }
-            onBlur={(e) =>
-              a.text !== e.target.value
-                ? handlePatch(a.id, { text: e.target.value })
-                : null
-            }
-          />
+          <ActionTextCell id={a.id} value={a.text} onCommit={commitText} />
           {/* Provenance on one line — raised date + who filed it. */}
           <div className="text-[11px] text-brand-lightgray">
             Raised{" "}
