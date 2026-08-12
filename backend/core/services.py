@@ -157,6 +157,22 @@ def _write_meeting_children(session: Session, meeting: Meeting,
         sub_id = getattr(a, "portfolio_project_id", None)
         if sub_id is not None and sub_id not in valid_sub_projects:
             sub_id = None
+        # INHERIT the meeting's sub-project when the action does not name one.
+        # This is the whole point of tagging a meeting: a call that is entirely
+        # about one sub-project says so once instead of every action saying it.
+        #
+        # An action's OWN tag wins, and that asymmetry is deliberate — a meeting
+        # about one project can still raise an action about another, and the
+        # per-row picker has to stay able to say so. It also means inheritance
+        # cannot silently overwrite a choice somebody made by hand.
+        #
+        # Validated the same way, because the meeting's tag can go stale too:
+        # a sub-project deleted after the meeting was tagged must not be
+        # stamped onto new actions.
+        if sub_id is None:
+            meeting_sub = getattr(meeting, "portfolio_project_id", None)
+            if meeting_sub is not None and meeting_sub in valid_sub_projects:
+                sub_id = meeting_sub
         session.add(ActionItem(
             project_id=project.id,
             portfolio_project_id=sub_id,
@@ -182,6 +198,29 @@ def _try_generate_summary(parsed: ParsedMeeting, project: Project,
         return None
 
 
+def _clean_meeting_sub_project(
+    session: Session, portfolio_id: int, sub_project_id: Optional[int],
+) -> Optional[int]:
+    """Keep the meeting's sub-project only if it belongs to THIS portfolio.
+
+    Drops it rather than raising, for the same reason the per-action tag drops:
+    this runs mid-save of a full set of minutes, and refusing the write over a
+    stale piece of metadata would cost the PM the notes. Untagged is the
+    default state anyway, and re-tagging takes a second.
+    """
+    if sub_project_id is None:
+        return None
+    ok = (
+        session.query(PortfolioProject.id)
+        .filter(
+            PortfolioProject.id == sub_project_id,
+            PortfolioProject.portfolio_id == portfolio_id,
+        )
+        .first()
+    )
+    return sub_project_id if ok else None
+
+
 def save_parsed_meeting(
     session: Session,
     project: Project,
@@ -191,9 +230,13 @@ def save_parsed_meeting(
     title: str = "",
     deliverables: Optional[list[dict]] = None,
     actor_id: Optional[int] = None,
+    portfolio_project_id: Optional[int] = None,
 ) -> Meeting:
     meeting = Meeting(
         project_id=project.id,
+        portfolio_project_id=_clean_meeting_sub_project(
+            session, project.id, portfolio_project_id,
+        ),
         meeting_date=meeting_date,
         title=title or f"Weekly coordination — {meeting_date.isoformat()}",
         raw_notes=raw_notes,
@@ -222,10 +265,23 @@ def update_parsed_meeting(
     title: str = "",
     deliverables: Optional[list[dict]] = None,
     actor_id: Optional[int] = None,
+    portfolio_project_id: Optional[int] = None,
+    sub_project_sent: bool = False,
 ) -> Meeting:
     meeting.meeting_date = meeting_date
     if title:
         meeting.title = title
+    # Only when the caller actually sent the field. Treating None as "clear it"
+    # would untag every meeting saved by an older client, and re-tagging is not
+    # something a PM would think to check for.
+    #
+    # Assigned BEFORE the children are rebuilt below, because the actions
+    # inherit from it — setting it afterwards would tag the meeting and leave
+    # everything raised in it untagged until the next save.
+    if sub_project_sent:
+        meeting.portfolio_project_id = _clean_meeting_sub_project(
+            session, meeting.project_id, portfolio_project_id,
+        )
     meeting.raw_notes = raw_notes
     meeting.updated_at = datetime.utcnow()
     if actor_id is not None:

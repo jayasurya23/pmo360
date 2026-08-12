@@ -56,6 +56,11 @@ export default function Review() {
   const [discussion, setDiscussion] = useState<ParsedDiscussionPoint[]>([]);
   const [actionItems, setActionItems] = useState<ParsedActionItem[]>([]);
   const [closingRemarks, setClosingRemarks] = useState("");
+  /** Sub-project this whole meeting covered. null = the portfolio as a whole,
+   *  which is the default and stays the default. Actions raised here inherit
+   *  it unless the row picks its own, so a call about one project is tagged
+   *  once instead of line by line. */
+  const [meetingSubProject, setMeetingSubProject] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Tracks the optimistic-concurrency token of the meeting currently being
@@ -141,6 +146,9 @@ export default function Review() {
     if (!draftMeetingId) {
       setExecutiveSummary(null);
       setOriginalNotesText(null);
+      // A NEW meeting starts untagged. Carrying the last meeting's tag over
+      // would silently file an unrelated call under someone else's project.
+      setMeetingSubProject(null);
       return;
     }
     let cancelled = false;
@@ -149,6 +157,9 @@ export default function Review() {
         if (!cancelled) {
           setExecutiveSummary(m.executive_summary || null);
           setOriginalNotesText(m.raw_notes || null);
+          // Hydrated from the server, so reopening a saved meeting shows the
+          // tag it was filed under instead of reverting it on the next save.
+          setMeetingSubProject(m.portfolio_project_id ?? null);
         }
       })
       .catch(() => {});
@@ -213,6 +224,10 @@ export default function Review() {
       expected_version: draftMeetingId ? currentVersion : null,
       meeting_date: meetingDate,
       title: meetingTitle || null,
+      // Always sent, including as null, so clearing the tag on a saved meeting
+      // actually clears it. The backend distinguishes "sent null" from "field
+      // absent" precisely so this can be explicit.
+      portfolio_project_id: meetingSubProject,
       raw_notes: [rawNotes.minutes, rawNotes.agenda, rawNotes.actions]
         .filter(Boolean)
         .join("\n\n=== SECTION BREAK ===\n\n"),
@@ -255,6 +270,10 @@ export default function Review() {
   const autoSaveData = {
     attendees, agendaItems, discussion, actionItems,
     closingRemarks, selectedDeliverables, meetingTitle, meetingDate,
+    // Without this the tag is only persisted when something else on the page
+    // also changes — a PM who tags the meeting and nothing else would watch
+    // "Saved" appear and still lose it.
+    meetingSubProject,
   };
   const autoSave = useAutoSave({
     data: autoSaveData,
@@ -424,6 +443,30 @@ export default function Review() {
         <div className="card p-4 border-l-[3px] border-l-brand-red text-sm text-brand-red">
           {error}
         </div>
+      )}
+
+      {/* Meeting-level sub-project. Renders nothing when the portfolio has no
+          sub-projects (SubProjectSelect's own rule), so portfolios that don't
+          use the tier never see it. Placed above the sections because it
+          governs all of them — every action below inherits it. */}
+      {currentProject && (
+        <section className="card flex flex-wrap items-center gap-x-3 gap-y-1.5 px-5 py-3">
+          <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-brand-gray">
+            Project
+          </span>
+          <SubProjectSelect
+            portfolioId={currentProject.id}
+            value={meetingSubProject}
+            ariaLabel="Project this meeting covered"
+            className="select h-8 max-w-[16rem] text-[12.5px]"
+            onChange={setMeetingSubProject}
+          />
+          <span className="text-[11.5px] text-brand-gray">
+            {meetingSubProject
+              ? "New action items default to this project — change any of them individually below."
+              : "This meeting covers the whole portfolio. Pick a project only if the whole call was about one."}
+          </span>
+        </section>
       )}
 
       {/* ---------- AI Executive Summary (internal-only, NOT on the PDF) ---------- */}
@@ -851,7 +894,15 @@ export default function Review() {
             onClick={() =>
               setActionItems([
                 ...actionItems,
-                { text: "", owner: "", due_date: null, status: "open" },
+                {
+                  text: "", owner: "", due_date: null, status: "open",
+                  // Pre-filled from the meeting's tag rather than left null for
+                  // the server to inherit. The server would reach the same
+                  // answer, but the row's picker would show "Whole portfolio"
+                  // while the saved action said otherwise — the PM has to be
+                  // able to see what they are about to file, and change it.
+                  portfolio_project_id: meetingSubProject,
+                },
               ])
             }
           >

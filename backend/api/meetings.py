@@ -50,6 +50,8 @@ def _build_dp_tree(meeting: Meeting) -> list[DiscussionPointOut]:
 def _serialize_meeting(m: Meeting) -> MeetingDetail:
     return MeetingDetail(
         id=m.id, project_id=m.project_id, meeting_date=m.meeting_date,
+        portfolio_project_id=m.portfolio_project_id,
+        portfolio_project_name=m.portfolio_project_name,
         title=m.title, stage=m.stage,
         schedule_version_at_meeting=m.schedule_version_at_meeting,
         version=m.version,
@@ -176,6 +178,11 @@ def save_meeting(
             title=payload.title or "",
             deliverables=deliverables,
             actor_id=actor_id,
+            portfolio_project_id=payload.portfolio_project_id,
+            # Only rewrite the meeting's tag when the client actually sent the
+            # field. Without this an older client — or any caller that omits it
+            # — would silently untag the meeting on every save.
+            sub_project_sent="portfolio_project_id" in payload.model_fields_set,
         )
         meeting.version = (meeting.version or 1) + 1
     else:
@@ -189,6 +196,7 @@ def save_meeting(
             title=payload.title or "",
             deliverables=deliverables,
             actor_id=actor_id,
+            portfolio_project_id=payload.portfolio_project_id,
         )
         # version defaults to 1 on insert via the column default
 
