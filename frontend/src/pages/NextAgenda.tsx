@@ -1,7 +1,22 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction,
+} from "react";
 import { useSearchParams } from "react-router-dom";
 import clsx from "clsx";
 import PageHeader from "@/components/PageHeader";
+import {
+  DraftInput,
+  DraftTextarea,
+  useListFieldCommit,
+  useRecordFieldCommit,
+} from "@/components/DraftField";
 import EmptyState from "@/components/EmptyState";
 import OwnerPicker from "@/components/actions/OwnerPicker";
 import { useApp } from "@/lib/state";
@@ -578,6 +593,17 @@ export default function NextAgenda() {
     }
   };
 
+  /**
+   * Stable commit handlers for this page's own inline editors (the panels
+   * below build their own). Functional setState means they never close over
+   * the current value, so their identity never changes and the memo on
+   * DraftInput/DraftTextarea holds. See components/DraftField.tsx.
+   *
+   * Above the `!currentProject` early return, with the rest of the hooks.
+   */
+  const commitDp = useRecordFieldCommit(setDpText);
+  const commitRecap = useRecordFieldCommit(setRecapText);
+
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
 
@@ -688,10 +714,12 @@ export default function NextAgenda() {
         <section className="card grid grid-cols-1 items-end gap-3.5 px-5 py-4 md:grid-cols-2 xl:grid-cols-[2fr_1fr_0.8fr_1fr_2fr]">
           <div className="min-w-0">
             <label className="label">Title</label>
-            <input
+            {/* setTitle is a plain useState setter — stable, so it is the
+                commit handler directly. */}
+            <DraftInput
               className="input"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onCommit={setTitle}
               placeholder="(optional)"
             />
           </div>
@@ -717,10 +745,10 @@ export default function NextAgenda() {
           </div>
           <div className="min-w-0">
             <label className="label">Schedule override</label>
-            <input
+            <DraftInput
               className="input"
               value={scheduleVersionOverride}
-              onChange={(e) => setScheduleVersionOverride(e.target.value)}
+              onCommit={setScheduleVersionOverride}
               placeholder="(optional)"
             />
           </div>
@@ -779,11 +807,14 @@ export default function NextAgenda() {
                         {d}
                       </span>
                     </div>
-                    <textarea
+                    {/* Committing per keystroke re-ran buildDpFromText over
+                        EVERY discipline's full text, per character. */}
+                    <DraftTextarea
                       className="textarea"
                       rows={3}
                       value={dpText[d] || ""}
-                      onChange={(e) => setDpText({ ...dpText, [d]: e.target.value })}
+                      commitKey={d}
+                      onCommit={commitDp}
                       onKeyDown={handleTextareaTab}
                       placeholder="One discussion point per line. Use 'Label: detail' for bold lead-in. Indent with two spaces for sub-bullets."
                     />
@@ -802,13 +833,12 @@ export default function NextAgenda() {
                     <div className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.08em] text-brand-gray">
                       {d}
                     </div>
-                    <textarea
+                    <DraftTextarea
                       className="textarea"
                       rows={2}
                       value={recapText[d] || ""}
-                      onChange={(e) =>
-                        setRecapText({ ...recapText, [d]: e.target.value })
-                      }
+                      commitKey={d}
+                      onCommit={commitRecap}
                       onKeyDown={handleTextareaTab}
                     />
                   </div>
@@ -1071,15 +1101,24 @@ function DisciplineEditor({
 // ============================================================
 // Open actions carried in — right-rail list
 // ============================================================
-function OpenActionsPanel({
+/**
+ * Memoised. `setRows` is the page's own useState setter (stable) and `rows`
+ * only changes identity on a real edit, so typing anywhere ELSE on this page —
+ * discussion points, recap, risks, decisions — no longer re-renders this list
+ * and its OwnerPicker/StatusSelect per row.
+ */
+const OpenActionsPanel = memo(function OpenActionsPanel({
   rows,
   setRows,
 }: {
   rows: OpenAction[];
-  setRows: (r: OpenAction[]) => void;
+  // The raw setter type, so the commit handlers below can use the functional
+  // form and stay identity-stable.
+  setRows: Dispatch<SetStateAction<OpenAction[]>>;
 }) {
   const patch = (idx: number, next: Partial<OpenAction>) =>
-    setRows(rows.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+    setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+  const commitField = useListFieldCommit(setRows);
 
   return (
     <Panel
@@ -1089,7 +1128,10 @@ function OpenActionsPanel({
       action={
         <AddButton
           onClick={() =>
-            setRows([...rows, { text: "", owner: "", due_date: null, status: "open" }])
+            setRows((prev) => [
+              ...prev,
+              { text: "", owner: "", due_date: null, status: "open" },
+            ])
           }
         />
       }
@@ -1109,12 +1151,16 @@ function OpenActionsPanel({
                 : "border-l-transparent"
             )}
           >
-            <textarea
+            {/* The carried-in action text — the second field the "one
+                character at a time" report named. */}
+            <DraftTextarea
               className={`${GHOST_FIELD} w-full resize-none text-[13px] leading-snug`}
               rows={2}
               value={row.text}
               placeholder="What has to happen"
-              onChange={(e) => patch(idx, { text: e.target.value })}
+              commitKey={idx}
+              field="text"
+              onCommit={commitField}
             />
             <div className="mt-1 flex items-center gap-1.5">
               <OwnerPicker
@@ -1141,7 +1187,9 @@ function OpenActionsPanel({
               </div>
               <RemoveButton
                 label="Remove action"
-                onClick={() => setRows(rows.filter((_, i) => i !== idx))}
+                onClick={() =>
+                  setRows((prev) => prev.filter((_, i) => i !== idx))
+                }
               />
             </div>
           </div>
@@ -1149,7 +1197,7 @@ function OpenActionsPanel({
       )}
     </Panel>
   );
-}
+});
 
 // ============================================================
 // Risks & constraints — full-width grid
@@ -1180,15 +1228,15 @@ function likelihoodTint(value: string): string {
   }
 }
 
-function RisksPanel({
+/** Memoised for the same reason as OpenActionsPanel. */
+const RisksPanel = memo(function RisksPanel({
   rows,
   setRows,
 }: {
   rows: Risk[];
-  setRows: (r: Risk[]) => void;
+  setRows: Dispatch<SetStateAction<Risk[]>>;
 }) {
-  const patch = (idx: number, next: Partial<Risk>) =>
-    setRows(rows.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+  const commitField = useListFieldCommit(setRows);
 
   return (
     <Panel
@@ -1196,8 +1244,8 @@ function RisksPanel({
       action={
         <AddButton
           onClick={() =>
-            setRows([
-              ...rows,
+            setRows((prev) => [
+              ...prev,
               {
                 description: "",
                 impact: "",
@@ -1232,20 +1280,24 @@ function RisksPanel({
               key={idx}
               className={clsx("grid grid-cols-1 items-start gap-2", RISK_GRID)}
             >
-              <textarea
+              <DraftTextarea
                 className="textarea min-w-0 text-[13px]"
                 rows={2}
                 value={row.description}
                 placeholder="Description"
-                onChange={(e) => patch(idx, { description: e.target.value })}
+                commitKey={idx}
+                field="description"
+                onCommit={commitField}
               />
-              <input
+              <DraftInput
                 className="input min-w-0 text-[13px]"
                 value={row.impact}
                 placeholder="Impact"
-                onChange={(e) => patch(idx, { impact: e.target.value })}
+                commitKey={idx}
+                field="impact"
+                onCommit={commitField}
               />
-              <input
+              <DraftInput
                 className={clsx(
                   "input min-w-0 text-[12.5px] font-semibold",
                   likelihoodTint(row.likelihood)
@@ -1253,25 +1305,33 @@ function RisksPanel({
                 list="agenda-likelihood-levels"
                 value={row.likelihood}
                 placeholder="Likelihood"
-                onChange={(e) => patch(idx, { likelihood: e.target.value })}
+                commitKey={idx}
+                field="likelihood"
+                onCommit={commitField}
               />
-              <textarea
+              <DraftTextarea
                 className="textarea min-w-0 text-[13px]"
                 rows={2}
                 value={row.mitigation}
                 placeholder="Mitigation"
-                onChange={(e) => patch(idx, { mitigation: e.target.value })}
+                commitKey={idx}
+                field="mitigation"
+                onCommit={commitField}
               />
-              <input
+              <DraftInput
                 className="input min-w-0 text-[13px]"
                 value={row.owner}
                 placeholder="Owner"
-                onChange={(e) => patch(idx, { owner: e.target.value })}
+                commitKey={idx}
+                field="owner"
+                onCommit={commitField}
               />
               <div className="flex justify-end pt-2 md:justify-center">
                 <RemoveButton
                   label="Remove risk"
-                  onClick={() => setRows(rows.filter((_, i) => i !== idx))}
+                  onClick={() =>
+                    setRows((prev) => prev.filter((_, i) => i !== idx))
+                  }
                 />
               </div>
             </div>
@@ -1285,20 +1345,22 @@ function RisksPanel({
       )}
     </Panel>
   );
-}
+});
 
 // ============================================================
 // Required decisions — summary cards
 // ============================================================
-function DecisionsPanel({
+/** Memoised for the same reason as OpenActionsPanel. */
+const DecisionsPanel = memo(function DecisionsPanel({
   rows,
   setRows,
 }: {
   rows: Decision[];
-  setRows: (r: Decision[]) => void;
+  setRows: Dispatch<SetStateAction<Decision[]>>;
 }) {
   const patch = (idx: number, next: Partial<Decision>) =>
-    setRows(rows.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+    setRows((prev) => prev.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+  const commitField = useListFieldCommit(setRows);
 
   return (
     <Panel
@@ -1306,8 +1368,8 @@ function DecisionsPanel({
       action={
         <AddButton
           onClick={() =>
-            setRows([
-              ...rows,
+            setRows((prev) => [
+              ...prev,
               {
                 decision: "",
                 description: "",
@@ -1330,11 +1392,13 @@ function DecisionsPanel({
               className="rounded-lg border border-surface-hairline px-3.5 py-3"
             >
               <div className="flex items-center gap-2">
-                <input
+                <DraftInput
                   className={`${GHOST_FIELD} min-w-0 flex-1 text-[13.5px] font-bold`}
                   value={row.decision}
                   placeholder="Decision"
-                  onChange={(e) => patch(idx, { decision: e.target.value })}
+                  commitKey={idx}
+                  field="decision"
+                  onCommit={commitField}
                 />
                 <span className="shrink-0 text-[11px] text-brand-gray">by</span>
                 <input
@@ -1345,34 +1409,42 @@ function DecisionsPanel({
                     patch(idx, { required_by: e.target.value || null })
                   }
                 />
-                <input
+                <DraftInput
                   className={`${GHOST_FIELD} w-[68px] shrink-0 text-[11px] font-semibold text-brand-red`}
                   value={row.owner}
                   placeholder="Owner"
-                  onChange={(e) => patch(idx, { owner: e.target.value })}
+                  commitKey={idx}
+                  field="owner"
+                  onCommit={commitField}
                 />
                 <RemoveButton
                   label="Remove decision"
-                  onClick={() => setRows(rows.filter((_, i) => i !== idx))}
+                  onClick={() =>
+                    setRows((prev) => prev.filter((_, i) => i !== idx))
+                  }
                 />
               </div>
-              <textarea
+              <DraftTextarea
                 className={`${GHOST_FIELD} mt-1 w-full resize-none text-[13px] leading-normal text-brand-gray`}
                 rows={2}
                 value={row.description}
                 placeholder="What has to be decided, and by whom"
-                onChange={(e) => patch(idx, { description: e.target.value })}
+                commitKey={idx}
+                field="description"
+                onCommit={commitField}
               />
               <div className="mt-1 flex items-start gap-1.5">
                 <span className="pt-1 text-[11px] text-brand-lightgray">
                   If not:
                 </span>
-                <textarea
+                <DraftTextarea
                   className={`${GHOST_FIELD} min-w-0 flex-1 resize-none text-[11px] text-brand-gray`}
                   rows={1}
                   value={row.impact_if_not}
                   placeholder="impact of leaving this undecided"
-                  onChange={(e) => patch(idx, { impact_if_not: e.target.value })}
+                  commitKey={idx}
+                  field="impact_if_not"
+                  onCommit={commitField}
                 />
               </div>
             </div>
@@ -1381,20 +1453,20 @@ function DecisionsPanel({
       )}
     </Panel>
   );
-}
+});
 
 // ============================================================
 // Schedule change log — summary cards
 // ============================================================
-function ScheduleChangesPanel({
+/** Memoised for the same reason as OpenActionsPanel. */
+const ScheduleChangesPanel = memo(function ScheduleChangesPanel({
   rows,
   setRows,
 }: {
   rows: ScheduleChange[];
-  setRows: (r: ScheduleChange[]) => void;
+  setRows: Dispatch<SetStateAction<ScheduleChange[]>>;
 }) {
-  const patch = (idx: number, next: Partial<ScheduleChange>) =>
-    setRows(rows.map((r, i) => (i === idx ? { ...r, ...next } : r)));
+  const commitField = useListFieldCommit(setRows);
 
   return (
     <Panel
@@ -1402,8 +1474,8 @@ function ScheduleChangesPanel({
       action={
         <AddButton
           onClick={() =>
-            setRows([
-              ...rows,
+            setRows((prev) => [
+              ...prev,
               {
                 project: "",
                 task: "",
@@ -1428,65 +1500,81 @@ function ScheduleChangesPanel({
               className="rounded-lg border border-surface-hairline px-3.5 py-3"
             >
               <div className="flex items-center gap-1.5">
-                <input
+                <DraftInput
                   className={`${GHOST_FIELD} w-[120px] shrink-0 text-[13.5px] font-bold`}
                   value={row.project}
                   placeholder="Project"
-                  onChange={(e) => patch(idx, { project: e.target.value })}
+                  commitKey={idx}
+                  field="project"
+                  onCommit={commitField}
                 />
                 <span className="text-brand-lightgray">·</span>
-                <input
+                <DraftInput
                   className={`${GHOST_FIELD} min-w-0 flex-1 text-[13.5px] font-bold`}
                   value={row.task}
                   placeholder="Task"
-                  onChange={(e) => patch(idx, { task: e.target.value })}
+                  commitKey={idx}
+                  field="task"
+                  onCommit={commitField}
                 />
                 {/* Impact reads as the design's grey pill but stays a free-text
                     field — its own class list rather than GHOST_FIELD so the
                     fill and radius aren't fighting overrides. */}
-                <input
+                <DraftInput
                   className="w-[104px] shrink-0 rounded-full border border-transparent bg-surface-border px-2.5 py-0.5 text-center text-[11px] font-semibold text-brand-gray placeholder:text-brand-lightgray transition-colors hover:border-surface-ghost focus:border-brand-red focus:outline-none"
                   value={row.impact}
                   placeholder="Impact"
-                  onChange={(e) => patch(idx, { impact: e.target.value })}
+                  commitKey={idx}
+                  field="impact"
+                  onCommit={commitField}
                 />
                 <RemoveButton
                   label="Remove schedule change"
-                  onClick={() => setRows(rows.filter((_, i) => i !== idx))}
+                  onClick={() =>
+                    setRows((prev) => prev.filter((_, i) => i !== idx))
+                  }
                 />
               </div>
               <div className="mt-1 flex items-center gap-1 text-xs text-brand-gray">
-                <input
+                <DraftInput
                   className={`${GHOST_FIELD} w-[92px] text-xs`}
                   value={row.previous_date}
                   placeholder="Previous"
-                  onChange={(e) => patch(idx, { previous_date: e.target.value })}
+                  commitKey={idx}
+                  field="previous_date"
+                  onCommit={commitField}
                 />
                 <span aria-hidden="true">→</span>
-                <input
+                <DraftInput
                   className={`${GHOST_FIELD} w-[92px] text-xs font-bold text-brand-red`}
                   value={row.updated_date}
                   placeholder="Updated"
-                  onChange={(e) => patch(idx, { updated_date: e.target.value })}
+                  commitKey={idx}
+                  field="updated_date"
+                  onCommit={commitField}
                 />
               </div>
-              <textarea
+              <DraftTextarea
                 className={`${GHOST_FIELD} mt-1 w-full resize-none text-[13px] leading-normal text-brand-gray`}
                 rows={2}
                 value={row.change_description}
                 placeholder="What changed"
-                onChange={(e) => patch(idx, { change_description: e.target.value })}
+                commitKey={idx}
+                field="change_description"
+                onCommit={commitField}
               />
               <div className="mt-1 flex items-start gap-1.5">
                 <span className="pt-1 text-[11px] text-brand-lightgray">
                   Reason:
                 </span>
-                <textarea
+                <DraftTextarea
                   className={`${GHOST_FIELD} min-w-0 flex-1 resize-none text-[11px] text-brand-gray`}
                   rows={1}
                   value={row.reason_for_change}
                   placeholder="why the date moved"
-                  onChange={(e) => patch(idx, { reason_for_change: e.target.value })}
+                  commitKey={idx}
+                  field="reason_for_change"
+                  onCommit={commitField}
                 />
               </div>
             </div>
@@ -1495,7 +1583,7 @@ function ScheduleChangesPanel({
       )}
     </Panel>
   );
-}
+});
 
 // ============================================================
 // Helper — turn `Label: detail` text (with leading 2-space indents for

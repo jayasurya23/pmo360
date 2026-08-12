@@ -7,6 +7,8 @@ import {
   useRef,
   useState,
   ReactNode,
+  type Dispatch,
+  type SetStateAction,
 } from "react";
 import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import * as api from "./api";
@@ -57,9 +59,16 @@ interface AppState {
   parsed: ParsedMeeting | null;
   setParsed: (p: ParsedMeeting | null) => void;
   rawNotes: { minutes: string; agenda: string; actions: string };
-  setRawNotes: (next: { minutes: string; agenda: string; actions: string }) => void;
+  // Declared as the raw `useState` setters (which is what they already are at
+  // runtime) rather than the narrower `(next) => void`, so callers can use the
+  // functional form. That is what lets an inline editor's commit handler be
+  // built once with useCallback([]) instead of closing over the current value —
+  // see components/DraftField.tsx.
+  setRawNotes: Dispatch<
+    SetStateAction<{ minutes: string; agenda: string; actions: string }>
+  >;
   meetingTitle: string;
-  setMeetingTitle: (s: string) => void;
+  setMeetingTitle: Dispatch<SetStateAction<string>>;
   meetingDate: string;
   setMeetingDate: (s: string) => void;
   selectedAttendees: { full_name: string; initials: string; organization: string }[];
@@ -70,14 +79,16 @@ interface AppState {
     start_status: string;
     delivery_date: string | null;
   }[];
-  setSelectedDeliverables: (
-    d: {
-      project_segment: string;
-      task: string;
-      start_status: string;
-      delivery_date: string | null;
-    }[]
-  ) => void;
+  setSelectedDeliverables: Dispatch<
+    SetStateAction<
+      {
+        project_segment: string;
+        task: string;
+        start_status: string;
+        delivery_date: string | null;
+      }[]
+    >
+  >;
   // ---- helpers ----
   refreshClients: () => Promise<void>;
   refreshProjects: () => Promise<void>;

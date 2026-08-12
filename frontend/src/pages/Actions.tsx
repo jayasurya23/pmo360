@@ -1,8 +1,9 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ButtonHTMLAttributes } from "react";
 import { useSearchParams } from "react-router-dom";
 import clsx from "clsx";
 import PageHeader from "@/components/PageHeader";
+import { DraftTextarea, type DraftCommit } from "@/components/DraftField";
 import EmptyState from "@/components/EmptyState";
 import { StatusSelect } from "@/components/StatusPill";
 import { useConfirm } from "@/components/ConfirmDialog";
@@ -19,6 +20,7 @@ import {
   createAction,
   listMeetings,
 } from "@/lib/api";
+import { serialWrite } from "@/lib/serialWrite";
 import { saveActionsCsv } from "@/lib/documents";
 import type {
   ActionItem,
@@ -130,48 +132,58 @@ function CellLabel({ children }: { children: string }) {
 }
 
 /**
- * The action's text box — its own memoised component holding its own draft.
+ * The bulk "change owner" field.
  *
- * THIS IS A THROUGHPUT FIX, not a tidy-up. Typing used to call setActions() on
- * the page for EVERY KEYSTROKE, and that one call re-ran the status/owner
- * filter, invalidated the portfolioTotals memo (a full scan of every action in
- * scope), rebuilt every portfolio group and re-rendered every row — per
- * character. At ten rows nobody noticed. At the fifty-seven "This client" puts
- * on screen for a real client it misses the frame budget, and typing degrades
- * to about one character at a time, which is exactly how it was reported.
+ * Its own component purely so the owner text lives in ITS state rather than the
+ * page's. As page state, every character re-ran the status + owner filter,
+ * rebuilt the portfolio groups (deliberately unmemoised) and re-rendered every
+ * visible row — the same per-keystroke page render that made the action text
+ * stutter at real row counts.
  *
- * Keystrokes now stay inside this component. The page is told once, on blur —
- * which is when the text was already being sent to the server anyway, so no
- * save behaviour changes.
+ * Deliberately NOT built on DraftField: this value is read by a discrete action
+ * (Enter / Apply), and a debounced hand-up would let Enter fire against a value
+ * the field hasn't pushed yet — applying a half-typed owner across every
+ * selected row.
  */
-const ActionTextCell = memo(function ActionTextCell({
-  id,
-  value,
-  onCommit,
+function BulkOwnerInput({
+  busy,
+  onApply,
+  onCancel,
 }: {
-  id: number;
-  value: string;
-  onCommit: (id: number, text: string) => void;
+  busy: boolean;
+  onApply: (owner: string) => void | Promise<void>;
+  onCancel: () => void;
 }) {
-  const [draft, setDraft] = useState(value);
-  // Follow the server value when it changes underneath us — a reload, a bulk
-  // update, someone else's edit. Keyed on the id as well so a recycled row can
-  // never show the previous action's text.
-  useEffect(() => setDraft(value), [id, value]);
+  const [value, setValue] = useState("");
+  const apply = () => {
+    void onApply(value);
+    setValue("");
+  };
   return (
-    <textarea
-      className="textarea text-[13.5px] leading-[1.5]"
-      rows={2}
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      // Only on a real change: blurring an untouched row must not fire a PATCH
-      // or push a no-op render through the page.
-      onBlur={() => {
-        if (draft !== value) onCommit(id, draft);
-      }}
-    />
+    <div className="flex w-full items-center gap-2 border-t border-surface-hairline pt-2.5">
+      <input
+        className="input flex-1"
+        placeholder="New owner (comma-separate for multiple)"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        autoFocus
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            apply();
+          }
+          if (e.key === "Escape") onCancel();
+        }}
+      />
+      <button className="btn-primary" onClick={apply} disabled={busy}>
+        Apply
+      </button>
+      <button className="btn-ghost" onClick={onCancel} disabled={busy}>
+        Cancel
+      </button>
+    </div>
   );
-});
+}
 
 export default function Actions() {
   const { clients, projects, currentClient, currentProject, me } = useApp();
@@ -295,8 +307,9 @@ export default function Actions() {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMode, setBulkMode] = useState<null | "owner" | "due">(null);
-  const [bulkOwnerValue, setBulkOwnerValue] = useState("");
   const [bulkDueValue, setBulkDueValue] = useState("");
+  // Inline-edit save failures. Deliberately not an alert(): see commitText.
+  const [saveError, setSaveError] = useState<string | null>(null);
   const confirm = useConfirm();
 
   /**
@@ -584,16 +597,37 @@ export default function Actions() {
   };
 
   /** Commit an edited action text. Stable (empty deps + functional setState) so
-   *  ActionTextCell's memo actually holds — a handler rebuilt every render
-   *  would re-render every row on every keystroke and undo the whole point. */
-  const loadRef = useRef(load);
-  loadRef.current = load;
-  const commitText = useCallback((id: number, text: string) => {
+   *  DraftTextarea's memo actually holds — a handler rebuilt every render
+   *  would re-render every row on every commit and undo the whole point.
+   *  `key` is the action id, passed straight back by the draft component.
+   *
+   *  Two things this must NOT do, both learned the hard way:
+   *
+   *  1. Fire the PATCH straight at axios. DraftTextarea commits on an idle
+   *     debounce as well as on blur, so composing a sentence with thinking
+   *     pauses issues several writes for this row, each carrying a growing
+   *     prefix of the same column against an endpoint with no version token.
+   *     Concurrently, a late-arriving early write truncates the row in the DB
+   *     while the screen still shows the whole sentence. serialWrite keeps one
+   *     write per action in flight, so arrival order == issue order.
+   *  2. `alert()` on failure and reload. Failures now arrive per typing pause,
+   *     so a 30-second network blip threw a stack of blocking modals mid-
+   *     sentence, and the reload then replaced the row's text underneath a
+   *     focused field. The error goes to a quiet line under the toolbar and
+   *     the text stays where the PM put it. */
+  const commitText = useCallback<DraftCommit>((text, key) => {
+    const id = Number(key);
     setActions((prev) => prev.map((x) => (x.id === id ? { ...x, text } : x)));
-    void updateAction(id, { text } as any).catch((e: any) => {
-      alert(e.message);
-      void loadRef.current();
-    });
+    void serialWrite(`action:${id}`, () =>
+      updateAction(id, { text } as any),
+    ).then(
+      () => setSaveError(null),
+      (e: any) =>
+        setSaveError(
+          `Couldn't save that edit — ${e?.message || "the server rejected it"}. ` +
+            "The text is still on screen but is NOT saved; edit the field again to retry.",
+        ),
+    );
   }, []);
 
   const handlePatch = async (id: number, patch: Partial<ActionItem>) => {
@@ -685,11 +719,12 @@ export default function Actions() {
     await runBulk({ status: "cancelled" });
   };
 
-  const bulkApplyOwner = async () => {
-    // Empty string is a legitimate value — it clears the owner.
-    await runBulk({ owner: bulkOwnerValue });
-    setBulkOwnerValue("");
-  };
+  // Empty string is a legitimate value — it clears the owner. The value comes
+  // in from BulkOwnerInput rather than living in page state: typing it here
+  // re-ran the status+owner filter, rebuilt the portfolio groups and
+  // re-rendered every row on every character, which is the same stutter this
+  // page was reported for.
+  const bulkApplyOwner = (owner: string) => runBulk({ owner });
 
   const bulkApplyDue = async () => {
     await runBulk({ due_date: bulkDueValue || null });
@@ -793,7 +828,18 @@ export default function Actions() {
           <CellLabel>Action</CellLabel>
           {/* No per-row portfolio label any more — the group header above
               carries it, and repeating it on every row was noise. */}
-          <ActionTextCell id={a.id} value={a.text} onCommit={commitText} />
+          {/* The reported field. Keystrokes stay inside DraftTextarea; the
+              page (and the PATCH) hear about the text on its debounce / blur /
+              unmount. Before, every character re-ran the status+owner filter,
+              invalidated the portfolioTotals scan, rebuilt every portfolio
+              group and re-rendered every row. */}
+          <DraftTextarea
+            className="textarea text-[13.5px] leading-[1.5]"
+            rows={2}
+            value={a.text}
+            commitKey={a.id}
+            onCommit={commitText}
+          />
           {/* Provenance on one line — raised date + who filed it. */}
           <div className="text-[11px] text-brand-lightgray">
             Raised{" "}
@@ -993,6 +1039,24 @@ export default function Actions() {
         }
       />
 
+      {/* Inline-edit save failure. A quiet line rather than an alert() so a
+          flaky connection can't interrupt someone mid-sentence — see
+          commitText. Dismissible because the retry is just typing again. */}
+      {saveError && (
+        <div
+          role="alert"
+          className="flex items-start gap-3 rounded-[10px] border border-surface-border border-l-[3px] border-l-brand-brightred bg-surface-card px-4 py-2.5 text-[13px] text-brand-black"
+        >
+          <span className="flex-1">{saveError}</span>
+          <button
+            className="shrink-0 text-xs font-semibold text-brand-gray transition hover:text-brand-red"
+            onClick={() => setSaveError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {selectedIds.size > 0 && (
         <div className="sticky top-2 z-20 flex flex-wrap items-center gap-2 rounded-[10px] border border-surface-border border-l-[3px] border-l-brand-red bg-surface-card px-4 py-2.5">
           <span className="mr-1 text-[13px] font-bold text-brand-black">
@@ -1013,10 +1077,7 @@ export default function Actions() {
             Mark cancelled
           </BulkButton>
           <BulkButton
-            onClick={() => {
-              setBulkMode(bulkMode === "owner" ? null : "owner");
-              setBulkOwnerValue("");
-            }}
+            onClick={() => setBulkMode(bulkMode === "owner" ? null : "owner")}
             disabled={bulkBusy}
           >
             Change owner…
@@ -1039,36 +1100,11 @@ export default function Actions() {
           </button>
 
           {bulkMode === "owner" && (
-            <div className="flex w-full items-center gap-2 border-t border-surface-hairline pt-2.5">
-              <input
-                className="input flex-1"
-                placeholder="New owner (comma-separate for multiple)"
-                value={bulkOwnerValue}
-                onChange={(e) => setBulkOwnerValue(e.target.value)}
-                autoFocus
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void bulkApplyOwner();
-                  }
-                  if (e.key === "Escape") setBulkMode(null);
-                }}
-              />
-              <button
-                className="btn-primary"
-                onClick={bulkApplyOwner}
-                disabled={bulkBusy}
-              >
-                Apply
-              </button>
-              <button
-                className="btn-ghost"
-                onClick={() => setBulkMode(null)}
-                disabled={bulkBusy}
-              >
-                Cancel
-              </button>
-            </div>
+            <BulkOwnerInput
+              busy={bulkBusy}
+              onApply={bulkApplyOwner}
+              onCancel={() => setBulkMode(null)}
+            />
           )}
 
           {bulkMode === "due" && (

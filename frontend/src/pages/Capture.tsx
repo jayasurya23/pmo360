@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import EmptyState from "@/components/EmptyState";
 import PageHeader from "@/components/PageHeader";
+import {
+  DraftInput,
+  DraftTextarea,
+  type DraftCommit,
+} from "@/components/DraftField";
 import { useConfirm } from "@/components/ConfirmDialog";
 import DirectoryBrowser from "@/components/DirectoryBrowser";
 import { ManageTemplatesModal } from "@/components/TemplateModals";
@@ -236,6 +241,20 @@ export default function Capture() {
     return order;
   }, [selectedAttendees]);
 
+  /**
+   * Stable commit handler for the three notes textareas.
+   *
+   * `rawNotes` lives in the GLOBAL app context, whose value object is rebuilt
+   * on every provider render — so a keystroke here used to re-render all 31
+   * useApp() consumers, Layout's header switchers and the command palette
+   * included. Now that only happens on DraftTextarea's debounce / blur /
+   * unmount. Declared above the early return with the other hooks.
+   */
+  const commitNotes = useCallback<DraftCommit>((value, _key, field) => {
+    if (!field) return;
+    setRawNotes((prev) => ({ ...prev, [field]: value }));
+  }, []);
+
   if (!currentProject) {
     return (
       <EmptyState
@@ -455,7 +474,10 @@ export default function Capture() {
       .map((a) => a.text)
       .filter((s) => s && s.trim())
       .join("\n");
-    setRawNotes({ ...rawNotes, agenda: agendaJoined });
+    // Functional form: the notes textareas commit on a short debounce, so a
+    // spread over a closed-over `rawNotes` could drop a keystroke that landed
+    // in the last fraction of a second.
+    setRawNotes((prev) => ({ ...prev, agenda: agendaJoined }));
 
     // Deliverables → selectedDeliverables (Review reads from this).
     const nextDeliverables = (t.default_deliverables_json || []).map((d) => ({
@@ -485,7 +507,7 @@ export default function Capture() {
   const handleFile = async (file: File) => {
     try {
       const { text, char_count, filename } = await parseTranscriptFile(file);
-      setRawNotes({ ...rawNotes, minutes: text });
+      setRawNotes((prev) => ({ ...prev, minutes: text }));
       flashToast(`Loaded ${filename} (${char_count.toLocaleString()} chars) into Meeting minutes`);
     } catch (e: any) {
       setError(e.message || "Could not read file");
@@ -608,10 +630,10 @@ export default function Capture() {
               <div className="grid grid-cols-1 sm:grid-cols-[2.5fr_1fr] gap-3.5">
                 <div>
                   <label className="label">Meeting name</label>
-                  <input
+                  <DraftInput
                     className="input"
                     value={meetingTitle}
-                    onChange={(e) => setMeetingTitle(e.target.value)}
+                    onCommit={setMeetingTitle}
                     placeholder={`e.g. Weekly coordination — ${currentProject.name}`}
                   />
                 </div>
@@ -640,12 +662,11 @@ export default function Capture() {
                   label="Agenda"
                   hint="topics covered / to discuss · one per line"
                 >
-                  <textarea
+                  <DraftTextarea
                     className="textarea min-h-[110px]"
                     value={rawNotes.agenda}
-                    onChange={(e) =>
-                      setRawNotes({ ...rawNotes, agenda: e.target.value })
-                    }
+                    field="agenda"
+                    onCommit={commitNotes}
                     onKeyDown={handleTextareaTab}
                     placeholder={
                       "List agenda topics one per line.\n\nExample: Due Diligence · Folder Structure · General Concerns"
@@ -655,12 +676,11 @@ export default function Capture() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <NoteField label="Meeting minutes" hint="discussion points">
-                    <textarea
+                    <DraftTextarea
                       className="textarea min-h-[280px]"
                       value={rawNotes.minutes}
-                      onChange={(e) =>
-                        setRawNotes({ ...rawNotes, minutes: e.target.value })
-                      }
+                      field="minutes"
+                      onCommit={commitNotes}
                       onKeyDown={handleTextareaTab}
                       placeholder={
                         "Attendees and discussion notes. Don't worry about formatting — the AI sorts these into the right buckets.\n\nExample:\n\nAttendees: AR, RC from Castillo, CM from Heelstone\n\nElectrical:\n- HDR pushing 0% soil moisture, causing thermal failures\n- We want 52% load factor, IE wants 60%"
@@ -671,12 +691,11 @@ export default function Capture() {
                     label="Action items"
                     hint="owners, due dates, status"
                   >
-                    <textarea
+                    <DraftTextarea
                       className="textarea min-h-[280px]"
                       value={rawNotes.actions}
-                      onChange={(e) =>
-                        setRawNotes({ ...rawNotes, actions: e.target.value })
-                      }
+                      field="actions"
+                      onCommit={commitNotes}
                       onKeyDown={handleTextareaTab}
                       placeholder={
                         "List action items one per line. Include owner initials and a due date when known.\n\nExample:\n\n- CK, KC to set up call with HDR IE by 11/10 — open\n- KC to resend Heelstone tech specs by 11/10 — completed"
@@ -906,10 +925,10 @@ export default function Capture() {
                       . Initials and email are both optional — initials
                       auto-derive from the name when missing.
                     </p>
-                    <textarea
+                    <DraftTextarea
                       className="textarea min-h-[120px] text-xs"
                       value={bulkText}
-                      onChange={(e) => setBulkText(e.target.value)}
+                      onCommit={setBulkText}
                       placeholder={
                         "E Light Electric Services, Inc: Blake Ely (BE) <blake@elight.com>, Ricky Dzabic (RD)\n" +
                         "Sunshare: Andrew Proctor (AP) <andrew@sunshare.com>, Brian McKinney (BM)\n" +

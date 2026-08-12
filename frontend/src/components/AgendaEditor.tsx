@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import clsx from "clsx";
 import type { ParsedAgendaItem } from "@/lib/types";
 import { handleTextareaTab } from "@/lib/textareaTab";
+import { DraftTextarea } from "@/components/DraftField";
 
 const BULLET_PREFIXES = ["- ", "* ", "• ", "○ ", "● ", "o "];
 
@@ -40,7 +41,15 @@ interface Props {
   setItems: (items: ParsedAgendaItem[]) => void;
 }
 
-export default function AgendaEditor({ items, setItems }: Props) {
+/** Hoisted so the prop identity is stable — an inline object defeats memo. */
+const TEXTAREA_STYLE = { minHeight: 180 };
+
+/**
+ * Memoised: this editor shares a page render with the attendee, deliverable
+ * and action-item lists, and re-parsing the whole agenda block every time one
+ * of those commits a character is pure waste.
+ */
+export default memo(function AgendaEditor({ items, setItems }: Props) {
   const [text, setText] = useState<string>(() => agendaToText(items));
   const [showPreview, setShowPreview] = useState(false);
   const lastWriteFromText = useRef(false);
@@ -54,11 +63,21 @@ export default function AgendaEditor({ items, setItems }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
 
-  const handleTextChange = (value: string) => {
-    setText(value);
-    lastWriteFromText.current = true;
-    setItems(textToAgenda(value));
-  };
+  /**
+   * Runs on DraftTextarea's debounce / blur / unmount rather than per
+   * keystroke — textToAgenda() re-parses the entire block and hands Review a
+   * brand-new array, which used to re-render the whole page per character.
+   * The local `text` is still the source of truth for the box because the
+   * text → items → text round-trip is lossy (blank lines, bullet markers).
+   */
+  const handleTextChange = useCallback(
+    (value: string) => {
+      setText(value);
+      lastWriteFromText.current = true;
+      setItems(textToAgenda(value));
+    },
+    [setItems],
+  );
 
   return (
     <section className="space-y-3">
@@ -69,11 +88,11 @@ export default function AgendaEditor({ items, setItems }: Props) {
         (<code>-</code>, <code>*</code>, <code>o</code>) at the start of a
         line are stripped automatically. Reorder by moving lines.
       </p>
-      <textarea
+      <DraftTextarea
         className="textarea font-mono text-[13px] leading-relaxed"
-        style={{ minHeight: 180 }}
+        style={TEXTAREA_STYLE}
         value={text}
-        onChange={(e) => handleTextChange(e.target.value)}
+        onCommit={handleTextChange}
         onKeyDown={handleTextareaTab}
         placeholder={"- Due Diligence\n- Folder Structure\n- General Concerns"}
       />
@@ -99,7 +118,7 @@ export default function AgendaEditor({ items, setItems }: Props) {
       )}
     </section>
   );
-}
+});
 
 /* ============================================================
  * Reusable preview disclosure (chevron toggle, light surface)
