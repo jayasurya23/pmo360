@@ -522,6 +522,11 @@ export const updateAction = (
   payload: Partial<{
     text: string;
     owner: string;
+    /** Sub-project under this action's own portfolio. Pass an id to file it
+     *  against one, null to put it back on the portfolio as a whole, omit to
+     *  leave it alone. The server refuses a sub-project belonging to a
+     *  different portfolio — this is not enforced by the picker alone. */
+    portfolio_project_id: number | null;
     /** Pass a user id to bind this action to a PMO 360 PM. Pass null to
      *  explicitly clear the link (action reassigned to a vendor). Omit
      *  to leave the existing link untouched. */

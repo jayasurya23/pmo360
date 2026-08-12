@@ -13,8 +13,8 @@ from core.deps import get_db
 from auth import require_db_user
 from auth.permissions import MEETING_MINUTES, require_permission
 from db.models import (
-    ActionItem, Client, ClientContact, GlobalAttendee, Meeting, Project,
-    ProjectAttendee,
+    ActionItem, Client, ClientContact, GlobalAttendee, Meeting, PortfolioProject,
+    Project, ProjectAttendee,
 )
 from db.repository import (
     all_actions, open_actions, update_action_status,
@@ -31,6 +31,65 @@ from schemas.common import (
 router = APIRouter(prefix="/api/actions", tags=["actions"])
 
 
+def _resolve_sub_project(
+    db: Session, portfolio_id: int, sub_project_id: "int | None",
+) -> "PortfolioProject | None":
+    """Check a sub-project is real AND belongs to THIS portfolio.
+
+    THE SECOND HALF IS THE POINT, and the database cannot enforce it. The FK
+    only says portfolio_projects.id exists; that a sub-project sits under the
+    same portfolio as the action is a two-hop rule, so it lives here. Without
+    it an action rolls up under one portfolio while naming a sub-project of
+    another — quietly corrupting exactly the rollups the feature exists to
+    produce, and doing it in a way that looks fine on every screen.
+
+    None is a legitimate value, not a missing one: it means "the portfolio as a
+    whole", which is what every action meant before sub-projects existed and
+    what most will always mean.
+    """
+    if sub_project_id is None:
+        return None
+    sub = db.get(PortfolioProject, sub_project_id)
+    if sub is None:
+        raise HTTPException(404, "That project no longer exists.")
+    if sub.portfolio_id != portfolio_id:
+        # Named, because "invalid project" sends a PM hunting through a picker
+        # that looks correct from where they are standing.
+        raise HTTPException(
+            400,
+            f"“{sub.name}” belongs to a different portfolio, so this action "
+            "cannot be filed against it. Move the action first, or pick a "
+            "project from its own portfolio.",
+        )
+    return sub
+
+
+def _one_with_context(db: Session, action: ActionItem) -> ActionItemOut:
+    """Enrich a SINGLE action for a create/patch response.
+
+    Deliberately not `_with_context(db, [action])[0]`: that loads every project,
+    client, meeting date and sub-project in the database to decorate one row,
+    which is fine for a list built once and wasteful on a write path hit on
+    every edit. Targeted lookups instead.
+
+    It matters that writes return the enriched shape at all — without the
+    sub-project NAME the UI has to refetch to display the tag it just set, and
+    a caller that trusts the response renders an untagged row.
+    """
+    o = ActionItemOut.model_validate(action)
+    proj = db.get(Project, action.project_id)
+    if proj is not None:
+        o.project_name = proj.name
+        client = db.get(Client, proj.client_id) if proj.client_id else None
+        o.client_name = client.name if client else None
+    if action.portfolio_project_id is not None:
+        sub = db.get(PortfolioProject, action.portfolio_project_id)
+        o.portfolio_project_name = sub.name if sub else None
+    meeting = db.get(Meeting, action.originating_meeting_id)
+    o.originating_meeting_date = meeting.meeting_date if meeting else None
+    return o
+
+
 def _with_context(db: Session, rows: list[ActionItem]) -> list[ActionItemOut]:
     """Attach each action's portfolio name, client name, and originating-meeting
     date so the cross-portfolio Actions view can render them. Uses one query per
@@ -38,6 +97,10 @@ def _with_context(db: Session, rows: list[ActionItem]) -> list[ActionItemOut]:
     projects = {p.id: p for p in db.query(Project).all()}
     clients = {c.id: c.name for c in db.query(Client).all()}
     meeting_dates = dict(db.query(Meeting.id, Meeting.meeting_date).all())
+    # One more lookup table, same no-N+1 rule as the three above. Named rather
+    # than left as a bare id so a row can render its tag without the caller
+    # fetching the sub-projects of every portfolio on screen.
+    sub_projects = dict(db.query(PortfolioProject.id, PortfolioProject.name).all())
     out: list[ActionItemOut] = []
     for r in rows:
         o = ActionItemOut.model_validate(r)
@@ -45,6 +108,8 @@ def _with_context(db: Session, rows: list[ActionItem]) -> list[ActionItemOut]:
         if proj is not None:
             o.project_name = proj.name
             o.client_name = clients.get(proj.client_id)
+        if r.portfolio_project_id is not None:
+            o.portfolio_project_name = sub_projects.get(r.portfolio_project_id)
         o.originating_meeting_date = meeting_dates.get(r.originating_meeting_id)
         out.append(o)
     return out
@@ -109,8 +174,10 @@ def create_action(
     # payload.project_id is the row's own portfolio — where this action will
     # live and who will see it — so it is the right thing to authorise against.
     guard.require_project(payload.project_id)
+    _resolve_sub_project(db, payload.project_id, payload.portfolio_project_id)
     action = ActionItem(
         project_id=payload.project_id,
+        portfolio_project_id=payload.portfolio_project_id,
         originating_meeting_id=payload.originating_meeting_id,
         text=payload.text,
         owner=payload.owner or None,
@@ -122,7 +189,7 @@ def create_action(
     )
     db.add(action)
     db.flush()
-    return action
+    return _one_with_context(db, action)
 
 
 @router.patch("/{action_id}", response_model=ActionItemOut)
@@ -144,6 +211,13 @@ def patch_action(
     sent = payload.model_fields_set
     if "text" in sent and payload.text is not None:
         action.text = payload.text
+    if "portfolio_project_id" in sent:
+        # Validated against the action's CURRENT portfolio. Sending null here
+        # is the supported way to put an action back on the portfolio as a
+        # whole, which is why this reads model_fields_set rather than treating
+        # None as "not supplied".
+        _resolve_sub_project(db, action.project_id, payload.portfolio_project_id)
+        action.portfolio_project_id = payload.portfolio_project_id
     if "owner" in sent:
         action.owner = payload.owner
     if "owner_user_id" in sent:
@@ -158,7 +232,7 @@ def patch_action(
         action.last_status_change = datetime.utcnow()
     action.updated_by_id = actor.id
     db.flush()
-    return action
+    return _one_with_context(db, action)
 
 
 @router.delete("/{action_id}", status_code=204)
