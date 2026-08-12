@@ -577,6 +577,12 @@ class MeetingDeliverableOut(ORMModel):
 class ActionItemOut(ORMModel):
     id: int
     project_id: int
+    # Optional sub-project. None means the action belongs to the portfolio as a
+    # whole. `portfolio_project_name` is denormalised onto the read so a list
+    # can render the tag without the caller fetching the sub-projects of every
+    # portfolio on screen.
+    portfolio_project_id: Optional[int] = None
+    portfolio_project_name: Optional[str] = None
     originating_meeting_id: int
     closed_in_meeting_id: Optional[int] = None
     text: str
@@ -724,6 +730,11 @@ class MeetingMetaUpdate(BaseModel):
 # ---------- Action items ----------
 class ActionItemUpdate(BaseModel):
     text: Optional[str] = None
+    # Sub-project. Pass an id to file this action against one; pass null to put
+    # it back on the portfolio as a whole; omit to leave it alone. The three
+    # cases are distinguishable because the API reads the raw payload keys
+    # rather than trusting None to mean "clear".
+    portfolio_project_id: Optional[int] = None
     owner: Optional[str] = None
     # Pass a user id to bind this action to a PMO 360 PM. Pass ``null`` to
     # explicitly clear the user link (e.g. action reassigned to a vendor);
@@ -736,6 +747,9 @@ class ActionItemUpdate(BaseModel):
 
 class ActionItemCreate(BaseModel):
     project_id: int
+    # Optional sub-project under that portfolio. Omit or null for a
+    # portfolio-wide action, which is the default and the common case.
+    portfolio_project_id: Optional[int] = None
     originating_meeting_id: int
     text: str
     owner: Optional[str] = ""

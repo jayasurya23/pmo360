@@ -8,6 +8,7 @@ import EmptyState from "@/components/EmptyState";
 import { StatusSelect } from "@/components/StatusPill";
 import { useConfirm } from "@/components/ConfirmDialog";
 import OwnerPicker from "@/components/actions/OwnerPicker";
+import SubProjectSelect from "@/components/SubProjectSelect";
 import OwnerFilterSelect, {
   OWNER_ALL,
   OWNER_MINE,
@@ -839,6 +840,26 @@ export default function Actions() {
             value={a.text}
             commitKey={a.id}
             onCommit={commitText}
+          />
+          {/* Sub-project, under the action's OWN portfolio — not the header's.
+              On a client-wide list every row can belong to a different
+              portfolio, so offering the header's sub-projects would offer the
+              wrong ones. Renders nothing at all when the portfolio has none,
+              which is most of them: an empty dropdown reads as broken, and
+              tagging is meant to be an extra step, not a prompt. */}
+          <SubProjectSelect
+            portfolioId={a.project_id}
+            value={a.portfolio_project_id ?? null}
+            ariaLabel={`Project for action ${a.id}`}
+            className="select h-7 max-w-[13rem] text-[11.5px]"
+            onChange={(next) => {
+              setActions((prev) =>
+                prev.map((x) =>
+                  x.id === a.id ? { ...x, portfolio_project_id: next } : x,
+                ),
+              );
+              void handlePatch(a.id, { portfolio_project_id: next });
+            }}
           />
           {/* Provenance on one line — raised date + who filed it. */}
           <div className="text-[11px] text-brand-lightgray">

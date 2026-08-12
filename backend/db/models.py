@@ -472,6 +472,26 @@ class ActionItem(Base):
     __tablename__ = "action_items"
     id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # OPTIONAL sub-project. NULL means the action belongs to the portfolio as a
+    # whole, which is what every existing row means and what most rows will
+    # always mean — so it stays nullable rather than being backfilled to a
+    # guess.
+    #
+    # project_id (the PORTFOLIO) stays NOT NULL and keeps pointing at the same
+    # portfolio this sub-project lives under, which is what makes roll-up free:
+    # a sub-project action is still a portfolio action, so every portfolio-level
+    # query already sweeps it up with no union and no second code path.
+    #
+    # The API enforces that the sub-project belongs to THIS portfolio. Nothing
+    # in the schema can express that (it is a two-hop constraint), and without
+    # the check an action could roll up under one portfolio while naming a
+    # sub-project of another.
+    portfolio_project_id = Column(
+        Integer, ForeignKey("portfolio_projects.id"), nullable=True, index=True,
+    )
+    # Where it was RAISED. Deliberately not rewritten when an action is moved to
+    # another portfolio: the meeting it came out of is a fact about the past,
+    # and repointing it to make the new owner tidy would forge the record.
     originating_meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False)
     closed_in_meeting_id = Column(Integer, ForeignKey("meetings.id"))
     text = Column(Text, nullable=False)

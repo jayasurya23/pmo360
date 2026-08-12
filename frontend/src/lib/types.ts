@@ -306,6 +306,14 @@ export interface MeetingDeliverable {
 export interface ActionItem {
   id: number;
   project_id: number;
+  /** OPTIONAL sub-project under that portfolio. null means the action belongs
+   *  to the portfolio as a whole — the default, and what every action meant
+   *  before sub-projects existed. Tagged actions still roll up: they appear in
+   *  the portfolio, client and all lists exactly as before. */
+  portfolio_project_id?: number | null;
+  /** Denormalised by the API so a row renders its tag without the page
+   *  fetching the sub-projects of every portfolio on screen. */
+  portfolio_project_name?: string | null;
   originating_meeting_id: number;
   closed_in_meeting_id?: number | null;
   text: string;
