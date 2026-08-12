@@ -625,6 +625,14 @@ class MeetingAttachmentOut(ORMModel):
 class MeetingSummary(ORMModel):
     id: int
     project_id: int
+    # Optional sub-project this meeting covered. Null = the portfolio as a
+    # whole, which is what every existing meeting means. On the summary rather
+    # than the detail so History can badge and filter the list without
+    # fetching each meeting.
+    portfolio_project_id: Optional[int] = None
+    # Resolved name, filled by the API — the list would otherwise have to fetch
+    # every portfolio's sub-projects just to label a badge.
+    portfolio_project_name: Optional[str] = None
     meeting_date: date
     title: Optional[str] = None
     stage: str
@@ -715,6 +723,10 @@ class MeetingSaveRequest(BaseModel):
     expected_version: Optional[int] = None
     meeting_date: date
     title: Optional[str] = None
+    # Optional sub-project for the whole meeting. Actions raised in it inherit
+    # this unless they carry their own tag. Omit the field to leave an existing
+    # meeting's tag alone; send null to clear it.
+    portfolio_project_id: Optional[int] = None
     raw_notes: Optional[str] = ""
     closing_remarks: Optional[str] = None
     deliverables: list[DeliverableInput] = Field(default_factory=list)

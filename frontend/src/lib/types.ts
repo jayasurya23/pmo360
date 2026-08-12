@@ -426,6 +426,13 @@ export interface MeetingAttendee {
 export interface Meeting {
   id: number;
   project_id: number;
+  /** Optional sub-project this meeting covered. Null = the whole portfolio,
+   *  which is what every meeting is until somebody says otherwise. Actions
+   *  raised in a tagged meeting inherit this unless they carry their own. */
+  portfolio_project_id?: number | null;
+  /** Resolved by the API. Null both when untagged and when the sub-project has
+   *  been deleted — no badge either way. */
+  portfolio_project_name?: string | null;
   meeting_date: string;
   title?: string | null;
   stage: string;
@@ -526,6 +533,9 @@ export interface MeetingSaveRequest {
   expected_version?: number | null;
   meeting_date: string;
   title?: string | null;
+  /** Omit to leave an existing meeting's tag alone; send null to clear it.
+   *  The backend distinguishes the two — it does not treat null as "absent". */
+  portfolio_project_id?: number | null;
   raw_notes?: string;
   closing_remarks?: string | null;
   deliverables: DeliverableInput[];

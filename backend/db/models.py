@@ -340,6 +340,19 @@ class Meeting(Base):
     __tablename__ = "meetings"
     id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # OPTIONAL sub-project, same rules as ActionItem.portfolio_project_id: NULL
+    # means the meeting covered the portfolio as a whole, which is what every
+    # existing meeting means and what most weekly client calls will always mean.
+    #
+    # Tagging the MEETING is the labour-saving half of the feature. A call that
+    # is genuinely about one sub-project can say so once, and every action
+    # raised in it inherits the tag instead of being tagged row by row. The
+    # inheritance is a DEFAULT, not a constraint — a per-action tag set
+    # explicitly still wins, because a meeting about one project can still raise
+    # an action about another.
+    portfolio_project_id = Column(
+        Integer, ForeignKey("portfolio_projects.id"), nullable=True, index=True,
+    )
     meeting_date = Column(Date, nullable=False)
     title = Column(String(300))
     raw_notes = Column(Text)            # Original pasted/uploaded notes
@@ -377,6 +390,25 @@ class Meeting(Base):
         cascade="all, delete-orphan"
     )
     meeting_deliverables = relationship("MeetingDeliverable", back_populates="meeting", cascade="all, delete-orphan")
+
+    # lazy="joined" so listing a portfolio's meetings does not fire one extra
+    # query per tagged meeting just to label a badge. No cascade — deleting a
+    # meeting must never reach the sub-project it merely referenced.
+    portfolio_project = relationship("PortfolioProject", lazy="joined")
+
+    @property
+    def portfolio_project_name(self):
+        """Resolved name for the API layer.
+
+        A property rather than something the serializer computes, because the
+        meeting LIST endpoint returns ORM rows straight to Pydantic — without
+        this the list would silently render every badge as untagged while the
+        detail endpoint showed it correctly.
+
+        None covers both "untagged" and "sub-project since deleted". The UI
+        shows no badge for either, which is honest: there is no name to show.
+        """
+        return self.portfolio_project.name if self.portfolio_project else None
 
     @property
     def client_facing_actions(self):
