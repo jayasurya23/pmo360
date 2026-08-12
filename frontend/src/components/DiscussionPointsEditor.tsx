@@ -1,7 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 import clsx from "clsx";
 import type { ParsedDiscussionPoint } from "@/lib/types";
 import { handleTextareaTab } from "@/lib/textareaTab";
+import {
+  DraftInput,
+  DraftTextarea,
+  type DraftCommit,
+} from "@/components/DraftField";
 
 const DISCIPLINES = ["General", "Electrical", "Civil", "Structural"];
 const BULLET_PREFIXES = ["- ", "* ", "• ", "○ ", "● ", "o "];
@@ -178,10 +191,18 @@ function addSubAt(
  * ============================================================ */
 interface Props {
   points: ParsedDiscussionPoint[];
-  setPoints: (p: ParsedDiscussionPoint[]) => void;
+  /** The raw `useState` setter (which is what Review passes), so the advanced
+   *  editor's deferred commits can use the functional form and stay stable. */
+  setPoints: Dispatch<SetStateAction<ParsedDiscussionPoint[]>>;
 }
 
-export default function DiscussionPointsEditor({ points, setPoints }: Props) {
+/**
+ * Memoised: this editor shares a page render with Review's attendee,
+ * deliverable and action-item lists. Without the boundary, a character typed
+ * in any of them re-ran countDps() over the whole tree and re-rendered every
+ * AdvancedNode.
+ */
+export default memo(function DiscussionPointsEditor({ points, setPoints }: Props) {
   // Textarea is a serialized view of `points`. We keep a local copy so the
   // user can type freely without the parsed-then-reserialized round-trip
   // collapsing whitespace mid-keystroke.
@@ -204,11 +225,21 @@ export default function DiscussionPointsEditor({ points, setPoints }: Props) {
 
   const totalCount = countDps(points);
 
-  const handleTextChange = (value: string) => {
-    setText(value);
-    lastWriteFromText.current = true;
-    setPoints(textToDps(value));
-  };
+  /**
+   * Runs on DraftTextarea's debounce / blur / unmount rather than per
+   * keystroke — textToDps() rebuilds the entire nested tree, and doing that
+   * per character was re-rendering the whole Review page. The local `text`
+   * stays the source of truth for the box because the text → tree → text
+   * round-trip collapses whitespace.
+   */
+  const handleTextChange = useCallback(
+    (value: string) => {
+      setText(value);
+      lastWriteFromText.current = true;
+      setPoints(textToDps(value));
+    },
+    [setPoints],
+  );
 
   const handleAdd = () => {
     const next = [
@@ -232,11 +263,11 @@ export default function DiscussionPointsEditor({ points, setPoints }: Props) {
         of a line are optional — they'll be stripped.
       </p>
 
-      <textarea
+      <DraftTextarea
         className="textarea font-mono text-[13px] leading-relaxed"
         rows={14}
         value={text}
-        onChange={(e) => handleTextChange(e.target.value)}
+        onCommit={handleTextChange}
         onKeyDown={handleTextareaTab}
         placeholder={
           "- Project Schedule Updates: Roashaael led the review of action items…\n" +
@@ -294,7 +325,7 @@ export default function DiscussionPointsEditor({ points, setPoints }: Props) {
       </Disclosure>
     </section>
   );
-}
+});
 
 /* ============================================================
  * Advanced per-item editor node (recursive)
@@ -304,11 +335,26 @@ interface AdvancedNodeProps {
   path: number[];
   depth: number;
   tree: ParsedDiscussionPoint[];
-  setTree: (t: ParsedDiscussionPoint[]) => void;
+  setTree: Dispatch<SetStateAction<ParsedDiscussionPoint[]>>;
 }
 
 function AdvancedNode({ node, path, depth, tree, setTree }: AdvancedNodeProps) {
   const pathLabel = path.map((i) => i + 1).join(".");
+  // One stable handler for both text fields. An inline arrow here would be a
+  // new `onCommit` on every render, which switches off DraftField's memo() —
+  // and it would close over `tree`, so two commits landing without a render
+  // between them would apply to the same stale copy and the first would be
+  // lost. `path` is a fresh array each render, so it is read through a ref
+  // rather than captured in the dependency list.
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  const commitNode = useCallback<DraftCommit>(
+    (value, _key, field) => {
+      if (field !== "label" && field !== "content") return;
+      setTree((prev) => updateAt(prev, pathRef.current, { [field]: value }));
+    },
+    [setTree],
+  );
   // Read through the brand variables rather than literal hexes — the rail is
   // interpolated into a `borderLeft` shorthand, so it can't be a token class,
   // but this way it still follows the light/dark palette.
@@ -328,11 +374,15 @@ function AdvancedNode({ node, path, depth, tree, setTree }: AdvancedNodeProps) {
         {(depth === 0 ? "Point" : "Sub-point") + " " + pathLabel}
       </div>
       <div className="grid grid-cols-[3fr_1fr] gap-2">
-        <input
+        {/* commitKey is the node's path so a recycled node re-syncs rather
+            than showing the previous node's text. */}
+        <DraftInput
           className="input text-sm"
           value={node.label}
           placeholder="Short bold lead (e.g. 'IE methodology change')"
-          onChange={(e) => setTree(updateAt(tree, path, { label: e.target.value }))}
+          commitKey={pathLabel}
+          field="label"
+          onCommit={commitNode}
         />
         <select
           className="select text-sm"
@@ -348,12 +398,14 @@ function AdvancedNode({ node, path, depth, tree, setTree }: AdvancedNodeProps) {
           ))}
         </select>
       </div>
-      <textarea
+      <DraftTextarea
         className="textarea text-sm mt-1.5"
         rows={2}
         value={node.content}
         placeholder="The discussion detail after the label"
-        onChange={(e) => setTree(updateAt(tree, path, { content: e.target.value }))}
+        commitKey={pathLabel}
+        field="content"
+        onCommit={commitNode}
       />
       <div className="flex gap-1.5 mt-1.5">
         <IconBtn label="↑" title="Move up" onClick={() => setTree(moveAt(tree, path, -1))} />

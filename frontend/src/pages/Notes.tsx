@@ -1,7 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import clsx from "clsx";
 import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
+import {
+  DraftInput,
+  DraftTextarea,
+  type DraftCommit,
+} from "@/components/DraftField";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
 import {
@@ -16,6 +21,7 @@ import {
   getLatestMeeting,
   type SuggestedAction,
 } from "@/lib/api";
+import { serialWrite } from "@/lib/serialWrite";
 import type { Note, Deliverable, MeetingDetail } from "@/lib/types";
 import {
   mergeSubProjects,
@@ -180,10 +186,27 @@ export default function NotesPage() {
     setNotes([n, ...notes]);
   };
 
-  const handlePatch = async (id: number, patch: Partial<Note>) => {
-    setNotes(notes.map((n) => (n.id === id ? { ...n, ...patch } : n)));
-    await updateNote(id, patch);
-  };
+  /**
+   * Optimistic write of one note field.
+   *
+   * Stable (empty deps + functional setNotes) because it is what every card's
+   * DraftInput/DraftTextarea ends up calling: a handler rebuilt on every render
+   * changes `onCommit` on all four fields of all N cards and defeats their
+   * memo() entirely.
+   *
+   * Serialised per note id because the draft fields commit on an idle debounce
+   * as well as on blur, so one sentence issues several PATCHes carrying growing
+   * prefixes of the same column — and `PATCH /notes/{id}` has no version token,
+   * so concurrent writes are last-arrival-wins. See lib/serialWrite.ts.
+   */
+  const handlePatch = useCallback((id: number, patch: Partial<Note>) => {
+    setNotes((prev) => prev.map((n) => (n.id === id ? { ...n, ...patch } : n)));
+    void serialWrite(`note:${id}`, () => updateNote(id, patch)).catch((e) => {
+      // No error surface on this page today; at least don't leave it as an
+      // unhandled rejection that never reaches a log.
+      console.error("Note save failed", id, e);
+    });
+  }, []);
 
   const handleDelete = async (note: Note) => {
     const ok = await confirm({
@@ -275,7 +298,7 @@ export default function NotesPage() {
               key={n.id}
               note={n}
               subProjects={subProjects}
-              onPatch={(patch) => handlePatch(n.id, patch)}
+              onPatch={handlePatch}
               onDelete={() => handleDelete(n)}
               onSuggest={() => handleSuggest(n)}
               canSuggest={!!latestMeeting}
@@ -601,7 +624,9 @@ function NoteCard({
 }: {
   note: Note;
   subProjects: string[];
-  onPatch: (p: Partial<Note>) => void;
+  /** Takes the id rather than closing over it, so the page can hand down ONE
+   *  stable handler — see the note on handlePatch. */
+  onPatch: (id: number, p: Partial<Note>) => void;
   onDelete: () => void;
   onSuggest: () => void;
   canSuggest: boolean;
@@ -611,6 +636,26 @@ function NoteCard({
   // also enter this mode automatically if the existing value isn't in the
   // merged list (legacy / freshly-typed value).
   const [newAreaMode, setNewAreaMode] = useState(false);
+
+  /**
+   * Commit one text field of the card: mirror it into the local `draft` (the
+   * card's own derived reads depend on it) and PATCH it.
+   *
+   * This used to be a bare onBlur, which meant navigating away or closing the
+   * tab mid-sentence dropped everything typed since the field last lost focus.
+   * DraftInput/DraftTextarea also commit on an idle debounce and on unmount,
+   * which closes that hole — see components/DraftField.tsx.
+   */
+  const commitField = useCallback<DraftCommit>(
+    (value, key, field) => {
+      if (!field || key === undefined) return;
+      setDraft((prev) => ({ ...prev, [field]: value }));
+      // The note id arrives back through `key` rather than being captured in a
+      // closure, which is what keeps this handler stable across renders.
+      onPatch(Number(key), { [field]: value } as Partial<Note>);
+    },
+    [onPatch],
+  );
 
   useEffect(() => {
     setDraft(note);
@@ -634,7 +679,7 @@ function NoteCard({
   return (
     <div className={clsx("card overflow-hidden", closed && "opacity-70")}>
       <div className="flex items-center gap-2.5 border-b border-surface-hairline px-[18px] py-3">
-        <input
+        <DraftInput
           className={clsx(
             "min-w-0 flex-1 border-0 bg-transparent p-0 text-[14.5px] font-semibold",
             "text-brand-black placeholder:text-brand-lightgray focus:outline-none",
@@ -642,8 +687,9 @@ function NoteCard({
           )}
           placeholder="Topic"
           value={draft.topic || ""}
-          onChange={(e) => setDraft({ ...draft, topic: e.target.value })}
-          onBlur={() => onPatch({ topic: draft.topic })}
+          commitKey={note.id}
+          field="topic"
+          onCommit={commitField}
         />
         <select
           className={clsx(
@@ -655,7 +701,7 @@ function NoteCard({
           value={priority}
           onChange={(e) => {
             setDraft({ ...draft, priority: e.target.value });
-            onPatch({ priority: e.target.value });
+            onPatch(note.id, { priority: e.target.value });
           }}
         >
           {PRIORITY_OPTS.map((p) => (
@@ -668,7 +714,7 @@ function NoteCard({
           value={draft.status || "open"}
           onChange={(e) => {
             setDraft({ ...draft, status: e.target.value });
-            onPatch({ status: e.target.value });
+            onPatch(note.id, { status: e.target.value });
           }}
         >
           {STATUS_OPTS.map((s) => (
@@ -687,30 +733,29 @@ function NoteCard({
       </div>
 
       <div className="flex flex-col gap-2.5 px-[18px] py-3.5">
-        <textarea
+        <DraftTextarea
           className="textarea rounded-[7px] px-[11px] py-[9px] text-[13.5px]"
           rows={2}
           placeholder="Action / follow-up"
           value={draft.action_needed || ""}
-          onChange={(e) => setDraft({ ...draft, action_needed: e.target.value })}
-          onBlur={() => onPatch({ action_needed: draft.action_needed })}
+          commitKey={note.id}
+          field="action_needed"
+          onCommit={commitField}
         />
         <div className="flex flex-wrap items-center gap-2.5 text-xs text-brand-gray">
           {showTextInput ? (
-            <input
+            <DraftInput
               className={clsx("input", META_CONTROL, "w-[130px]")}
               placeholder="Project"
               autoFocus={newAreaMode}
               value={draft.project_area || ""}
-              onChange={(e) =>
-                setDraft({ ...draft, project_area: e.target.value })
-              }
-              onBlur={() => {
-                onPatch({ project_area: draft.project_area });
-                // If the value now matches a known sub-project, drop back to the
-                // dropdown on next render. The blur path takes care of saving.
-                setNewAreaMode(false);
-              }}
+              commitKey={note.id}
+              field="project_area"
+              onCommit={commitField}
+              // Leaving free-text mode is UI only — the save already happened
+              // on the commit above. If the value now matches a known
+              // sub-project, the next render drops back to the dropdown.
+              onBlur={() => setNewAreaMode(false)}
             />
           ) : (
             <select
@@ -721,11 +766,11 @@ function NoteCard({
                 if (v === NEW_AREA_SENTINEL) {
                   setNewAreaMode(true);
                   setDraft({ ...draft, project_area: "" });
-                  onPatch({ project_area: "" });
+                  onPatch(note.id, { project_area: "" });
                   return;
                 }
                 setDraft({ ...draft, project_area: v });
-                onPatch({ project_area: v });
+                onPatch(note.id, { project_area: v });
               }}
             >
               <option value="">— Project —</option>
@@ -737,12 +782,13 @@ function NoteCard({
               <option value={NEW_AREA_SENTINEL}>{NEW_AREA_LABEL}</option>
             </select>
           )}
-          <input
+          <DraftInput
             className={clsx("input", META_CONTROL, "w-[110px]")}
             placeholder="Source"
             value={draft.source || ""}
-            onChange={(e) => setDraft({ ...draft, source: e.target.value })}
-            onBlur={() => onPatch({ source: draft.source })}
+            commitKey={note.id}
+            field="source"
+            onCommit={commitField}
           />
           <label className="flex items-center gap-1.5">
             Note
@@ -752,7 +798,7 @@ function NoteCard({
               value={draft.note_date}
               onChange={(e) => {
                 setDraft({ ...draft, note_date: e.target.value });
-                onPatch({ note_date: e.target.value });
+                onPatch(note.id, { note_date: e.target.value });
               }}
             />
           </label>
@@ -765,7 +811,7 @@ function NoteCard({
               onChange={(e) => {
                 const v = e.target.value || null;
                 setDraft({ ...draft, follow_up_date: v });
-                onPatch({ follow_up_date: v });
+                onPatch(note.id, { follow_up_date: v });
               }}
             />
           </label>

@@ -1,6 +1,11 @@
 import { ReactNode, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
+import {
+  DraftInput,
+  DraftTextarea,
+  useListFieldCommit,
+} from "@/components/DraftField";
 import EmptyState from "@/components/EmptyState";
 import DiscussionPointsEditor from "@/components/DiscussionPointsEditor";
 import AgendaEditor from "@/components/AgendaEditor";
@@ -161,6 +166,23 @@ export default function Review() {
       setRegeneratingSummary(false);
     }
   }
+
+  /**
+   * Stable commit handlers for the inline text editors.
+   *
+   * One per list, built with functional setState so they never close over the
+   * current array and therefore never change identity. That stability is what
+   * makes DraftInput/DraftTextarea's memo() actually hold — a handler rebuilt
+   * on every render would re-render every editor on the page on every commit
+   * and undo the whole point. See components/DraftField.tsx.
+   *
+   * Declared above the `!currentProject` early return with the other hooks —
+   * a hook below it changes the hook count between renders on a cold deep-link
+   * load and trips React error #310 (see the note at `savedToast`).
+   */
+  const commitAttendee = useListFieldCommit(setAttendees);
+  const commitDeliverable = useListFieldCommit(setSelectedDeliverables);
+  const commitAction = useListFieldCommit(setActionItems);
 
   if (!currentProject)
     return <EmptyState title="Pick a client + portfolio first" />;
@@ -458,46 +480,35 @@ export default function Review() {
         <div className="px-5 py-3.5 space-y-2">
           <SortableList
             items={attendees}
-            getId={(a, i) => `attendee-${i}-${a.full_name}-${a.initials}`}
+            // Position only — see the note on the action-items list below.
+            getId={(_a, i) => `attendee-${i}`}
             onReorder={setAttendees}
             renderItem={(a, idx, handle) => (
               <div className="grid grid-cols-[24px_4fr_1.2fr_3fr_34px] gap-2 items-center">
                 <div className="flex justify-center">{handle}</div>
-                <input
+                <DraftInput
                   className="input min-w-0"
                   value={a.full_name}
                   placeholder="Full name"
-                  onChange={(e) =>
-                    setAttendees(
-                      attendees.map((x, i) =>
-                        i === idx ? { ...x, full_name: e.target.value } : x
-                      )
-                    )
-                  }
+                  commitKey={idx}
+                  field="full_name"
+                  onCommit={commitAttendee}
                 />
-                <input
+                <DraftInput
                   className="input min-w-0"
                   value={a.initials}
                   placeholder="AR"
-                  onChange={(e) =>
-                    setAttendees(
-                      attendees.map((x, i) =>
-                        i === idx ? { ...x, initials: e.target.value } : x
-                      )
-                    )
-                  }
+                  commitKey={idx}
+                  field="initials"
+                  onCommit={commitAttendee}
                 />
-                <input
+                <DraftInput
                   className="input min-w-0"
                   value={a.organization}
                   placeholder="Organization"
-                  onChange={(e) =>
-                    setAttendees(
-                      attendees.map((x, i) =>
-                        i === idx ? { ...x, organization: e.target.value } : x
-                      )
-                    )
-                  }
+                  commitKey={idx}
+                  field="organization"
+                  onCommit={commitAttendee}
                 />
                 <RowDelete
                   label="Remove attendee"
@@ -577,46 +588,35 @@ export default function Review() {
         <div className="px-5 py-3.5 space-y-2">
           <SortableList
             items={selectedDeliverables}
-            getId={(d, i) => `deliverable-${i}-${d.task}-${d.project_segment}`}
+            // Position only — see the note on the action-items list below.
+            getId={(_d, i) => `deliverable-${i}`}
             onReorder={setSelectedDeliverables}
             renderItem={(d, idx, handle) => (
               <div className="grid grid-cols-[24px_1.4fr_3fr_1.2fr_1.4fr_34px] gap-2 items-center">
                 <div className="flex justify-center">{handle}</div>
-                <input
+                <DraftInput
                   className="input min-w-0"
                   value={d.project_segment}
                   placeholder="Project"
-                  onChange={(e) =>
-                    setSelectedDeliverables(
-                      selectedDeliverables.map((x, i) =>
-                        i === idx ? { ...x, project_segment: e.target.value } : x
-                      )
-                    )
-                  }
+                  commitKey={idx}
+                  field="project_segment"
+                  onCommit={commitDeliverable}
                 />
-                <input
+                <DraftInput
                   className="input min-w-0"
                   value={d.task}
                   placeholder="Task"
-                  onChange={(e) =>
-                    setSelectedDeliverables(
-                      selectedDeliverables.map((x, i) =>
-                        i === idx ? { ...x, task: e.target.value } : x
-                      )
-                    )
-                  }
+                  commitKey={idx}
+                  field="task"
+                  onCommit={commitDeliverable}
                 />
-                <input
+                <DraftInput
                   className="input min-w-0"
                   value={d.start_status}
                   placeholder="Status"
-                  onChange={(e) =>
-                    setSelectedDeliverables(
-                      selectedDeliverables.map((x, i) =>
-                        i === idx ? { ...x, start_status: e.target.value } : x
-                      )
-                    )
-                  }
+                  commitKey={idx}
+                  field="start_status"
+                  onCommit={commitDeliverable}
                 />
                 <input
                   type="date"
@@ -698,10 +698,12 @@ export default function Review() {
             }
           />
           <div className="px-5 py-3.5 space-y-3">
-            <textarea
+            {/* setClosingRemarks is a plain useState setter — already stable,
+                so it can be the commit handler directly. */}
+            <DraftTextarea
               className="textarea min-h-[150px]"
               value={closingRemarks}
-              onChange={(e) => setClosingRemarks(e.target.value)}
+              onCommit={setClosingRemarks}
               onKeyDown={handleTextareaTab}
               placeholder="Thank you to everyone for attending this meeting…"
             />
@@ -752,22 +754,27 @@ export default function Review() {
         <div className="px-5 py-3.5 space-y-2">
           <SortableList
             items={actionItems}
-            getId={(a, i) => `action-${i}-${a.text.slice(0, 40)}-${a.owner}`}
+            /* Position only — the row's CONTENT must never appear in this id.
+             *
+             * SortableList uses it as both the React key and the dnd-kit
+             * sortable id, so a content-derived id changes the key on every
+             * commit, which unmounts and remounts the row and destroys the
+             * focused <textarea>. That was the other half of the reported
+             * "one character at a time": the old id was
+             * `action-${i}-${a.text.slice(0,40)}-${a.owner}`, and the slice(40)
+             * is why typing mysteriously started working past 40 characters. */
+            getId={(_a, i) => `action-${i}`}
             onReorder={setActionItems}
             renderItem={(a, idx, handle) => (
               <div className="grid grid-cols-[24px_4fr_1.4fr_1.5fr_1.4fr_34px] gap-2 items-start">
                 <div className="flex justify-center pt-2">{handle}</div>
-                <textarea
+                <DraftTextarea
                   className="textarea min-w-0"
                   rows={2}
                   value={a.text}
-                  onChange={(e) =>
-                    setActionItems(
-                      actionItems.map((x, i) =>
-                        i === idx ? { ...x, text: e.target.value } : x
-                      )
-                    )
-                  }
+                  commitKey={idx}
+                  field="text"
+                  onCommit={commitAction}
                   onKeyDown={handleTextareaTab}
                 />
                 <div className="min-w-0">
