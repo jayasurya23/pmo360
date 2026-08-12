@@ -762,6 +762,22 @@ class ActionItemCreate(BaseModel):
     status: str = "open"
 
 
+class ActionItemReassign(BaseModel):
+    """Target for moving or copying an action to another portfolio.
+
+    Same shape for both because the destination question is identical — only
+    what happens to the original differs. Move retitles the existing row; copy
+    leaves it alone and makes a second one, which is how one action that turns
+    out to affect two portfolios gets split without retyping it.
+
+    ``portfolio_project_id`` is validated against ``project_id`` here, NOT
+    against the action's current portfolio: a sub-project that was legal before
+    the move is meaningless after it.
+    """
+    project_id: int
+    portfolio_project_id: Optional[int] = None
+
+
 class ActionOwnerOut(BaseModel):
     """One selectable owner in the Actions page filter.
 

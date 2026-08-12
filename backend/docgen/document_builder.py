@@ -261,7 +261,7 @@ def generate_meeting_minutes_docx(meeting: Meeting, output_path: Optional[Path] 
             _body_run(p, dp.content)
 
     # ---- Action Items ----
-    if meeting.raised_actions:
+    if meeting.client_facing_actions:
         _add_heading(doc, "Action Items")
         tbl = doc.add_table(rows=1, cols=5)
         hdr = tbl.rows[0].cells
@@ -275,7 +275,7 @@ def generate_meeting_minutes_docx(meeting: Meeting, output_path: Optional[Path] 
             run.font.size = Pt(10)
             _shade_cell(cell, BrandColors.RED)
 
-        for idx, a in enumerate(meeting.raised_actions, start=1):
+        for idx, a in enumerate(meeting.client_facing_actions, start=1):
             row = tbl.add_row().cells
             cells_text = [
                 str(idx),

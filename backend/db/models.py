@@ -378,6 +378,27 @@ class Meeting(Base):
     )
     meeting_deliverables = relationship("MeetingDeliverable", back_populates="meeting", cascade="all, delete-orphan")
 
+    @property
+    def client_facing_actions(self):
+        """The actions these minutes may PRINT — not everything raised here.
+
+        `raised_actions` keys on originating_meeting_id, which an action KEEPS
+        when it is moved to another portfolio (provenance is a fact about the
+        past and is deliberately not rewritten). So after a move, this meeting
+        still lists an action that now belongs somewhere else.
+
+        That is fine internally and NOT fine on paper. These minutes go to a
+        client, and printing an action owned by another portfolio shows them
+        work they are not party to — across clients it is a straight
+        disclosure. Every client-facing renderer takes this instead.
+
+        Order is preserved from `raised_actions` so the printed table and the
+        AcroForm status fields overlaid on it stay in step; they are matched by
+        position, and a count taken from a different list would misalign every
+        dropdown.
+        """
+        return [a for a in self.raised_actions if a.project_id == self.project_id]
+
 
 class MeetingAttendee(Base):
     """Who actually attended this specific meeting (subset of project roster)."""

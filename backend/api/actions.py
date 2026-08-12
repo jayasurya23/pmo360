@@ -23,7 +23,7 @@ from db.repository import (
 )
 from core.services import safe_filename_slug
 from schemas.common import (
-    ActionItemOut, ActionItemUpdate, ActionItemCreate,
+    ActionItemOut, ActionItemUpdate, ActionItemCreate, ActionItemReassign,
     ActionOwnerGroupOut, ActionOwnerOut, ActionOwnersOut, split_display_name,
 )
 
@@ -233,6 +233,102 @@ def patch_action(
     action.updated_by_id = actor.id
     db.flush()
     return _one_with_context(db, action)
+
+
+def _authorise_reassign(guard, action: ActionItem, target_portfolio_id: int) -> None:
+    """Both ends, always.
+
+    Checking only the destination would let someone with rights to portfolio B
+    pull an action out of portfolio A they cannot see; checking only the source
+    would let them push one into a portfolio they have no business writing to.
+    Neither is hypothetical — the whole point of this endpoint is crossing that
+    boundary, so it is the one place the two-sided check has to be explicit.
+    """
+    guard.require_project(action.project_id)
+    guard.require_project(target_portfolio_id)
+
+
+@router.post("/{action_id}/move", response_model=ActionItemOut)
+def move_action(
+    action_id: int,
+    payload: ActionItemReassign,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
+    """Re-file an action under a different portfolio (optionally a sub-project).
+
+    ``originating_meeting_id`` is deliberately left pointing at the meeting the
+    action came out of. That meeting really did raise it, and rewriting history
+    to make the new owner's records look tidy would destroy the only trail back
+    to where the commitment was actually made.
+
+    The action does stop appearing on that meeting's CLIENT-FACING minutes —
+    see ``Meeting.client_facing_actions``. Those minutes go to a client, and an
+    action now owned by another portfolio is not theirs to read.
+    """
+    action = db.get(ActionItem, action_id)
+    if not action:
+        raise HTTPException(404, "Action not found")
+    _authorise_reassign(guard, action, payload.project_id)
+    target = db.get(Project, payload.project_id)
+    if target is None:
+        raise HTTPException(404, "That portfolio no longer exists.")
+    # Validated against the TARGET, which is why this runs after the swap is
+    # decided and not before.
+    _resolve_sub_project(db, payload.project_id, payload.portfolio_project_id)
+    action.project_id = payload.project_id
+    action.portfolio_project_id = payload.portfolio_project_id
+    action.updated_by_id = actor.id
+    db.flush()
+    return _one_with_context(db, action)
+
+
+@router.post("/{action_id}/copy", response_model=ActionItemOut, status_code=201)
+def copy_action(
+    action_id: int,
+    payload: ActionItemReassign,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(MEETING_MINUTES)),
+):
+    """Duplicate an action into another portfolio, leaving the original alone.
+
+    For the case where one commitment turns out to bind two portfolios: both
+    need to track it, and neither should lose it when the other closes theirs.
+    The copy is an independent row from that moment — closing one does not
+    close the other, which is the point.
+
+    Status and dates carry over because a split usually happens mid-life and
+    resetting the copy to "open" would silently reopen finished work. Both rows
+    keep the same originating meeting: they were raised in the same
+    conversation, and only one of them will print on its minutes.
+    """
+    source = db.get(ActionItem, action_id)
+    if not source:
+        raise HTTPException(404, "Action not found")
+    _authorise_reassign(guard, source, payload.project_id)
+    target = db.get(Project, payload.project_id)
+    if target is None:
+        raise HTTPException(404, "That portfolio no longer exists.")
+    _resolve_sub_project(db, payload.project_id, payload.portfolio_project_id)
+    dup = ActionItem(
+        project_id=payload.project_id,
+        portfolio_project_id=payload.portfolio_project_id,
+        originating_meeting_id=source.originating_meeting_id,
+        closed_in_meeting_id=source.closed_in_meeting_id,
+        text=source.text,
+        owner=source.owner,
+        owner_user_id=source.owner_user_id,
+        due_date=source.due_date,
+        status=source.status or "open",
+        last_status_change=source.last_status_change,
+        created_by_id=actor.id,
+        updated_by_id=actor.id,
+    )
+    db.add(dup)
+    db.flush()
+    return _one_with_context(db, dup)
 
 
 @router.delete("/{action_id}", status_code=204)

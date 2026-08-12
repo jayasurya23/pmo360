@@ -237,7 +237,13 @@ def update_parsed_meeting(
         session.delete(child)
     for child in list(meeting.discussion_points):
         session.delete(child)
-    for child in list(meeting.raised_actions):
+    # client_facing_actions, NOT raised_actions, and that is load-bearing.
+    # A re-save rebuilds this meeting's actions from the payload, but an action
+    # MOVED to another portfolio is still in raised_actions (it keeps its
+    # originating meeting) and is no longer in the payload — so deleting from
+    # the raw list would quietly destroy work another portfolio now owns, every
+    # time somebody re-saved these minutes.
+    for child in list(meeting.client_facing_actions):
         session.delete(child)
     for md in list(meeting.meeting_deliverables):
         deliv = md.deliverable
@@ -288,7 +294,7 @@ def build_meeting_docs(session: Session, meeting: Meeting,
     Returns dict keyed by kind with {filename, content_type, bytes}.
     """
     pdf_bytes = generate_meeting_minutes_pdf(meeting)
-    pdf_bytes = add_status_form_fields(pdf_bytes, len(meeting.raised_actions))
+    pdf_bytes = add_status_form_fields(pdf_bytes, len(meeting.client_facing_actions))
     docx_bytes = generate_meeting_minutes_docx(meeting)
     actions = all_actions(session, meeting.project.id)
     xlsx_bytes = generate_action_items_xlsx(meeting.project, actions)
@@ -324,7 +330,7 @@ def finalize_meeting(session: Session, meeting: Meeting) -> dict:
     proj_slug = safe_filename_slug(project.name or "project")
 
     pdf_bytes = generate_meeting_minutes_pdf(meeting)
-    pdf_bytes = add_status_form_fields(pdf_bytes, len(meeting.raised_actions))
+    pdf_bytes = add_status_form_fields(pdf_bytes, len(meeting.client_facing_actions))
     pdf_filename = meeting_filename(meeting, "Meeting_Minutes", "pdf")
     pdf_path = storage.save(f"{proj_slug}/{pdf_filename}", pdf_bytes)
 

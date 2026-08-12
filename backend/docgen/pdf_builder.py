@@ -576,11 +576,11 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
         story.extend(_build_discussion_flowables(meeting, s))
 
     # ---- Action Items ----
-    if meeting.raised_actions:
+    if meeting.client_facing_actions:
         story.append(Paragraph("Action Items", s["section"]))
         # Header row + data rows
         table_data = [["#", "Action", "Owner", "Due", "Status"]]
-        for idx, a in enumerate(meeting.raised_actions, start=1):
+        for idx, a in enumerate(meeting.client_facing_actions, start=1):
             status = (a.status or "open").lower()
             # No-leading-zero date (Windows uses %#m/%#d, POSIX uses %-m/%-d)
             if a.due_date:
@@ -639,7 +639,7 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
             ("RIGHTPADDING",  (3, 1), (4, -1), 4),
         ])
         # Per-row status cell background — the status colour, as page content.
-        for row_idx, a in enumerate(meeting.raised_actions, start=1):
+        for row_idx, a in enumerate(meeting.client_facing_actions, start=1):
             status = (a.status or "open").lower()
             bg = STATUS_COLORS.get(status, STATUS_COLORS["open"])
             ts.add("BACKGROUND", (4, row_idx), (4, row_idx), bg)

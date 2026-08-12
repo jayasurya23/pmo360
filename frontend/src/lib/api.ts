@@ -547,6 +547,30 @@ export const createAction = (payload: {
 }) => apiClient.post<ActionItem>("/actions", payload).then((r) => r.data);
 export const deleteAction = (id: number) => apiClient.delete(`/actions/${id}`);
 
+/**
+ * Re-file an action under a different portfolio. The action keeps its
+ * originating meeting (that meeting really did raise it) but stops appearing
+ * on that meeting's client-facing minutes, because those go to a client who
+ * has no business reading another portfolio's work.
+ *
+ * `portfolio_project_id` is validated against the TARGET portfolio, so a
+ * sub-project that was valid before the move is rejected after it.
+ */
+export const moveAction = (
+  id: number,
+  target: { project_id: number; portfolio_project_id?: number | null }
+) => apiClient.post<ActionItem>(`/actions/${id}/move`, target).then((r) => r.data);
+
+/**
+ * Duplicate an action into another portfolio, leaving the original in place —
+ * for one commitment that turns out to bind two portfolios. The two rows are
+ * independent from that moment: closing one does not close the other.
+ */
+export const copyAction = (
+  id: number,
+  target: { project_id: number; portfolio_project_id?: number | null }
+) => apiClient.post<ActionItem>(`/actions/${id}/copy`, target).then((r) => r.data);
+
 // ---------- notes ----------
 export const listNotes = (projectId: number) =>
   apiClient

@@ -60,7 +60,11 @@ def _serialize_meeting(m: Meeting) -> MeetingDetail:
         attendees=[a for a in m.attendees],
         agenda_items=sorted(m.agenda_items, key=lambda a: a.order_index),
         discussion_points=_build_dp_tree(m),
-        raised_actions=sorted(m.raised_actions, key=lambda a: a.id),
+        # Filtered, not raw: an action moved to another portfolio keeps this as
+        # its originating meeting, so the raw list would still hand it to the
+        # editor — and the next save would recreate it here, leaving the same
+        # action live in two portfolios at once.
+        raised_actions=sorted(m.client_facing_actions, key=lambda a: a.id),
         meeting_deliverables=sorted(m.meeting_deliverables, key=lambda d: d.order_index),
         # Backref from MeetingAttachment — newest first so the UI shows the
         # most recently uploaded file on top without resorting client-side.
@@ -237,6 +241,23 @@ def delete_meeting(
     if not m:
         raise HTTPException(404, "Meeting not found")
     guard.require_project(m.project_id)
+    # raised_actions cascades delete-orphan, and an action MOVED to another
+    # portfolio still names this as its originating meeting — so a plain delete
+    # here would reach across and destroy live work in a portfolio this PM may
+    # not even be able to see, with no warning and nothing in the UI to
+    # explain where it went. Refuse instead, and say who is affected.
+    strays = [a for a in m.raised_actions if a.project_id != m.project_id]
+    if strays:
+        others = sorted({
+            (db.get(Project, a.project_id).name if db.get(Project, a.project_id) else "another portfolio")
+            for a in strays
+        })
+        raise HTTPException(
+            409,
+            f"{len(strays)} action item(s) raised in this meeting were moved to "
+            f"{', '.join(others)} and are still open there. Deleting this meeting "
+            "would delete them too. Move or delete those actions first.",
+        )
     db.delete(m)
     return None
 
@@ -294,7 +315,7 @@ def regenerate_summary(
             portfolio_project_id=a.portfolio_project_id,
             due_date=a.due_date.isoformat() if a.due_date else None,
             status=a.status or "open",
-        ) for a in meeting.raised_actions],
+        ) for a in meeting.client_facing_actions],
     )
     summary = _try_generate_summary(
         parsed, meeting.project, closing_remarks=meeting.closing_remarks or "",
