@@ -1139,6 +1139,20 @@ class ChangeOrder(Base):
     __tablename__ = "change_orders"
     id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # OPTIONAL sub-project, same rules as the action-item and meeting columns:
+    # NULL means the portfolio as a whole, which is every existing CO.
+    #
+    # This is INTERNAL filing only. It does NOT feed the PDF — the client-facing
+    # "Project" line is `project_name`, a free-text label the PM types. Letting
+    # an internal filter tag change what prints on a signed money document would
+    # be a side effect nobody asked for and nobody would notice.
+    #
+    # Settable while draft or pending, which is a change order's whole editable
+    # life; `_assert_editable` freezes approved and delivered ones and this
+    # deliberately does not carve an exception out of that guard.
+    portfolio_project_id = Column(
+        Integer, ForeignKey("portfolio_projects.id"), nullable=True, index=True,
+    )
     co_number = Column(Integer, nullable=False, default=1)   # per-portfolio seq -> "CO-{n}"
     co_version = Column(String(20), default="V1")            # workbook "Version" label
     title = Column(String(300))                              # optional short label

@@ -45,7 +45,8 @@ from co_pricing import distribute_markup, markup_breakdown
 from core.services import safe_filename_slug
 from storage.backend import get_storage
 from db.models import (
-    ChangeOrder, ChangeOrderApprovalRequest, ChangeOrderLineItem, Project, User,
+    ChangeOrder, ChangeOrderApprovalRequest, ChangeOrderLineItem, PortfolioProject,
+    Project, User,
 )
 from docgen.change_order_pdf import build_change_order_pdf
 from schemas.common import (
@@ -129,6 +130,15 @@ def _out(co: ChangeOrder, db: Session) -> ChangeOrderOut:
     proj = db.get(Project, co.project_id)
     # Prefer the editable snapshot; fall back to the portfolio name (legacy rows).
     o.project_name = co.project_name or (proj.name if proj else None)
+    # The sub-project tag is separate from `project_name` above and must stay
+    # that way: `project_name` is the label that PRINTS on the client's PDF,
+    # this is internal filing. Resolved here so the list can badge and filter
+    # without fetching every portfolio's sub-projects. Null when untagged and
+    # when the sub-project has since been deleted — no badge for either, which
+    # is the truth.
+    if co.portfolio_project_id is not None:
+        sub = db.get(PortfolioProject, co.portfolio_project_id)
+        o.portfolio_project_name = sub.name if sub else None
     # The internal-only breakdown behind `total_amount`. Derived here rather than
     # stored so it can never drift from the line items it describes, and computed
     # by co_pricing so the dollars shown in the app are the same dollars the PDF
@@ -138,6 +148,36 @@ def _out(co: ChangeOrder, db: Session) -> ChangeOrderOut:
         _num(co.pmo_pct), _num(co.admin_pct),
     ))
     return o
+
+
+def _resolve_sub_project(
+    db: Session, portfolio_id: int, sub_project_id: "int | None",
+) -> None:
+    """Check a sub-project is real AND belongs to THIS portfolio.
+
+    The second half is the point and the database cannot enforce it: the FK
+    only says the row exists, not that it sits under the same portfolio as the
+    change order. Without this check a CO rolls up under one portfolio while
+    naming a sub-project of another — corrupting exactly the rollups the tag
+    exists to produce, and looking correct on every screen while it does.
+
+    This one RAISES rather than silently dropping the tag, unlike the
+    meeting-minutes path. A change order is a single deliberate form a PM is
+    filling in, not a whole set of minutes that must never be lost over
+    metadata — here, telling them is better than quietly filing it elsewhere.
+    """
+    if sub_project_id is None:
+        return
+    sub = db.get(PortfolioProject, sub_project_id)
+    if sub is None:
+        raise HTTPException(404, "That project no longer exists.")
+    if sub.portfolio_id != portfolio_id:
+        raise HTTPException(
+            400,
+            f"“{sub.name}” belongs to a different portfolio, so this change "
+            "order cannot be filed against it. Pick a project from this "
+            "portfolio.",
+        )
 
 
 def _get(db: Session, co_id: int) -> ChangeOrder:
@@ -379,11 +419,13 @@ def create_change_order(
     if not project:
         raise HTTPException(404, "Portfolio not found")
     guard.require_project(project.id)
+    _resolve_sub_project(db, payload.project_id, payload.portfolio_project_id)
     next_n = (db.query(func.max(ChangeOrder.co_number))
               .filter(ChangeOrder.project_id == payload.project_id)
               .scalar() or 0) + 1
     co = ChangeOrder(
         project_id=payload.project_id,
+        portfolio_project_id=payload.portfolio_project_id,
         co_number=next_n,
         co_version=payload.co_version or "V1",
         title=payload.title,
@@ -631,6 +673,13 @@ def update_change_order(
                   "pmo_pct", "admin_pct", "notes"):
         if field in sent:
             setattr(co, field, getattr(payload, field))
+    if "portfolio_project_id" in sent:
+        # Validated against the CO's OWN portfolio, not the payload's — a PATCH
+        # never re-homes a change order, so the portfolio here is fixed and the
+        # sub-project has to belong to it. Read via model_fields_set so an
+        # explicit null clears the tag while omitting the field leaves it alone.
+        _resolve_sub_project(db, co.project_id, payload.portfolio_project_id)
+        co.portfolio_project_id = payload.portfolio_project_id
     # The adders are NOT NULL, and a percentage field cleared on the form arrives
     # as an explicit null rather than 0 — coerce so the save can't 500.
     co.pmo_pct = _num(co.pmo_pct)

@@ -4,6 +4,7 @@ import PageHeader from "@/components/PageHeader";
 import EmptyState from "@/components/EmptyState";
 import PdfPagePreview from "@/components/PdfPagePreview";
 import OwnerPicker from "@/components/actions/OwnerPicker";
+import SubProjectSelect, { loadSubProjects } from "@/components/SubProjectSelect";
 import RequestApprovalModal from "@/components/change-orders/RequestApprovalModal";
 import ApprovalRequestsPanel from "@/components/change-orders/ApprovalRequestsPanel";
 import { useConfirm } from "@/components/ConfirmDialog";
@@ -291,6 +292,15 @@ export default function ChangeOrders() {
   const [rateChosen, setRateChosen] = useState(false); // gate: pick fixed/hourly first
   const [coVersion, setCoVersion] = useState("V1");
   const [projectName, setProjectName] = useState("");
+  /** Sub-project this CO is filed under. Internal only — it does NOT change the
+   *  "Project" line on the PDF, which stays `projectName` above. Null = the
+   *  portfolio as a whole, the default. */
+  const [subProjectId, setSubProjectId] = useState<number | null>(null);
+  /** Whether this portfolio uses the project tier at all. SubProjectSelect
+   *  renders nothing when there is nothing to pick, which would leave a
+   *  labelled empty box in a grid of real fields — so the whole Field is gated
+   *  on this. Reads the component's own module cache, so no extra request. */
+  const [hasSubProjects, setHasSubProjects] = useState(false);
   const [requestDate, setRequestDate] = useState(today());
   const [requestedBy, setRequestedBy] = useState("");
   const [requestedByUserId, setRequestedByUserId] = useState<number | null>(null);
@@ -391,6 +401,24 @@ export default function ChangeOrders() {
     if (!currentProject) setTab((t) => (t === "create" ? "pending" : t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentProject?.id, selectedClientId]);
+
+  // Does this portfolio use the project tier? Drives whether the "File under
+  // project" field appears at all. `alive` guards a fast portfolio switch —
+  // without it a slow answer for portfolio A can land after B's and show the
+  // field on a portfolio that has no projects.
+  useEffect(() => {
+    if (!currentProject) {
+      setHasSubProjects(false);
+      return;
+    }
+    let alive = true;
+    loadSubProjects(currentProject.id)
+      .then((rows) => alive && setHasSubProjects(rows.length > 0))
+      .catch(() => alive && setHasSubProjects(false));
+    return () => {
+      alive = false;
+    };
+  }, [currentProject?.id]);
 
   // Seed the create form from a "Create change order" hand-off (e.g. the meeting
   // Review page passes { coPrefill: { title, details } } via router state).
@@ -575,6 +603,9 @@ export default function ChangeOrders() {
     setRateChosen(false);
     setCoVersion("V1");
     setProjectName(currentProject?.name || "");
+    // A new CO starts untagged. Inheriting the last one's project would file
+    // an unrelated change order under it without anyone choosing that.
+    setSubProjectId(null);
     setRequestDate(today());
     setRequestedBy("");
     setRequestedByUserId(null);
@@ -605,6 +636,7 @@ export default function ChangeOrders() {
     setRateChosen(true);
     setCoVersion(co.co_version || "V1");
     setProjectName(co.project_name || currentProject?.name || "");
+    setSubProjectId(co.portfolio_project_id ?? null);
     setRequestDate(co.request_date || today());
     setRequestedBy(co.requested_by || "");
     setRequestedByUserId(co.requested_by_user_id ?? null);
@@ -664,6 +696,8 @@ export default function ChangeOrders() {
       project_id: currentProject!.id,
       co_version: coVersion,
       project_name: projectName.trim() || null,
+      // Always sent, including as null, so clearing the tag actually clears it.
+      portfolio_project_id: subProjectId,
       title: title || null,
       rate_type: rateType,
       request_date: requestDate || null,
@@ -1274,6 +1308,20 @@ export default function ChangeOrders() {
                       title="Pre-filled from the portfolio; edit to set a custom project label on this change order and its PDF."
                     />
                   </Field>
+                  {/* Separate from the "Project" label above, and deliberately
+                      so: that one prints on the client's PDF, this one is
+                      internal filing for rollups and filtering. Renders nothing
+                      when the portfolio has no sub-projects. */}
+                  {(hasSubProjects || subProjectId != null) && (
+                    <Field label="File under project">
+                      <SubProjectSelect
+                        portfolioId={currentProject.id}
+                        value={subProjectId}
+                        ariaLabel="File this change order under a project"
+                        onChange={setSubProjectId}
+                      />
+                    </Field>
+                  )}
                   <Field label="Request date">
                     <input
                       type="date"
@@ -2283,6 +2331,17 @@ function CoRow({
               <span className="font-semibold text-brand-red">
                 {co.project_name || "—"}
               </span>
+            </div>
+          )}
+          {/* The sub-project this CO was filed under. Only for tagged ones —
+              spelling out "whole portfolio" on every other row would make the
+              default look like an omission. Rendered independently of the
+              `context` line above because that one is about which CLIENT and
+              PDF label a cross-portfolio row belongs to; this is internal
+              filing and is worth seeing on the portfolio's own list too. */}
+          {co.portfolio_project_name && (
+            <div className="mt-0.5 truncate text-[11px] text-brand-gray">
+              Project: {co.portfolio_project_name}
             </div>
           )}
           <div className="mt-0.5 truncate text-[11px] text-brand-gray">

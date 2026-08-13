@@ -1470,6 +1470,10 @@ export interface ChangeOrderLineItemInput {
 }
 export interface ChangeOrderCreate {
   project_id: number;
+  /** Optional sub-project under that portfolio — internal filing for rollups
+   *  and filtering. Distinct from `project_name` below, which is the label
+   *  that prints on the client's PDF. Null = the portfolio as a whole. */
+  portfolio_project_id?: number | null;
   co_version?: string;
   project_name?: string | null;
   title?: string | null;
