@@ -29,6 +29,10 @@ import clsx from "clsx";
 
 type Tab = "meetings" | "agendas" | "notes" | "change_orders";
 type StatusFilter = "all" | "draft" | "final" | "sent";
+/** Sentinels for the meetings project filter. Strings rather than numbers so
+ *  the two "not a sub-project id" cases can't collide with a real id. */
+const PROJECT_FILTER_ALL = "all";
+const PROJECT_FILTER_WHOLE = "whole";
 type NoteStatusFilter = "all" | "open" | "closed";
 type NotePriorityFilter = "all" | "High" | "Medium" | "Low";
 type NoteSort = "newest" | "oldest" | "priority" | "followup" | "topic";
@@ -63,6 +67,10 @@ export default function History() {
   const [changeOrders, setChangeOrders] = useState<ChangeOrder[]>([]);
   const [loading, setLoading] = useState(false);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  /** Meetings project filter — PROJECT_FILTER_ALL, PROJECT_FILTER_WHOLE, or a
+   *  sub-project id as a string. Defaults to ALL: the portfolio is the unit a
+   *  PM works in, and narrowing by default would hide meetings they expect. */
+  const [projectFilter, setProjectFilter] = useState<string>(PROJECT_FILTER_ALL);
   const [noteFilter, setNoteFilter] = useState<NoteStatusFilter>("open");
   const [noteArea, setNoteArea] = useState<string>(NOTE_AREA_ALL);
   const [notePriority, setNotePriority] = useState<NotePriorityFilter>("all");
@@ -74,6 +82,10 @@ export default function History() {
 
   useEffect(() => {
     if (!currentProject) return;
+    // Sub-project ids are portfolio-scoped, so a filter held across a
+    // portfolio switch matches nothing and the page reads as "no meetings"
+    // when there are plenty.
+    setProjectFilter(PROJECT_FILTER_ALL);
     setLoading(true);
     Promise.all([
       listMeetings(currentProject.id),
@@ -99,12 +111,73 @@ export default function History() {
   // after the return, that change in hook count between renders trips React
   // error #310 and blanks the page. In-app nav never hits it because a
   // portfolio is already selected on mount.
+  /**
+   * Project options for the meetings filter, derived from the meetings
+   * THEMSELVES rather than from the portfolio's sub-project list.
+   *
+   * Two reasons. An option that can only ever return an empty list is noise,
+   * and a portfolio can easily have sub-projects that no meeting has been
+   * filed against yet. And a meeting tagged with a sub-project that was later
+   * deleted still needs to be findable — deriving from the rows keeps it
+   * reachable instead of stranding it behind a filter that no longer lists it.
+   */
+  const meetingSubProjects = useMemo(() => {
+    // Counts come from the stage-narrowed set, so "Cobra (2)" means two rows
+    // will appear — not two exist somewhere under a stage you aren't looking
+    // at. The OPTION LIST is built from every meeting though: a project that
+    // vanishes from the dropdown when you click "Sent" reads as data loss, and
+    // a stable list showing (0) is easier to trust than a shifting one.
+    const inStage = (m: Meeting) =>
+      statusFilter === "all" || (m.stage || "draft") === statusFilter;
+    const byId = new Map<number, { id: number; name: string; count: number }>();
+    let untagged = 0;
+    for (const m of meetings) {
+      const id = m.portfolio_project_id;
+      if (id == null) {
+        if (inStage(m)) untagged += 1;
+        continue;
+      }
+      const hit = byId.get(id);
+      if (hit) hit.count += inStage(m) ? 1 : 0;
+      // A tag whose sub-project has been deleted comes back with no name. Kept
+      // and labelled rather than dropped, so the meetings under it stay
+      // findable.
+      else
+        byId.set(id, {
+          id,
+          name: m.portfolio_project_name || "(deleted project)",
+          count: inStage(m) ? 1 : 0,
+        });
+    }
+    return {
+      options: Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name)),
+      untagged,
+      // Whether ANY meeting is tagged at all — drives whether the control
+      // renders. Deliberately not `options.length`, which is now non-zero even
+      // when every count is 0.
+      anyTagged: byId.size > 0,
+    };
+  }, [meetings, statusFilter]);
+
+  /**
+   * Narrowed by project ONLY. The stage pills and their counts are computed
+   * over this, not over every meeting — a count that describes the whole
+   * portfolio while a project is selected promises rows the click won't show.
+   */
+  const projectScoped = useMemo(() => {
+    if (projectFilter === PROJECT_FILTER_WHOLE) {
+      return meetings.filter((m) => m.portfolio_project_id == null);
+    }
+    if (projectFilter === PROJECT_FILTER_ALL) return meetings;
+    return meetings.filter((m) => m.portfolio_project_id === Number(projectFilter));
+  }, [meetings, projectFilter]);
+
   const filteredMeetings = useMemo(
     () =>
       statusFilter === "all"
-        ? meetings
-        : meetings.filter((m) => (m.stage || "draft") === statusFilter),
-    [meetings, statusFilter],
+        ? projectScoped
+        : projectScoped.filter((m) => (m.stage || "draft") === statusFilter),
+    [projectScoped, statusFilter],
   );
 
   const meetingsByMonth = useMemo(() => {
@@ -120,12 +193,12 @@ export default function History() {
 
   const stageCounts = useMemo(() => {
     const c = { draft: 0, final: 0, sent: 0 };
-    for (const m of meetings) {
+    for (const m of projectScoped) {
       const s = (m.stage || "draft") as keyof typeof c;
       if (s in c) c[s] += 1;
     }
     return c;
-  }, [meetings]);
+  }, [projectScoped]);
 
   const noteCounts = useMemo(() => {
     const c = { open: 0, closed: 0 };
@@ -348,7 +421,7 @@ export default function History() {
                 active={statusFilter === "all"}
                 onClick={() => setStatusFilter("all")}
               >
-                All {meetings.length}
+                All {projectScoped.length}
               </FilterPill>
               <FilterPill
                 active={statusFilter === "draft"}
@@ -368,6 +441,30 @@ export default function History() {
               >
                 Sent {stageCounts.sent}
               </FilterPill>
+              {/* Project filter, and ONLY when at least one meeting here is
+                  tagged. Portfolios that don't use the project tier — most of
+                  them — never see a control that could only ever say "all". */}
+              {meetingSubProjects.anyTagged && (
+                <select
+                  className="select h-7 max-w-[14rem] text-[11.5px]"
+                  aria-label="Filter meetings by project"
+                  value={projectFilter}
+                  onChange={(e) => setProjectFilter(e.target.value)}
+                >
+                  <option value={PROJECT_FILTER_ALL}>All projects</option>
+                  {/* Always present, like the project options — an option that
+                      disappears while it is the current selection leaves the
+                      select rendering blank. */}
+                  <option value={PROJECT_FILTER_WHOLE}>
+                    Whole portfolio only ({meetingSubProjects.untagged})
+                  </option>
+                  {meetingSubProjects.options.map((o) => (
+                    <option key={o.id} value={String(o.id)}>
+                      {o.name} ({o.count})
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           )}
         </div>
@@ -389,9 +486,30 @@ export default function History() {
               }
             />
           ) : filteredMeetings.length === 0 ? (
+            // Name the filter that actually emptied the list. "No all meetings
+            // — try a different status filter" sent PMs hunting through the
+            // stage pills when it was the project filter hiding everything.
             <EmptyState
-              title={`No ${statusFilter} meetings`}
-              hint="Try a different status filter."
+              title={
+                projectFilter === PROJECT_FILTER_ALL
+                  ? `No ${statusFilter} meetings`
+                  : "No meetings match both filters"
+              }
+              hint={
+                projectFilter === PROJECT_FILTER_ALL
+                  ? "Try a different status filter."
+                  : "Widen the status or project filter above."
+              }
+              action={
+                projectFilter !== PROJECT_FILTER_ALL ? (
+                  <button
+                    className="btn-ghost mt-2"
+                    onClick={() => setProjectFilter(PROJECT_FILTER_ALL)}
+                  >
+                    Show all projects
+                  </button>
+                ) : undefined
+              }
             />
           ) : (
             <div className="space-y-[18px]">
@@ -437,6 +555,11 @@ export default function History() {
                           <MetaLine
                             parts={[
                               format(parseISO(m.meeting_date), "EEE, MMM d"),
+                              // Only for tagged meetings. An explicit "Whole
+                              // portfolio" on every other row would turn the
+                              // default into something that looks like a
+                              // setting somebody forgot to fill in.
+                              m.portfolio_project_name,
                               updatedByText(m.updated_by, m.updated_at),
                             ]}
                           />
