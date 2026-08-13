@@ -1219,6 +1219,14 @@ export interface ChangeOrderPricing {
 export interface ChangeOrder {
   id: number;
   project_id: number;
+  /** Optional sub-project this CO was raised for. Null = the whole portfolio.
+   *  INTERNAL filing only — the PDF's "Project" line is `project_name`, the
+   *  free-text label the PM types. Settable while draft or pending; approved
+   *  and delivered COs are frozen outright. */
+  portfolio_project_id?: number | null;
+  /** Resolved by the API. Null both when untagged and when the sub-project has
+   *  been deleted. */
+  portfolio_project_name?: string | null;
   co_number: number;
   co_version?: string | null;
   title?: string | null;

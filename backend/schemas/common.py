@@ -1869,6 +1869,12 @@ class ChangeOrderPricing(BaseModel):
 class ChangeOrderOut(ORMModel):
     id: int
     project_id: int
+    # Optional sub-project this CO was raised for. Null = the portfolio as a
+    # whole. INTERNAL filing only — the PDF's "Project" line is `project_name`.
+    portfolio_project_id: Optional[int] = None
+    # Resolved by the API so the list can badge and filter without fetching
+    # every portfolio's sub-projects.
+    portfolio_project_name: Optional[str] = None
     co_number: int
     co_version: Optional[str] = None
     title: Optional[str] = None
@@ -1917,6 +1923,9 @@ class ChangeOrderOut(ORMModel):
 
 class ChangeOrderIn(BaseModel):
     project_id: int
+    # Optional sub-project under that portfolio. Omit or null for a
+    # portfolio-wide change order, which is the default and the common case.
+    portfolio_project_id: Optional[int] = None
     co_version: str = "V1"
     project_name: Optional[str] = None   # editable Project label (snapshot)
     title: Optional[str] = None
@@ -1983,6 +1992,10 @@ class ChangeOrderReject(BaseModel):
 
 class ChangeOrderUpdate(BaseModel):
     expected_version: Optional[int] = None
+    # Pass an id to file this CO against a sub-project, null to put it back on
+    # the portfolio as a whole, omit to leave it alone. Only while the CO is
+    # still editable — approved and delivered ones are frozen outright.
+    portfolio_project_id: Optional[int] = None
     co_version: Optional[str] = None
     project_name: Optional[str] = None
     title: Optional[str] = None
