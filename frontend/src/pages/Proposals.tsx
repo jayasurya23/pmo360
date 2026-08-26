@@ -1524,6 +1524,119 @@ export default function Proposals() {
     setDirty(true);
   }
 
+  /**
+   * Turn a row Price Only, healing the date chain instead of dead-ending.
+   *
+   * The rule is real — a Price Only row carries a price and no dates, so
+   * anything scheduled off it has nothing to follow, and the server refuses the
+   * save. But refusing here and telling the PM to "repoint those tasks first"
+   * made the checkbox unusable: in a normal finish-to-start schedule nearly
+   * every task is the predecessor of the next one, so ~90% of rows dead-ended
+   * and only milestones (which nothing follows) could be ticked at all.
+   *
+   * What the PM means by Price Only is "this line is a price, not a scheduled
+   * task" — and the correct schedule edit for that is to splice the row out of
+   * the chain: whatever followed it now follows whatever it followed. That is
+   * exactly the repoint the old message asked for by hand, so we offer to do it
+   * rather than describe it.
+   *
+   * Still refused when a dependent is LOCKED: predecessor_id is in the server's
+   * _LOCKED_PROTECTED_FIELDS, so a repoint we applied there would be silently
+   * discarded on save and the PM would be left with the same broken link and no
+   * error. Better to say so up front.
+   */
+  async function setPriceOnly(key: string, node: ProposalItemNode) {
+    const dependents = schedulableDependentsOf(node, flat, piIds);
+    if (dependents.length === 0) {
+      updateNode(key, { price_only: true });
+      return;
+    }
+
+    const locked = dependents.filter((d) => d.locked);
+    if (locked.length) {
+      setLinkBanner({
+        tone: "amber",
+        msg:
+          `Can't set “${node.name || `#${node.id}`}” to Price Only — ` +
+          `${nameList(locked)} ${locked.length === 1 ? "is" : "are"} locked, and a locked row's ` +
+          `predecessor can't be changed. Unlock ${locked.length === 1 ? "it" : "them"} first.`,
+      });
+      return;
+    }
+
+    // Splice target: whatever THIS row follows — but walking PAST any anchor
+    // that is itself Price Only, because repointing onto one of those just
+    // moves the violation instead of clearing it. That happens for real: a
+    // milestone or a disabled row may legally sit behind a Price Only row
+    // (nothing schedules off it), and turning THAT row Price Only would hand
+    // its live dependents the illegal anchor.
+    //
+    // Walking is also the honest reading of "splice out": a run of Price Only
+    // rows carries no dates at all, so the first thing downstream can actually
+    // follow is the first dated row above them.
+    //
+    // Null is a legitimate outcome — the chain above is entirely price-only or
+    // the row was its head, so the dependents become heads and start at the
+    // project start. Named in the prompt either way, because it moves dates.
+    const byId = new Map<number, ProposalItemNode>();
+    for (const n of flat) if (n.id != null) byId.set(n.id, n);
+    let target: ProposalItemNode | undefined;
+    {
+      const seen = new Set<number>();   // a malformed tree must not hang the UI
+      let cursor = node.predecessor_id ?? null;
+      while (cursor != null && !seen.has(cursor)) {
+        seen.add(cursor);
+        const cand = byId.get(cursor);
+        if (!cand) break;
+        // Legal for EVERY dependent, not just the first — they can differ in
+        // schedulability, and one illegal link is one refused save.
+        if (dependents.every((d) => predecessorAllowed(cand, d, piIds))) {
+          target = cand;
+          break;
+        }
+        cursor = cand.predecessor_id ?? null;
+      }
+    }
+    const targetLabel = target
+      ? `“${target.name || `#${target.id}`}”`
+      : "the project start";
+
+    const ok = await confirm({
+      title: `Set “${node.name || `#${node.id}`}” to Price Only?`,
+      body:
+        `${nameList(dependents)} ${dependents.length === 1 ? "follows" : "follow"} this row. ` +
+        `A Price Only row has no dates to follow, so ${dependents.length === 1 ? "it" : "they"} ` +
+        `will be repointed to ${targetLabel}.
+
+` +
+        `This changes ${dependents.length === 1 ? "that task's" : "those tasks'"} dates. ` +
+        `Recompute to see the new schedule.`,
+      confirmLabel: "Set Price Only",
+    });
+    if (!ok) return;
+
+    // One pass, so the flag and every repoint land in a single render and a
+    // single undo step — a half-applied splice is the broken state the guard
+    // exists to prevent.
+    const depKeys = new Set(dependents.map((d) => keyOf(d)));
+    setFlat((rows) =>
+      rows.map((n) => {
+        const k = keyOf(n);
+        if (k === key) return cloneRow(n, { price_only: true });
+        if (depKeys.has(k)) return cloneRow(n, { predecessor_id: target?.id ?? null });
+        return n;
+      }),
+    );
+    setDirty(true);
+    setLinkBanner({
+      tone: "green",
+      msg:
+        `“${node.name || `#${node.id}`}” is now Price Only. ` +
+        `${nameList(dependents)} now ${dependents.length === 1 ? "follows" : "follow"} ${targetLabel}. ` +
+        `Recompute to refresh the dates.`,
+    });
+  }
+
   // Client Review Days is an action, not a stored display field: it stamps the
   // duration onto every "client review" node, then persists the value in
   // infoDraft so it survives reloads. 0 and any positive number are valid
@@ -3414,6 +3527,7 @@ export default function Proposals() {
                             onMove={moveRow}
                             onIndent={indentRow}
                             onRefuse={(msg) => setLinkBanner({ tone: "amber", msg })}
+                            onSetPriceOnly={setPriceOnly}
                             piIds={piIds}
                             projectUtil={Number(configDraft.utilization_percent) || 100}
                           />
@@ -4134,6 +4248,7 @@ function Row({
   allNodes,
   keyOf,
   onUpdate,
+  onSetPriceOnly,
   onAdd,
   onDelete,
   onMove,
@@ -4161,6 +4276,9 @@ function Row({
   allNodes: { key: string; node: ProposalItemNode; depth: number }[];
   keyOf: (n: ProposalItemNode) => string;
   onUpdate: (key: string, patch: Partial<ProposalItemNode>) => void;
+  /** Turning Price Only ON goes through the parent: it may need to repoint
+   *  dependents, which is a multi-row edit this component cannot make. */
+  onSetPriceOnly: (key: string, node: ProposalItemNode) => void;
   onAdd: (key: string, mode: "child" | "sibling") => void;
   onDelete: (key: string) => void;
   onMove: (key: string, dir: -1 | 1) => void;
@@ -4668,23 +4786,12 @@ function Row({
       <ToggleCell
         on={node.price_only}
         onToggle={() => {
-          const turningOn = !node.price_only;
-          const dependents = turningOn ? schedulableDependentsOf(node, flat, piIds) : [];
-          if (dependents.length) {
-            onRefuse(
-              `Can't set “${node.name || `#${node.id}`}” to Price Only — ${nameList(dependents)} ` +
-                `${dependents.length === 1 ? "uses" : "use"} it as a predecessor, and a Price Only row has no ` +
-                `schedule dates to follow. Repoint ${dependents.length === 1 ? "that task" : "those tasks"} first.` +
-                // Same caveat the server's refusal carries: predecessor_id is in
-                // _LOCKED_PROTECTED_FIELDS, so on a locked dependent the repoint
-                // we just asked for is silently discarded on save.
-                (dependents.some((d) => d.locked)
-                  ? " Unlock the row first — a locked row's predecessor can't be changed."
-                  : ""),
-            );
-            return;
-          }
-          onUpdate(rowKey, { price_only: turningOn });
+          // Turning OFF is always safe — the row regains dates, so nothing that
+          // follows it loses an anchor. Turning ON may have to repoint whatever
+          // follows this row, which is a multi-row edit, so it goes to the
+          // parent (setPriceOnly) where the whole tree is in scope.
+          if (node.price_only) return onUpdate(rowKey, { price_only: false });
+          onSetPriceOnly(rowKey, node);
         }}
       />
       <ToggleCell
