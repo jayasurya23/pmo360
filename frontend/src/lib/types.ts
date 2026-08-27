@@ -1453,3 +1453,33 @@ export interface ClientContactImportResult {
    *  they are counted in `imported`, not instead of it. */
   unmatched: string[];
 }
+
+/** An RFI pulled from monday.com, or a snapshot stored on a meeting.
+ *  `id` is present only once saved. */
+export interface MeetingRfi {
+  id?: number;
+  monday_item_id?: number | null;
+  monday_project_code?: string | null;
+  /** Which sub-project's table this prints in. null = portfolio-wide. */
+  portfolio_project_id?: number | null;
+  portfolio_project_name?: string | null;
+  /** The Monday project it came from — shown when one of ours draws from
+   *  several (Coal City 1 / 2 / 3). */
+  monday_project_name?: string | null;
+  name: string;
+  item_equipment?: string | null;
+  description?: string | null;
+  question?: string | null;
+  context?: string | null;
+  status?: string | null;
+  /** Internal routing label. Shown in the app, never printed for a client. */
+  response_owner?: string | null;
+  discipline?: string | null;
+  equipment_type?: string | null;
+  assigned_to?: string | null;
+  date_submitted?: string | null;
+  response_needed_by?: string | null;
+  date_completed?: string | null;
+  snapshot_at?: string | null;
+  order_index?: number | null;
+}

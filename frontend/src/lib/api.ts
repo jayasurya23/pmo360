@@ -1,4 +1,5 @@
 import axios from "axios";
+import type { MeetingRfi } from "@/lib/types";
 import type {
   Client,
   Project,
@@ -1805,3 +1806,63 @@ function toImportResult(raw: unknown): ClientContactImportResult {
     }),
   };
 }
+
+// ---------- monday.com ----------
+export interface MondayStatus {
+  configured: boolean;
+  error?: string | null;
+  project_count: number;
+  mapped_count: number;
+}
+/** One PMO 360 row a Monday project is (or could be) linked to. */
+export interface MondayTarget {
+  kind: "portfolio" | "project";
+  id: number;
+  name: string;
+  client_name?: string | null;
+  /** Set for kind="project" — the portfolio it sits under. */
+  portfolio_name?: string | null;
+}
+export interface MondayProject {
+  monday_item_id: number;
+  name: string;
+  project_code?: string | null;
+  client_name?: string | null;
+  project_site?: string | null;
+  contract_status?: string | null;
+  /** Many, because one Monday project can cover several of ours. */
+  linked: MondayTarget[];
+  /** Name matches we would propose; empty once anything is linked. */
+  suggestions: MondayTarget[];
+}
+export interface AutoMapResult {
+  applied: string[];
+  skipped_ambiguous: string[];
+  skipped_no_match: string[];
+  skipped_already_linked: string[];
+}
+
+export const mondayStatus = () =>
+  apiClient.get<MondayStatus>("/monday/status").then((r) => r.data);
+export const listMondayProjects = () =>
+  apiClient.get<MondayProject[]>("/monday/projects").then((r) => r.data);
+export const setMondayMapping = (payload: {
+  monday_item_id: number;
+  project_code?: string | null;
+  kind: "portfolio" | "project";
+  id: number;
+}) => apiClient.post<MondayProject>("/monday/mapping", payload).then((r) => r.data);
+/** Removes ONE link. monday_item_id is required so dropping one of several
+ *  linked Monday projects cannot take its siblings with it. */
+export const clearMondayMapping = (params: {
+  kind: "portfolio" | "project";
+  id: number;
+  monday_item_id: number;
+}) => apiClient.delete("/monday/mapping", { params });
+export const autoMapMonday = () =>
+  apiClient.post<AutoMapResult>("/monday/automap").then((r) => r.data);
+/** RFIs for a portfolio, already grouped by the sub-project they print under. */
+export const listPortfolioRfis = (projectId: number) =>
+  apiClient
+    .get<MeetingRfi[]>("/monday/rfis", { params: { project_id: projectId } })
+    .then((r) => r.data);

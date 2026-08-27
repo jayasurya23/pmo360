@@ -31,6 +31,7 @@
  * the endpoints underneath are permission-gated server-side.
  */
 import { useEffect, useMemo, useState } from "react";
+import MondayMappingPanel from "@/components/admin/MondayMappingPanel";
 import { useSearchParams } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import SaveStatus from "@/components/SaveStatus";
@@ -49,7 +50,7 @@ import {
 import type { Project } from "@/lib/types";
 import clsx from "clsx";
 
-type TabKey = "preferences" | "users" | "clients";
+type TabKey = "preferences" | "users" | "clients" | "monday";
 
 const DEFAULT_PREFS: UserPreferences = {
   default_project_id: null,
@@ -174,9 +175,11 @@ export default function Settings() {
   const tab: TabKey =
     requestedTab === "clients"
       ? "clients"
-      : requestedTab === "users" && canManageUsers
-        ? "users"
-        : "preferences";
+      : requestedTab === "monday"
+        ? "monday"
+        : requestedTab === "users" && canManageUsers
+          ? "users"
+          : "preferences";
 
   function selectTab(next: TabKey) {
     setParams(
@@ -203,7 +206,9 @@ export default function Settings() {
     <div className="space-y-[18px]">
       <PageHeader
         kicker={
-          tab === "users"
+          tab === "monday"
+            ? "link monday.com projects to portfolios and projects here · RFIs follow the links"
+            : tab === "users"
             ? "who can reach what · changes here affect everyone"
             : tab === "clients"
               ? "contacts, and the organisations they belong to"
@@ -239,6 +244,9 @@ export default function Settings() {
         )}
         <TabBtn active={tab === "clients"} onClick={() => selectTab("clients")}>
           Clients
+        </TabBtn>
+        <TabBtn active={tab === "monday"} onClick={() => selectTab("monday")}>
+          monday.com
         </TabBtn>
       </div>
 
@@ -424,6 +432,8 @@ export default function Settings() {
           endpoint behind the grid refuses anybody else — an empty tab that
           errors on open is worse than no tab. */}
       {tab === "users" && <AdminUsersCard />}
+
+      {tab === "monday" && <MondayMappingPanel />}
 
       {/* ---------- Clients ----------
           Contacts first: it is the list people come here to search, and the
