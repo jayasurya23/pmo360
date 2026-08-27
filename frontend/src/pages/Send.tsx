@@ -18,7 +18,7 @@ import { fetchMeetingDocBlob, saveMeetingDoc } from "@/lib/documents";
 import type { MeetingDetail } from "@/lib/types";
 import { useApp } from "@/lib/state";
 import { useAuth } from "@/auth/useAuth";
-import { sendMail, blobToBase64 } from "@/lib/graph";
+import { sendMail, blobToBase64, isStagingHost, EMAIL_BLOCKED_NOTE } from "@/lib/graph";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
@@ -680,7 +680,7 @@ function ComposeEmailSection({
             type="button"
             className="btn-primary"
             onClick={() => void handleGraphSend()}
-            disabled={!ready || sending || !isAuthenticated}
+            disabled={!ready || sending || !isAuthenticated || isStagingHost()}
             title={
               isAuthenticated
                 ? "Sends directly via Microsoft Graph from your mailbox — PDF attached automatically."

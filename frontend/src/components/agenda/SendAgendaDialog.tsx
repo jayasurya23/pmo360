@@ -23,7 +23,7 @@ import { createPortal } from "react-dom";
 import { format, parseISO } from "date-fns";
 
 import { generateAgendaDoc, fetchMyPreferences } from "@/lib/api";
-import { sendMail, blobToBase64 } from "@/lib/graph";
+import { sendMail, blobToBase64, isStagingHost, EMAIL_BLOCKED_NOTE } from "@/lib/graph";
 import { useAuth } from "@/auth/useAuth";
 import type {
   Attendee,
@@ -529,7 +529,7 @@ export default function SendAgendaDialog({ open, onClose, payload }: Props) {
             <button
               type="button"
               onClick={handleGraphSend}
-              disabled={!ready || !isAuthenticated}
+              disabled={!ready || !isAuthenticated || isStagingHost()}
               className="btn-primary text-xs"
               title={
                 isAuthenticated

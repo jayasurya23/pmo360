@@ -34,7 +34,7 @@ import {
 } from "@/lib/api";
 import type { ChangeOrder } from "@/lib/types";
 import { useAuth } from "@/auth/useAuth";
-import { sendMail, blobToBase64 } from "@/lib/graph";
+import { sendMail, blobToBase64, isStagingHost, EMAIL_BLOCKED_NOTE } from "@/lib/graph";
 import { format, parseISO } from "date-fns";
 import clsx from "clsx";
 
@@ -2906,7 +2906,7 @@ function CoEmailModal({
           <button
             className="btn-primary"
             onClick={() => void send()}
-            disabled={sending || delivered || !to.trim() || !isAuthenticated}
+            disabled={sending || delivered || !to.trim() || !isAuthenticated || isStagingHost()}
             title={
               isAuthenticated
                 ? "Send via Microsoft Graph from your mailbox — PDF attached."

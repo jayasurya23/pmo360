@@ -4,6 +4,7 @@ import { useAuth } from "@/auth/useAuth";
 import { useEffect, useState, useRef, Suspense } from "react";
 import clsx from "clsx";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import { isStagingHost, EMAIL_BLOCKED_NOTE } from "@/lib/graph";
 import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
 import DeletePortfolioDialog from "@/components/admin/DeletePortfolioDialog";
 import ManageTeamDialog from "@/components/admin/ManageTeamDialog";
@@ -163,6 +164,23 @@ export default function Layout() {
     <div className="min-h-screen bg-surface-page text-brand-black flex flex-col">
       {/* Brand rule across the very top of the viewport. */}
       <div className="h-[3px] bg-brand-red" />
+      {/* Staging marker. Staging runs the SAME image and the SAME real data as
+          production, so without this the two are indistinguishable on screen —
+          and the first thing anyone does with an identical-looking app is trust
+          it. It also explains the disabled send buttons, which would otherwise
+          read as broken rather than deliberate. */}
+      {isStagingHost() && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 bg-brand-gold/20 px-4 py-1.5 text-center text-[12px] leading-snug text-brand-black"
+        >
+          <span className="font-bold uppercase tracking-[0.1em]">Staging</span>
+          <span className="text-brand-gray">
+            Copy of production data — changes here do not reach production.
+          </span>
+          <span className="text-brand-gray">{EMAIL_BLOCKED_NOTE}</span>
+        </div>
+      )}
       <TopNav
         admin={{
           onNewPortfolio: () => setShowNewPortfolio(true),
