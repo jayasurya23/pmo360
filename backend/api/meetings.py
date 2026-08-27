@@ -16,7 +16,7 @@ from llm.providers import (
     ParsedDiscussionPoint, ParsedActionItem,
 )
 from schemas.common import (
-    MeetingSummary, MeetingDetail, MeetingSaveRequest,
+    MeetingSummary, MeetingDetail, MeetingSaveRequest, MeetingRfiOut,
     DiscussionPointOut, ParsedDiscussionPointOut, MeetingMetaUpdate,
 )
 
@@ -67,6 +67,18 @@ def _serialize_meeting(m: Meeting) -> MeetingDetail:
         # editor — and the next save would recreate it here, leaving the same
         # action live in two portfolios at once.
         raised_actions=sorted(m.client_facing_actions, key=lambda a: a.id),
+        # Ordered by order_index via the relationship. The name is resolved off
+        # the lazy="joined" relationship, so the editor can label each row's
+        # group without a second request.
+        rfis=[
+            MeetingRfiOut(
+                **{c.name: getattr(r, c.name) for c in r.__table__.columns},
+                portfolio_project_name=(
+                    r.portfolio_project.name if r.portfolio_project else None
+                ),
+            )
+            for r in m.rfis
+        ],
         meeting_deliverables=sorted(m.meeting_deliverables, key=lambda d: d.order_index),
         # Backref from MeetingAttachment — newest first so the UI shows the
         # most recently uploaded file on top without resorting client-side.
@@ -183,6 +195,7 @@ def save_meeting(
             # field. Without this an older client — or any caller that omits it
             # — would silently untag the meeting on every save.
             sub_project_sent="portfolio_project_id" in payload.model_fields_set,
+            rfis=[r.model_dump() for r in payload.rfis],
         )
         meeting.version = (meeting.version or 1) + 1
     else:
@@ -197,6 +210,7 @@ def save_meeting(
             deliverables=deliverables,
             actor_id=actor_id,
             portfolio_project_id=payload.portfolio_project_id,
+            rfis=[r.model_dump() for r in payload.rfis],
         )
         # version defaults to 1 on insert via the column default
 

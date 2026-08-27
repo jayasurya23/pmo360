@@ -622,6 +622,59 @@ class MeetingAttachmentOut(ORMModel):
 
 
 # ---------- Meetings ----------
+class MeetingRfiIn(BaseModel):
+    """One RFI picked for a meeting. A SNAPSHOT — the client sends the values it
+    displayed, and those are what the minutes print, from then on."""
+    monday_item_id: Optional[int] = None
+    monday_project_code: Optional[str] = None
+    #: Which sub-project's table this prints in. None = portfolio-wide.
+    portfolio_project_id: Optional[int] = None
+    name: str
+    item_equipment: Optional[str] = None
+    description: Optional[str] = None
+    question: Optional[str] = None
+    context: Optional[str] = None
+    status: Optional[str] = None
+    #: Internal routing label from monday. Stored so the app can show it; never
+    #: printed on the client-facing minutes.
+    response_owner: Optional[str] = None
+    discipline: Optional[str] = None
+    equipment_type: Optional[str] = None
+    assigned_to: Optional[str] = None
+    #: ISO strings from the browser; coerced server-side. A bad value drops to
+    #: null rather than failing the save over one field.
+    date_submitted: Optional[str] = None
+    response_needed_by: Optional[str] = None
+    date_completed: Optional[str] = None
+
+
+class MeetingRfiOut(ORMModel):
+    id: int
+    monday_item_id: Optional[int] = None
+    monday_project_code: Optional[str] = None
+    portfolio_project_id: Optional[int] = None
+    #: Resolved by the API so the editor can label each row's group without a
+    #: second request.
+    portfolio_project_name: Optional[str] = None
+    name: str
+    item_equipment: Optional[str] = None
+    description: Optional[str] = None
+    question: Optional[str] = None
+    context: Optional[str] = None
+    status: Optional[str] = None
+    response_owner: Optional[str] = None
+    discipline: Optional[str] = None
+    equipment_type: Optional[str] = None
+    assigned_to: Optional[str] = None
+    date_submitted: Optional[date] = None
+    response_needed_by: Optional[date] = None
+    date_completed: Optional[date] = None
+    #: When the snapshot was taken, so the UI can say how stale it is rather
+    #: than implying these values are live.
+    snapshot_at: Optional[datetime] = None
+    order_index: Optional[int] = None
+
+
 class MeetingSummary(ORMModel):
     id: int
     project_id: int
@@ -653,6 +706,8 @@ class MeetingDetail(MeetingSummary):
     agenda_items: list[AgendaItemOut] = Field(default_factory=list)
     discussion_points: list[DiscussionPointOut] = Field(default_factory=list)
     raised_actions: list[ActionItemOut] = Field(default_factory=list)
+    #: RFI snapshots, in the order they will print.
+    rfis: list[MeetingRfiOut] = Field(default_factory=list)
     meeting_deliverables: list[MeetingDeliverableOut] = Field(default_factory=list)
     attachments: list[MeetingAttachmentOut] = Field(default_factory=list)
 
@@ -730,6 +785,9 @@ class MeetingSaveRequest(BaseModel):
     raw_notes: Optional[str] = ""
     closing_remarks: Optional[str] = None
     deliverables: list[DeliverableInput] = Field(default_factory=list)
+    #: RFIs picked for this meeting. Top-level rather than inside `parsed`
+    #: because they are CHOSEN, like deliverables — not extracted from notes.
+    rfis: list[MeetingRfiIn] = Field(default_factory=list)
     parsed: ParsedMeetingOut
 
 

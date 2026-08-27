@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from db.models import (
     Meeting, MeetingAttendee, AgendaItem, DiscussionPoint, ActionItem,
     PortfolioProject, Project, ProjectAttendee, Deliverable, MeetingDeliverable,
-    GeneratedDocument,
+    GeneratedDocument, MeetingRFI,
 )
 from db.repository import (
     upsert_project_attendee, latest_meeting, open_actions, all_actions,
@@ -52,10 +52,23 @@ def parse_notes_with_ai(
     )
 
 
+def _as_date(v):
+    """Accept a date, an ISO string, or None. RFI dates arrive from the browser
+    as ISO strings and from a direct call as dates; a bad value drops to None
+    rather than failing a save over one field."""
+    if v is None or isinstance(v, date):
+        return v
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
+
+
 def _write_meeting_children(session: Session, meeting: Meeting,
                             project: Project, parsed: ParsedMeeting,
                             deliverables: Optional[list[dict]] = None,
-                            actor_id: Optional[int] = None) -> None:
+                            actor_id: Optional[int] = None,
+                            rfis: Optional[list[dict]] = None) -> None:
     # Build an email lookup keyed on (lower full_name, initials) so we can
     # carry roster-stored emails through to MeetingAttendee.email without
     # an extra round-trip per attendee.
@@ -183,6 +196,55 @@ def _write_meeting_children(session: Session, meeting: Meeting,
             created_by_id=actor_id, updated_by_id=actor_id,
         ))
 
+    # ---- RFI snapshots ----
+    # Copied in from monday.com at save time rather than read live. Minutes are
+    # a record of a conversation on a date: a PDF regenerated next month has to
+    # match the one the client received, and a live read would rewrite history
+    # every time somebody edited a status in Monday.
+    #
+    # The same sub-project validity check as action items above, for the same
+    # reason — a stale id must DROP THE TAG, never fail the save. Losing the
+    # minutes over a piece of metadata is the worse outcome, and the RFI still
+    # prints, just in the portfolio-wide table.
+    seen_rfi: set = set()
+    for idx, r in enumerate(rfis or []):
+        name = (r.get("name") or "").strip()
+        if not name:
+            continue
+        sub_id = r.get("portfolio_project_id")
+        if sub_id is not None and sub_id not in valid_sub_projects:
+            sub_id = None
+        # The unique key is (meeting, monday item, sub-project). Deduping here
+        # too, because a payload that repeats a pair would otherwise raise an
+        # IntegrityError on Postgres and lose the whole save — and SQLite,
+        # which does not enforce it, would silently store the duplicate and
+        # print the RFI twice.
+        key = (r.get("monday_item_id"), sub_id)
+        if r.get("monday_item_id") is not None and key in seen_rfi:
+            continue
+        seen_rfi.add(key)
+        session.add(MeetingRFI(
+            meeting_id=meeting.id,
+            portfolio_project_id=sub_id,
+            monday_item_id=r.get("monday_item_id"),
+            monday_project_code=r.get("monday_project_code"),
+            name=name,
+            item_equipment=r.get("item_equipment"),
+            description=r.get("description"),
+            question=r.get("question"),
+            context=r.get("context"),
+            status=r.get("status"),
+            response_owner=r.get("response_owner"),
+            discipline=r.get("discipline"),
+            equipment_type=r.get("equipment_type"),
+            assigned_to=r.get("assigned_to"),
+            date_submitted=_as_date(r.get("date_submitted")),
+            response_needed_by=_as_date(r.get("response_needed_by")),
+            date_completed=_as_date(r.get("date_completed")),
+            snapshot_at=datetime.utcnow(),
+            order_index=idx,
+        ))
+
 
 def _try_generate_summary(parsed: ParsedMeeting, project: Project,
                           closing_remarks: str = "") -> Optional[str]:
@@ -231,6 +293,7 @@ def save_parsed_meeting(
     deliverables: Optional[list[dict]] = None,
     actor_id: Optional[int] = None,
     portfolio_project_id: Optional[int] = None,
+    rfis: Optional[list[dict]] = None,
 ) -> Meeting:
     meeting = Meeting(
         project_id=project.id,
@@ -251,7 +314,8 @@ def save_parsed_meeting(
     session.add(meeting)
     session.flush()
     _write_meeting_children(session, meeting, project, parsed,
-                            deliverables=deliverables, actor_id=actor_id)
+                            deliverables=deliverables, actor_id=actor_id,
+                            rfis=rfis)
     session.flush()
     return meeting
 
@@ -267,6 +331,7 @@ def update_parsed_meeting(
     actor_id: Optional[int] = None,
     portfolio_project_id: Optional[int] = None,
     sub_project_sent: bool = False,
+    rfis: Optional[list[dict]] = None,
 ) -> Meeting:
     meeting.meeting_date = meeting_date
     if title:
@@ -301,6 +366,12 @@ def update_parsed_meeting(
     # time somebody re-saved these minutes.
     for child in list(meeting.client_facing_actions):
         session.delete(child)
+    # RFIs are rebuilt from the payload like the rest, so they must be torn
+    # down with it. Without this every re-save appends a second copy of every
+    # snapshot — and on Postgres the unique key turns that into a failed save
+    # instead of a duplicate, so the meeting simply stops saving.
+    for child in list(meeting.rfis):
+        session.delete(child)
     for md in list(meeting.meeting_deliverables):
         deliv = md.deliverable
         session.delete(md)
@@ -309,7 +380,8 @@ def update_parsed_meeting(
     session.flush()
 
     _write_meeting_children(session, meeting, meeting.project, parsed,
-                            deliverables=deliverables, actor_id=actor_id)
+                            deliverables=deliverables, actor_id=actor_id,
+                            rfis=rfis)
     session.flush()
     return meeting
 
