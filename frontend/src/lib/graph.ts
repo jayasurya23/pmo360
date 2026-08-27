@@ -72,7 +72,44 @@ function splitRecipients(raw: string): { emailAddress: { address: string } }[] {
     .map((address) => ({ emailAddress: { address } }));
 }
 
+/* ============================================================
+ * Staging email guard
+ *
+ * There is no server-side email in this app: every send is a delegated
+ * POST /me/sendMail from the PM's own browser, as the signed-in user. So
+ * nothing in the backend, the container config or the database can stop a
+ * staging click from putting real mail in a real client's inbox — the request
+ * never touches our server.
+ *
+ * Prod and staging run the SAME image on purpose, so a build-time flag cannot
+ * tell them apart. The hostname is the only signal available at runtime.
+ *
+ * The check lives inside sendMail rather than only on the buttons, and that is
+ * the point: there are five call sites today and the next one will not
+ * remember this. A disabled button is UX; this is the boundary.
+ * ============================================================ */
+
+/** True when this page is served by the staging environment. */
+export function isStagingHost(): boolean {
+  if (typeof window === "undefined") return false;
+  return /(^|[.-])staging([.-]|$)/i.test(window.location.hostname);
+}
+
+/** Shown on the disabled send controls so the block never looks like a bug. */
+export const EMAIL_BLOCKED_NOTE =
+  "Email is disabled in staging — sends would go to real recipients from your own mailbox.";
+
+export class EmailBlockedError extends Error {
+  constructor() {
+    super(EMAIL_BLOCKED_NOTE);
+    this.name = "EmailBlockedError";
+  }
+}
+
 export async function sendMail(args: SendMailArgs, token: string): Promise<void> {
+  // Refuse before building the payload, so a blocked send costs nothing and
+  // cannot half-happen.
+  if (isStagingHost()) throw new EmailBlockedError();
   const payload = {
     message: {
       subject: args.subject,

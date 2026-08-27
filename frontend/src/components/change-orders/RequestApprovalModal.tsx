@@ -39,7 +39,7 @@ import {
 } from "@/lib/api";
 import type { ChangeOrder } from "@/lib/types";
 import { useAuth } from "@/auth/useAuth";
-import { sendMail } from "@/lib/graph";
+import { sendMail, isStagingHost, EMAIL_BLOCKED_NOTE } from "@/lib/graph";
 
 /**
  * The absolute URL an approver clicks. Origin + the CO route + the id.
@@ -631,7 +631,7 @@ export default function RequestApprovalModal({ co, onClose, onRequested }: Props
               <button
                 className="btn-primary px-3 py-1.5 text-xs"
                 onClick={() => void recordAndEmail()}
-                disabled={busy}
+                disabled={busy || isStagingHost()}
               >
                 {busy ? "Sending…" : "Try the email again"}
               </button>
@@ -692,7 +692,7 @@ export default function RequestApprovalModal({ co, onClose, onRequested }: Props
               <button
                 className="btn-primary"
                 onClick={() => void recordAndEmail()}
-                disabled={!canAct || !isAuthenticated}
+                disabled={!canAct || !isAuthenticated || isStagingHost()}
                 title={
                   isAuthenticated
                     ? "Records the request, then emails it from your mailbox."
