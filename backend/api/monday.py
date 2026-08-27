@@ -64,6 +64,32 @@ class MondayProjectOut(BaseModel):
     suggestions: list[MappingTargetOut] = []
 
 
+class RfiOut(BaseModel):
+    """One RFI, already resolved to the sub-project whose table it prints in."""
+    monday_item_id: int
+    name: str
+    item_equipment: Optional[str] = None
+    description: Optional[str] = None
+    question: Optional[str] = None
+    context: Optional[str] = None
+    status: Optional[str] = None
+    response_owner: Optional[str] = None      # INTERNAL — never printed for a client
+    discipline: Optional[str] = None
+    equipment_type: Optional[str] = None
+    assigned_to: Optional[str] = None
+    date_submitted: Optional[str] = None
+    response_needed_by: Optional[str] = None
+    date_completed: Optional[str] = None
+    #: Which of OUR sub-projects this RFI belongs under. None = the portfolio as
+    #: a whole, which is where a portfolio-level link lands.
+    portfolio_project_id: Optional[int] = None
+    portfolio_project_name: Optional[str] = None
+    monday_project_code: Optional[str] = None
+    #: The Monday project name, so a PM can see which board it came from when
+    #: one of ours draws from several (Coal City 1 / 2 / 3).
+    monday_project_name: Optional[str] = None
+
+
 class SetMappingIn(BaseModel):
     monday_item_id: int
     project_code: Optional[str] = None
@@ -346,3 +372,107 @@ def automap(db: Session = Depends(get_db), _user=Depends(require_db_user)):
             res.skipped_no_match.append(label)
     db.flush()
     return res
+
+@router.get("/rfis", response_model=list[RfiOut])
+def rfis_for_portfolio(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+):
+    """Every RFI reachable from one portfolio, tagged with the sub-project it
+    belongs under.
+
+    Meetings are held at portfolio level, so the picker has to offer everything
+    under that portfolio at once — its own links AND every sub-project's — then
+    let the printed minutes group them. Resolving the grouping HERE rather than
+    in the UI keeps one answer to "which table does this RFI print in", shared
+    by the picker, the PDF and the docx.
+
+    An RFI linked to two Monday projects that both map to the SAME sub-project
+    appears once; one that maps to two DIFFERENT sub-projects appears under
+    each, because it genuinely is on both agendas.
+    """
+    portfolio = db.get(Project, project_id)
+    if portfolio is None:
+        raise HTTPException(404, "Portfolio not found.")
+    if not monday.is_configured():
+        raise HTTPException(
+            503, "monday.com is not connected. Add a MONDAY_API_TOKEN to pull RFIs.",
+        )
+
+    subs = {
+        sp.id: sp for sp in
+        db.query(PortfolioProject).filter(PortfolioProject.portfolio_id == project_id).all()
+    }
+    # monday_item_id -> the sub-project it resolves to (None = portfolio-wide).
+    # A list, not a scalar: the same Monday project can be linked to the
+    # portfolio AND to one of its sub-projects, and both are legitimate.
+    targets: dict[int, list[Optional[int]]] = {}
+    codes: dict[int, Optional[str]] = {}
+    links = (
+        db.query(MondayProjectLink)
+        .filter(
+            (MondayProjectLink.project_id == project_id)
+            | (MondayProjectLink.portfolio_project_id.in_(list(subs) or [-1]))
+        ).all()
+    )
+    for link in links:
+        item = int(link.monday_item_id)
+        targets.setdefault(item, []).append(link.portfolio_project_id)
+        codes.setdefault(item, link.monday_project_code)
+    if not targets:
+        # Nothing mapped yet is not an error — it is the normal state before
+        # somebody visits the mapping screen.
+        return []
+
+    try:
+        all_rfis = monday.list_rfis()
+    except Exception as exc:
+        raise HTTPException(502, f"Could not reach monday.com: {exc}") from exc
+
+    names = {p["monday_item_id"]: p["name"] for p in _safe_projects()}
+    out: list[RfiOut] = []
+    seen: set[tuple[int, Optional[int]]] = set()
+    for r in all_rfis:
+        for item in r["linked_project_ids"]:
+            if item not in targets:
+                continue
+            for sub_id in targets[item]:
+                key = (r["monday_item_id"], sub_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                sub = subs.get(sub_id) if sub_id else None
+                out.append(RfiOut(
+                    monday_item_id=r["monday_item_id"],
+                    name=r["name"],
+                    item_equipment=r.get("item_equipment"),
+                    description=r.get("description"),
+                    question=r.get("question"),
+                    context=r.get("context"),
+                    status=r.get("status"),
+                    response_owner=r.get("response_owner"),
+                    discipline=r.get("discipline"),
+                    equipment_type=r.get("equipment_type"),
+                    assigned_to=r.get("assigned_to"),
+                    date_submitted=str(r["date_submitted"]) if r.get("date_submitted") else None,
+                    response_needed_by=str(r["response_needed_by"]) if r.get("response_needed_by") else None,
+                    date_completed=str(r["date_completed"]) if r.get("date_completed") else None,
+                    portfolio_project_id=sub_id,
+                    portfolio_project_name=sub.name if sub else None,
+                    monday_project_code=codes.get(item),
+                    monday_project_name=names.get(item),
+                ))
+    # Grouped the way the minutes print: portfolio-wide first, then each
+    # sub-project, so the picker and the PDF agree on order without sorting twice.
+    out.sort(key=lambda x: ((x.portfolio_project_name or ""), x.name))
+    return out
+
+
+def _safe_projects() -> list[dict]:
+    """Monday's project list, or an empty list. Used only to LABEL rows, so a
+    failure here must not cost the caller their RFIs."""
+    try:
+        return monday.list_projects()
+    except Exception:
+        return []
