@@ -1,4 +1,4 @@
-"""monday.com link on both project tiers, plus meeting RFI snapshots.
+"""monday.com project links (many-to-many), plus meeting RFI snapshots.
 
 Revision ID: fb6c7d8e9f0a1
 Revises: ea5b6c7d8e9f0
@@ -10,41 +10,48 @@ RFIs are raised and tracked in monday.com, not here, but they get discussed in
 client meetings and belong in the minutes alongside action items. To pull the
 right RFIs for a meeting, our projects have to be linked to Monday's.
 
-WHY THE LINK IS ON BOTH TIERS
------------------------------
-Monday keeps ONE flat "Portfolio" board — 39 items, each a project with a human
-Project ID. That single list maps onto BOTH of our tiers: some Monday projects
-are our portfolios (Payne, Girard, Modern Landfill), and others are
-sub-projects inside one (Gonzo, Raven, Waxwing and Trigo Sol all sit under the
-Sunshare portfolio). Putting the link on only one tier would strand every RFI
-belonging to the other.
+WHY A JOIN TABLE AND NOT A COLUMN
+---------------------------------
+Monday keeps ONE flat "Portfolio" board; we keep Client -> Portfolio ->
+Project. They do not line up, and — this is the part a column cannot express —
+they fail to line up in BOTH directions:
 
-Neither column is unique, on purpose: "Highland South (1 & 2)" is a single
-Monday project covering two of our sub-projects, so both rows carry the same
-monday_item_id. A unique index would refuse a mapping that is simply true.
+  * One Monday project covering SEVERAL of ours. "Highland South (1 & 2)" is a
+    single Monday item; we hold Highland South 1 and Highland South 2.
+  * One of ours covering SEVERAL Monday projects. Monday tracks Coal City 1, 2
+    and 3 IFC as three separate items; one project here must pull all three.
 
-monday_item_id is the join key because it is stable. monday_project_code is
-stored alongside it for display and search, NOT as a key — it is free text in
-Monday and two of the 39 projects had none at all.
+A column on each project row handles only the first. Worse, Monday boards get
+merged and split as work is re-scoped, so a column would force a destructive
+re-mapping every time that happened, with no record of what changed.
+
+The link points at ONE tier — a portfolio or a project, never both — enforced
+by a CHECK constraint. A row with both set would silently double-count RFIs;
+a row with neither would be invisible. Both failures look like data, not errors.
+
+This table is the anchor for monday.com integration generally, not an RFI
+feature. The team is migrating off Smartsheets; KPI reads (task progress,
+timelines, cost) are expected to join through these same rows.
 
 WHY RFIs ARE SNAPSHOTTED
 ------------------------
-meeting_rfis copies the Monday fields in at save time rather than reading them
-live. Minutes are a record of a conversation on a date: a PDF regenerated next
-month must match the one the client received, and a live read would rewrite
-history every time somebody edited a status in Monday. The unique constraint on
+meeting_rfis copies the Monday fields in at save time rather than reading live.
+Minutes record a conversation on a date: a PDF regenerated next month must
+match the one the client received, and a live read would rewrite history every
+time somebody edited a status in Monday. The unique constraint on
 (meeting_id, monday_item_id) makes re-picking an RFI update its snapshot rather
 than print it twice.
 
-portfolio_project_id is what drives the printed layout — meetings happen at
-portfolio level, but each project under the portfolio gets its own RFI table.
-NULL means portfolio-wide, the same default used for actions and meetings.
+portfolio_project_id on the snapshot drives the printed layout — meetings are
+held at portfolio level, but each project under the portfolio gets its own RFI
+table on the minutes. NULL means portfolio-wide, the same default used for
+action items and meetings.
 
 SAFETY
 ------
-Two nullable ADD COLUMNs on existing tables (no rewrite, no backfill, no
-existing column touched) plus one new table. Nothing here can fail on existing
-rows, and no behaviour changes until a project is deliberately mapped.
+Two new tables only. No existing table is altered, no column is added to or
+removed from anything that already holds data, and nothing changes behaviour
+until a project is deliberately linked.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -55,15 +62,36 @@ down_revision: str = "ea5b6c7d8e9f0"
 branch_labels = None
 depends_on = None
 
-_LINKED = ("projects", "portfolio_projects")
-
 
 def upgrade() -> None:
-    for tbl in _LINKED:
-        op.add_column(tbl, sa.Column("monday_item_id", sa.BigInteger(), nullable=True))
-        op.add_column(tbl, sa.Column("monday_project_code", sa.String(length=60), nullable=True))
-        op.create_index(f"ix_{tbl}_monday_item_id", tbl, ["monday_item_id"])
-        op.create_index(f"ix_{tbl}_monday_project_code", tbl, ["monday_project_code"])
+    op.create_table(
+        "monday_project_links",
+        sa.Column("id", sa.Integer(), primary_key=True),
+        sa.Column("monday_item_id", sa.BigInteger(), nullable=False),
+        sa.Column("monday_project_code", sa.String(length=60), nullable=True),
+        sa.Column("project_id", sa.Integer(), sa.ForeignKey("projects.id"), nullable=True),
+        sa.Column("portfolio_project_id", sa.Integer(),
+                  sa.ForeignKey("portfolio_projects.id"), nullable=True),
+        sa.Column("created_at", sa.DateTime(), nullable=True),
+        sa.Column("created_by_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
+        # NULLs compare as distinct, so each constraint governs only the tier it
+        # names — one link per (Monday project, portfolio) and one per
+        # (Monday project, project), which is exactly the intent.
+        sa.UniqueConstraint("monday_item_id", "project_id", name="uq_monday_link_portfolio"),
+        sa.UniqueConstraint("monday_item_id", "portfolio_project_id", name="uq_monday_link_project"),
+        sa.CheckConstraint(
+            "(project_id IS NULL) <> (portfolio_project_id IS NULL)",
+            name="ck_monday_link_exactly_one_target",
+        ),
+    )
+    op.create_index("ix_monday_project_links_monday_item_id",
+                    "monday_project_links", ["monday_item_id"])
+    op.create_index("ix_monday_project_links_monday_project_code",
+                    "monday_project_links", ["monday_project_code"])
+    op.create_index("ix_monday_project_links_project_id",
+                    "monday_project_links", ["project_id"])
+    op.create_index("ix_monday_project_links_portfolio_project_id",
+                    "monday_project_links", ["portfolio_project_id"])
 
     op.create_table(
         "meeting_rfis",
@@ -101,8 +129,11 @@ def downgrade() -> None:
     op.drop_index("ix_meeting_rfis_portfolio_project_id", table_name="meeting_rfis")
     op.drop_index("ix_meeting_rfis_meeting_id", table_name="meeting_rfis")
     op.drop_table("meeting_rfis")
-    for tbl in _LINKED:
-        op.drop_index(f"ix_{tbl}_monday_project_code", table_name=tbl)
-        op.drop_index(f"ix_{tbl}_monday_item_id", table_name=tbl)
-        op.drop_column(tbl, "monday_project_code")
-        op.drop_column(tbl, "monday_item_id")
+    op.drop_index("ix_monday_project_links_portfolio_project_id",
+                  table_name="monday_project_links")
+    op.drop_index("ix_monday_project_links_project_id", table_name="monday_project_links")
+    op.drop_index("ix_monday_project_links_monday_project_code",
+                  table_name="monday_project_links")
+    op.drop_index("ix_monday_project_links_monday_item_id",
+                  table_name="monday_project_links")
+    op.drop_table("monday_project_links")

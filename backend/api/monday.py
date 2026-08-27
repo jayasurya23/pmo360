@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 
 from core.deps import get_db
 from auth import require_db_user
-from db.models import Client, PortfolioProject, Project
+from db.models import Client, MondayProjectLink, PortfolioProject, Project
 from integrations import monday
 
 router = APIRouter(prefix="/api/monday", tags=["monday"])
@@ -113,6 +113,33 @@ def _targets(db: Session) -> list[tuple[str, object, str, Optional[str], Optiona
     return out
 
 
+def _links_by_item(db: Session, targets) -> dict[int, list]:
+    """Existing links, keyed by Monday item id.
+
+    Many-to-many in both directions: one Monday item can appear against several
+    of our rows, and one of our rows can appear under several Monday items.
+    """
+    by_key = {}
+    for kind, row, name, client_name, portfolio_name in targets:
+        by_key[(kind, row.id)] = (kind, row, client_name, portfolio_name)
+    out: dict[int, list] = {}
+    for link in db.query(MondayProjectLink).all():
+        key = ("portfolio", link.project_id) if link.project_id else               ("project", link.portfolio_project_id)
+        hit = by_key.get(key)
+        if hit:
+            out.setdefault(int(link.monday_item_id), []).append(hit)
+    return out
+
+
+def _linked_keys(db: Session) -> set:
+    """(kind, id) pairs that already carry at least one link."""
+    keys = set()
+    for link in db.query(MondayProjectLink).all():
+        keys.add(("portfolio", link.project_id) if link.project_id
+                 else ("project", link.portfolio_project_id))
+    return keys
+
+
 def _as_target(kind, row, client_name, portfolio_name) -> MappingTargetOut:
     return MappingTargetOut(
         kind=kind, id=row.id, name=row.name,
@@ -140,11 +167,7 @@ def monday_status(db: Session = Depends(get_db), _user=Depends(require_db_user))
     Never raises: this drives a Settings panel that has to render an
     explanation when the token is missing or the API is down.
     """
-    mapped = (
-        db.query(Project).filter(Project.monday_item_id.isnot(None)).count()
-        + db.query(PortfolioProject)
-        .filter(PortfolioProject.monday_item_id.isnot(None)).count()
-    )
+    mapped = db.query(MondayProjectLink).count()
     if not monday.is_configured():
         return MondayStatusOut(configured=False, mapped_count=mapped)
     try:
@@ -173,13 +196,9 @@ def list_monday_projects(db: Session = Depends(get_db), _user=Depends(require_db
 
     targets = _targets(db)
     by_name: dict[str, list] = {}
-    linked_by_item: dict[int, list] = {}
     for kind, row, name, client_name, portfolio_name in targets:
         by_name.setdefault(_key(name), []).append((kind, row, client_name, portfolio_name))
-        if row.monday_item_id:
-            linked_by_item.setdefault(int(row.monday_item_id), []).append(
-                (kind, row, client_name, portfolio_name)
-            )
+    linked_by_item = _links_by_item(db, targets)
 
     out: list[MondayProjectOut] = []
     for p in projects:
@@ -205,17 +224,32 @@ def list_monday_projects(db: Session = Depends(get_db), _user=Depends(require_db
 def set_mapping(
     payload: SetMappingIn,
     db: Session = Depends(get_db),
-    _user=Depends(require_db_user),
+    actor=Depends(require_db_user),
 ):
-    """Attach one PMO 360 row to a Monday project.
+    """Link one PMO 360 row to one Monday project.
 
-    Additive, not exclusive: linking a second row to the same Monday project is
-    legitimate ("Highland South (1 & 2)" covers two of our sub-projects), so
-    nothing here clears the other side.
+    Purely additive. Both fan-outs are legitimate and neither clears the other:
+    a Monday project may cover several of our rows ("Highland South (1 & 2)"),
+    and one of our rows may draw from several Monday projects (Coal City 1, 2
+    and 3 IFC). Re-posting an existing pair is a no-op rather than an error, so
+    a double click cannot fail.
     """
     row = _row_for(db, payload.kind, payload.id)
-    row.monday_item_id = payload.monday_item_id
-    row.monday_project_code = payload.project_code
+    filt = {"project_id": row.id} if payload.kind == "portfolio"         else {"portfolio_project_id": row.id}
+    existing = (
+        db.query(MondayProjectLink)
+        .filter_by(monday_item_id=payload.monday_item_id, **filt).first()
+    )
+    if existing is None:
+        db.add(MondayProjectLink(
+            monday_item_id=payload.monday_item_id,
+            monday_project_code=payload.project_code,
+            created_by_id=getattr(actor, "id", None),
+            **filt,
+        ))
+    else:
+        # The code is display text and can be re-keyed in Monday; refresh it.
+        existing.monday_project_code = payload.project_code
     db.flush()
     return _refresh_one(db, payload.monday_item_id)
 
@@ -224,23 +258,36 @@ def set_mapping(
 def clear_mapping(
     kind: str,
     id: int,
+    monday_item_id: int,
     db: Session = Depends(get_db),
     _user=Depends(require_db_user),
 ):
+    """Remove ONE link, not every link on that row.
+
+    monday_item_id is required for exactly that reason: a project drawing from
+    Coal City 1, 2 and 3 must be able to drop one of them without losing the
+    other two.
+    """
     row = _row_for(db, kind, id)
-    row.monday_item_id = None
-    row.monday_project_code = None
-    db.flush()
+    filt = {"project_id": row.id} if kind == "portfolio"         else {"portfolio_project_id": row.id}
+    link = (
+        db.query(MondayProjectLink)
+        .filter_by(monday_item_id=monday_item_id, **filt).first()
+    )
+    if link is not None:
+        db.delete(link)
+        db.flush()
     return None
 
 
 def _refresh_one(db: Session, monday_item_id: int) -> MondayProjectOut:
     """Re-read one Monday project's links for the write response, so the UI does
     not have to refetch the whole board after every click."""
-    linked = []
-    for kind, row, name, client_name, portfolio_name in _targets(db):
-        if row.monday_item_id and int(row.monday_item_id) == int(monday_item_id):
-            linked.append(_as_target(kind, row, client_name, portfolio_name))
+    targets = _targets(db)
+    linked = [
+        _as_target(k, r, c, pf)
+        for k, r, c, pf in _links_by_item(db, targets).get(int(monday_item_id), [])
+    ]
     return MondayProjectOut(monday_item_id=monday_item_id, name="", linked=linked)
 
 
@@ -267,28 +314,34 @@ def automap(db: Session = Depends(get_db), _user=Depends(require_db_user)):
 
     targets = _targets(db)
     by_name: dict[str, list] = {}
-    already = set()
     for kind, row, name, client_name, portfolio_name in targets:
         by_name.setdefault(_key(name), []).append((kind, row))
-        if row.monday_item_id:
-            already.add(int(row.monday_item_id))
+    linked_items = set(_links_by_item(db, targets).keys())
+    linked_rows = _linked_keys(db)
 
     res = AutoMapResult()
     for p in projects:
-        label = f"{p.get('project_code') or '—'} {p['name']}"
-        if p["monday_item_id"] in already:
+        label = f"{p.get('project_code') or '-'} {p['name']}"
+        if p["monday_item_id"] in linked_items:
             res.skipped_already_linked.append(label)
             continue
         cands = by_name.get(_key(p["name"]), [])
+        # A row that a person already linked to something else is not a
+        # candidate: their decision outranks a name match, and re-running this
+        # must never quietly add a second link they did not ask for.
+        cands = [(k, r) for k, r in cands if (k, r.id) not in linked_rows]
         if len(cands) == 1:
             kind, row = cands[0]
-            row.monday_item_id = p["monday_item_id"]
-            row.monday_project_code = p.get("project_code")
+            filt = {"project_id": row.id} if kind == "portfolio"                 else {"portfolio_project_id": row.id}
+            db.add(MondayProjectLink(
+                monday_item_id=p["monday_item_id"],
+                monday_project_code=p.get("project_code"),
+                **filt,
+            ))
+            linked_rows.add((kind, row.id))
             res.applied.append(f"{label}  ->  {kind} '{row.name}'")
         elif len(cands) > 1:
-            res.skipped_ambiguous.append(
-                f"{label}  ({len(cands)} possible matches)"
-            )
+            res.skipped_ambiguous.append(f"{label}  ({len(cands)} possible matches)")
         else:
             res.skipped_no_match.append(label)
     db.flush()
