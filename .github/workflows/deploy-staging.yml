@@ -1,0 +1,104 @@
+# Deploy any branch to STAGING, by hand.
+#
+# WHY THIS EXISTS SEPARATELY FROM deploy.yml
+# ------------------------------------------
+# Staging used to be pinned to a PROD image tag, which meant the only way to
+# change staging was to merge to main and ship production first — exactly
+# backwards, and a real trap: a staging-only change still required a prod
+# deploy. This pipeline builds a branch straight into staging so prod is never
+# touched to test something.
+#
+# Manual only. There is no push trigger on purpose: staging holds a copy of
+# real client data, and nothing should land on it because a branch happened to
+# move.
+#
+# Prod is untouched by this file. Different image repo (pmo360-staging vs
+# pmo360), different container app, different concurrency group.
+
+name: Deploy to staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or SHA to deploy to staging"
+        required: true
+        default: main
+        type: string
+
+permissions:
+  id-token: write # required for azure/login OIDC
+  contents: read
+
+concurrency:
+  # Separate from prod's group so a staging deploy can never queue behind, or
+  # cancel, a production rollout.
+  group: deploy-staging
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPO: pmo360-staging
+  STAGING_APP: pmo360-staging
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    steps:
+      # The workflow itself runs from the default branch, but builds whatever
+      # ref you asked for. Using the input rather than GitHub's branch picker
+      # means a branch that predates this file can still be deployed — the
+      # picker would try to run the workflow definition FROM that branch and
+      # fail to find it.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Record what is being deployed
+        run: |
+          echo "ref:    ${{ inputs.ref }}"
+          echo "commit: $(git rev-parse HEAD)"
+          echo "$(git log -1 --pretty=%s)"
+          echo "NOTE: the container runs 'alembic upgrade head' on boot, so any"
+          echo "new migration on this ref WILL be applied to pmo360_staging."
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build image in ACR
+        # Tagged with the resolved SHA, in a SEPARATE repo from prod so a
+        # staging build can never be mistaken for — or promoted as — a prod
+        # image. No :latest here for the same reason.
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "SHA=$SHA" >> "$GITHUB_ENV"
+          az acr build \
+            --registry "${{ vars.ACR_NAME }}" \
+            --image "${IMAGE_REPO}:${SHA}" \
+            .
+
+      - name: Deploy staging revision
+        # --image only. Env vars and secrets on the staging app (its own
+        # database, its own SharePoint folder) are deliberately NOT touched
+        # here: they are what make staging a sandbox, and a workflow that
+        # re-asserted them could quietly point staging at production.
+        run: |
+          az containerapp update \
+            --name "${STAGING_APP}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --image "${{ vars.ACR_NAME }}.azurecr.io/${IMAGE_REPO}:${SHA}" \
+            --cpu 1.0 --memory 2.0Gi \
+            --min-replicas 1 --max-replicas 1
+
+      - name: Show rollout
+        run: |
+          az containerapp revision list \
+            --name "${STAGING_APP}" \
+            --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+            --query "[?properties.active].{revision:name,created:properties.createdTime,traffic:properties.trafficWeight,state:properties.runningState}" \
+            -o table
+          echo "https://pmo360-staging.gentlebeach-13c88cc2.eastus2.azurecontainerapps.io"
