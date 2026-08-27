@@ -429,10 +429,16 @@ class Meeting(Base):
         work they are not party to — across clients it is a straight
         disclosure. Every client-facing renderer takes this instead.
 
-        Order is preserved from `raised_actions` so the printed table and the
-        AcroForm status fields overlaid on it stay in step; they are matched by
-        position, and a count taken from a different list would misalign every
-        dropdown.
+        Order is preserved from `raised_actions` so the printed rows keep the
+        order they were entered in.
+
+        An earlier version of this docstring claimed the order mattered because
+        AcroForm status dropdowns were overlaid on the table by position. That
+        is not true today: `docgen.pdf_builder.add_status_form_fields` is a
+        no-op that returns its input unchanged, and the only flowable that emits
+        a form widget is used by the pre-meeting AGENDA pdf, never the minutes.
+        Repeated here because the claim sent at least one reader looking for
+        coordinate maths that does not exist.
         """
         return [a for a in self.raised_actions if a.project_id == self.project_id]
 
@@ -1085,9 +1091,25 @@ class MeetingRFI(Base):
     portfolio_project = relationship("PortfolioProject", lazy="joined")
 
     __table_args__ = (
-        # One row per RFI per meeting. Re-picking the same RFI updates the
-        # snapshot instead of printing it twice.
-        UniqueConstraint("meeting_id", "monday_item_id", name="uq_meeting_rfi_item"),
+        # One row per RFI per meeting PER SUB-PROJECT. The sub-project is part
+        # of the key on purpose: /api/monday/rfis deliberately emits the same
+        # RFI under two sub-projects when it is on both their agendas, and the
+        # whole point of this feature is that each sub-project prints its own
+        # table. Keyed on (meeting_id, monday_item_id) alone, that RFI could be
+        # stored once and therefore printed once — silently dropping it from
+        # one of the two tables it was chosen for.
+        #
+        # Re-picking the SAME rfi for the SAME sub-project still updates the
+        # snapshot rather than duplicating it, which is what the constraint was
+        # for originally.
+        #
+        # Note this does nothing for hand-typed RFIs: monday_item_id is
+        # nullable and both SQLite and Postgres allow unlimited duplicate NULLs
+        # in a unique index. Guarding those is the API's job, not the schema's.
+        UniqueConstraint(
+            "meeting_id", "monday_item_id", "portfolio_project_id",
+            name="uq_meeting_rfi_item",
+        ),
     )
 
 

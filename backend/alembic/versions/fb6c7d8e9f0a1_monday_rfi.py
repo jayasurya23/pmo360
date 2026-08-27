@@ -39,8 +39,9 @@ meeting_rfis copies the Monday fields in at save time rather than reading live.
 Minutes record a conversation on a date: a PDF regenerated next month must
 match the one the client received, and a live read would rewrite history every
 time somebody edited a status in Monday. The unique constraint on
-(meeting_id, monday_item_id) makes re-picking an RFI update its snapshot rather
-than print it twice.
+(meeting_id, monday_item_id, portfolio_project_id) makes re-picking an RFI for
+the same sub-project update its snapshot rather than print it twice, while
+still allowing one RFI to appear under two sub-projects that both need it.
 
 portfolio_project_id on the snapshot drives the printed layout — meetings are
 held at portfolio level, but each project under the portfolio gets its own RFI
@@ -116,7 +117,12 @@ def upgrade() -> None:
         sa.Column("date_completed", sa.Date(), nullable=True),
         sa.Column("snapshot_at", sa.DateTime(), nullable=True),
         sa.Column("order_index", sa.Integer(), nullable=True),
-        sa.UniqueConstraint("meeting_id", "monday_item_id", name="uq_meeting_rfi_item"),
+        # Sub-project is part of the key: the same RFI can legitimately appear
+        # under two sub-projects, and each must print in its own table.
+        sa.UniqueConstraint(
+            "meeting_id", "monday_item_id", "portfolio_project_id",
+            name="uq_meeting_rfi_item",
+        ),
     )
     op.create_index("ix_meeting_rfis_meeting_id", "meeting_rfis", ["meeting_id"])
     op.create_index("ix_meeting_rfis_portfolio_project_id", "meeting_rfis",
