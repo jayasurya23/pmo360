@@ -28,10 +28,12 @@ from pathlib import Path
 from typing import Iterable
 
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.table import _Cell
+from docx.table import _Cell, Table as _Table
 
 from db.models import Meeting
+from docgen.pdf_builder import group_rfis_by_subproject
 
 
 TEMPLATE_PATH = (
@@ -52,6 +54,7 @@ SECTION_HEADINGS = (
     "Agenda",
     "Discussion Points",
     "Action Items",
+    "RFIs",
     "Closing Remarks",
 )
 
@@ -559,6 +562,22 @@ def _rewrite_table(doc, heading_text: str, rows_data: list[list[str]],
                    header_labels: "list[str] | None" = None,
                    col_widths: "list[int] | None" = None):
     tbl = _table_after_heading(doc, heading_text)
+    if tbl is None:
+        return
+    _rewrite_table_element(doc, tbl, rows_data, header_labels, col_widths)
+
+
+def _rewrite_table_element(doc, tbl, rows_data: list[list[str]],
+                           header_labels: "list[str] | None" = None,
+                           col_widths: "list[int] | None" = None):
+    """Fill a table we already hold a reference to.
+
+    Split out of _rewrite_table because the RFI section clones one table PER
+    SUB-PROJECT: several of them have the same shape, one has no heading at all
+    (the portfolio-wide table), and _table_after_heading can only find a table
+    by unique heading text. Filling by reference is the only thing that works
+    once there is more than one.
+    """
     if tbl is None or len(tbl.rows) < 2:
         return
     header_el = tbl.rows[0]._tr
@@ -631,6 +650,97 @@ def _gather_deliverable_rows(meeting: Meeting) -> list[list[str]]:
             _fmt_date(d.delivery_date),
         ])
     return rows
+
+
+
+def _keep_with_next(par) -> None:
+    """Bind a paragraph to whatever follows it.
+
+    The template uses w:keepNext nowhere, so a sub-project name would happily
+    sit alone at the foot of a page with its table overleaf — which reads as a
+    project that has no RFIs at all.
+    """
+    pPr = par._p.get_or_add_pPr()
+    if pPr.find(qn("w:keepNext")) is None:
+        el = OxmlElement("w:keepNext")
+        pPr.append(el)
+
+
+def _append_rfi_section(doc, meeting) -> None:
+    """Insert an "RFIs" section with ONE TABLE PER SUB-PROJECT, after Action
+    Items and before Closing Remarks.
+
+    Built by CLONING the Action Items heading and table rather than composing
+    new XML: the template carries the Castillo styling (red header shading, the
+    Jost run properties, the repeating-header flag, the grid) on those elements,
+    and hand-built equivalents drift from the template the moment Gary edits it.
+
+    Every table is filled through _rewrite_table_element by reference, never by
+    heading text — several of them are identical in shape and the portfolio-wide
+    one has no heading at all.
+
+    Skipped entirely when the meeting has no RFIs, matching the PDF. Only
+    sub-projects that HAVE RFIs get a table; a portfolio with eight projects and
+    RFIs on two would otherwise print six bare red header rows.
+    """
+    groups = group_rfis_by_subproject(getattr(meeting, "rfis", None))
+    if not groups:
+        return
+
+    act_heading, _ = _section_range(doc, "Action Items", SECTION_HEADINGS)
+    act_tbl = _table_after_heading(doc, "Action Items")
+    if act_heading is None or act_tbl is None:
+        # The template changed shape. Losing the RFI section is bad; producing a
+        # corrupt document is worse, so bail rather than guess.
+        return
+
+    # Anchor: the last element of the Action Items section, so the RFI block
+    # lands after the table (and its spacer) and before Closing Remarks.
+    anchor = act_tbl._tbl
+    nxt = anchor.getnext()
+    if nxt is not None and nxt.tag == qn("w:p") and not (nxt.xpath("string(.)") or "").strip():
+        anchor = nxt   # keep the blank spacer paragraph with its table
+
+    heading_el = deepcopy(act_heading)
+    anchor.addnext(heading_el)
+    _fill_paragraph_runs(heading_el, [("RFIs", None)])
+    cursor = heading_el
+
+    for group_name, rows in groups:
+        if group_name:
+            sub_el = deepcopy(act_heading)
+            cursor.addnext(sub_el)
+            _fill_paragraph_runs(sub_el, [(group_name, None)])
+            cursor = sub_el
+            for par in doc.paragraphs:
+                if par._element is sub_el:
+                    _keep_with_next(par)
+                    break
+
+        tbl_el = deepcopy(act_tbl._tbl)
+        cursor.addnext(tbl_el)
+        cursor = tbl_el
+
+        data = []
+        for idx, r in enumerate(rows, start=1):
+            # `or ""` on every field: _set_cell_text writes the literal string
+            # "None" for a bare None, and every column here is nullable.
+            # description carries the text in practice — monday's
+            # "Request / Question" is empty on every RFI on the board.
+            data.append([
+                str(idx),
+                r.item_equipment or "",
+                r.description or r.question or "",
+                _fmt_date(r.response_needed_by),
+                (r.status or "").strip(),
+            ])
+        # Same proportions as the Action Items table so the two read as one
+        # document: #=570 Item=2600 Description=4900 Needed=1420 Status=1670.
+        _rewrite_table_element(
+            doc, _Table(tbl_el, doc), data,
+            header_labels=["#", "Item / Equipment", "Description", "Needed by", "Status"],
+            col_widths=[570, 2600, 4900, 1420, 1670],
+        )
 
 
 # ============================================================
@@ -748,6 +858,9 @@ def generate_meeting_minutes_from_template(meeting: Meeting) -> bytes:
     # Compact Due column: smaller font (matches the PDF), so a full m/d/yyyy
     # date fits on one line despite the narrower column.
     _shrink_action_due_font(doc)
+
+    # --- RFIs: one table per sub-project ---
+    _append_rfi_section(doc, meeting)
 
     # --- Closing Remarks ---
     # Keep template's "Thank you to everyone..." text as-is, unless the meeting
