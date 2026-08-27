@@ -9,8 +9,8 @@ rolling action log can track when items were raised vs when they were closed.
 """
 from datetime import datetime, date
 from sqlalchemy import (
-    Column, Integer, String, Text, Date, DateTime, ForeignKey, Boolean, JSON,
-    Float, Index, UniqueConstraint, text, true, false,
+    Column, Integer, BigInteger, String, Text, Date, DateTime, ForeignKey, Boolean,
+    JSON, Float, Index, UniqueConstraint, text, true, false,
 )
 from sqlalchemy.orm import declarative_base, relationship, backref
 
@@ -300,6 +300,33 @@ class Project(Base):
     id = Column(Integer, primary_key=True)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
     name = Column(String(300), nullable=False)
+    # ---- monday.com link ----
+    # THE anchor for monday.com integration, not an RFI-specific field. The
+    # team is migrating off Smartsheets onto Monday, and Monday will supply
+    # progressively more of what this app shows — RFIs first, KPIs (task
+    # progress, timelines, cost) after. Everything that follows joins on this
+    # column, so it is deliberately generic: no RFI concept appears here, and
+    # nothing new should need a second mapping.
+    #
+    # Monday's "Portfolio" board holds one item per project, carrying a human
+    # Project ID ("2512-057").
+    #
+    # BOTH tiers carry this link, because Monday's single flat list maps onto
+    # both of ours: a Monday project is sometimes one of our portfolios (Payne,
+    # Girard) and sometimes a sub-project inside one (Gonzo and Raven both sit
+    # under Sunshare). A mapping that understood only one tier would strand the
+    # other half of the RFIs.
+    #
+    # Deliberately NOT unique. "Highland South (1 & 2)" is a single Monday
+    # project covering two of our sub-projects, so both rows legitimately carry
+    # the same id.
+    #
+    # monday_item_id is the join key and is stable. monday_project_code is the
+    # code people say out loud, stored so it can be shown and searched without a
+    # round trip — but it is NOT the key: it is free text in Monday, and two
+    # projects had none at all when this was built.
+    monday_item_id = Column(BigInteger, nullable=True, index=True)
+    monday_project_code = Column(String(60), nullable=True, index=True)
     scope = Column(Text)
     # Reusable project facts (shown on the CO header, deliverables, etc.).
     location = Column(String(200))    # city / site, e.g. "Lawrenceburg"
@@ -390,6 +417,11 @@ class Meeting(Base):
         cascade="all, delete-orphan"
     )
     meeting_deliverables = relationship("MeetingDeliverable", back_populates="meeting", cascade="all, delete-orphan")
+    rfis = relationship(
+        "MeetingRFI", back_populates="meeting",
+        cascade="all, delete-orphan",
+        order_by="MeetingRFI.order_index",
+    )
 
     # lazy="joined" so listing a portfolio's meetings does not fire one extra
     # query per tagged meeting just to label a badge. No cascade — deleting a
@@ -961,6 +993,71 @@ class TimelineTimeOff(Base):
 # ============================================================
 # Proposal builder (ported Castillo Proposal Generator)
 # ============================================================
+class MeetingRFI(Base):
+    """An RFI discussed in a meeting — a SNAPSHOT taken from monday.com.
+
+    Monday owns RFIs; this table never does. But minutes are a record of what
+    was said on a date, so the fields are copied in at save time rather than
+    fetched at render time. A PDF regenerated next month has to match the one
+    the client received, and a live read would silently rewrite history every
+    time somebody in Monday edited a status. ``monday_item_id`` keeps the thread
+    back to the source, and Refresh re-pulls deliberately.
+
+    ``portfolio_project_id`` is what makes the printed layout work: meetings are
+    held at PORTFOLIO level, but each project under that portfolio gets its own
+    RFI table on the minutes. NULL means the RFI belongs to the portfolio as a
+    whole and prints in an untitled leading table — same default as everywhere
+    else in the app.
+    """
+    __tablename__ = "meeting_rfis"
+    id = Column(Integer, primary_key=True)
+    meeting_id = Column(Integer, ForeignKey("meetings.id"), nullable=False, index=True)
+    # Which project's table this prints in. Not a hard FK requirement of the
+    # snapshot — an RFI can be discussed before its project exists here.
+    portfolio_project_id = Column(
+        Integer, ForeignKey("portfolio_projects.id"), nullable=True, index=True,
+    )
+    # The Monday item this was taken from. Nullable so an RFI can be typed in by
+    # hand during a call and reconciled later — the meeting must never be
+    # blocked on an integration being reachable.
+    monday_item_id = Column(BigInteger, nullable=True, index=True)
+    monday_project_code = Column(String(60))
+
+    # ---- snapshot of the Monday fields, as at save time ----
+    name = Column(String(500), nullable=False)          # RFI title, e.g. "E1300 - Utopian - RFI #10"
+    # The short "what is needed" label — "Utility Study - File", "Racking -
+    # Pile Depth". This is the column the printed table leads with: it is the
+    # only field that reliably reads as a row heading.
+    item_equipment = Column(String(300))                # "Item/Equipment - Castillo Needs"
+    # The detail. Named "description" after its Monday column, and it is the
+    # field that actually carries the text — "Request / Question" is empty on
+    # every RFI on the board today, so nothing may depend on it alone.
+    description = Column(Text)                          # "RFI Overview & Description"
+    question = Column(Text)                             # "Request / Question" (often blank)
+    context = Column(Text)                              # "Context (if needed)"
+    status = Column(String(50))                         # Assigned / In Progress / ...
+    response_owner = Column(String(120))                # INTERNAL — never printed
+    discipline = Column(String(60))                     # Civil / Electrical / Structural
+    equipment_type = Column(String(200))
+    assigned_to = Column(String(200))
+    date_submitted = Column(Date)
+    response_needed_by = Column(Date)
+    date_completed = Column(Date)
+    # When the snapshot was taken, so the UI can say how stale it is rather than
+    # implying these values are live.
+    snapshot_at = Column(DateTime, default=datetime.utcnow)
+    order_index = Column(Integer, default=0)
+
+    meeting = relationship("Meeting", back_populates="rfis")
+    portfolio_project = relationship("PortfolioProject", lazy="joined")
+
+    __table_args__ = (
+        # One row per RFI per meeting. Re-picking the same RFI updates the
+        # snapshot instead of printing it twice.
+        UniqueConstraint("meeting_id", "monday_item_id", name="uq_meeting_rfi_item"),
+    )
+
+
 class PortfolioProject(Base):
     """The user-facing "Project" tier: a site (e.g. "Cobra") that belongs to a
     Portfolio (the ``projects`` table). Proposals link here via
@@ -974,6 +1071,33 @@ class PortfolioProject(Base):
     __tablename__ = "portfolio_projects"
     id = Column(Integer, primary_key=True)
     portfolio_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # ---- monday.com link ----
+    # THE anchor for monday.com integration, not an RFI-specific field. The
+    # team is migrating off Smartsheets onto Monday, and Monday will supply
+    # progressively more of what this app shows — RFIs first, KPIs (task
+    # progress, timelines, cost) after. Everything that follows joins on this
+    # column, so it is deliberately generic: no RFI concept appears here, and
+    # nothing new should need a second mapping.
+    #
+    # Monday's "Portfolio" board holds one item per project, carrying a human
+    # Project ID ("2512-057").
+    #
+    # BOTH tiers carry this link, because Monday's single flat list maps onto
+    # both of ours: a Monday project is sometimes one of our portfolios (Payne,
+    # Girard) and sometimes a sub-project inside one (Gonzo and Raven both sit
+    # under Sunshare). A mapping that understood only one tier would strand the
+    # other half of the RFIs.
+    #
+    # Deliberately NOT unique. "Highland South (1 & 2)" is a single Monday
+    # project covering two of our sub-projects, so both rows legitimately carry
+    # the same id.
+    #
+    # monday_item_id is the join key and is stable. monday_project_code is the
+    # code people say out loud, stored so it can be shown and searched without a
+    # round trip — but it is NOT the key: it is free text in Monday, and two
+    # projects had none at all when this was built.
+    monday_item_id = Column(BigInteger, nullable=True, index=True)
+    monday_project_code = Column(String(60), nullable=True, index=True)
     name = Column(String(300), nullable=False)
     # Reusable site facts (mirror Project's), e.g. for proposal/CO headers.
     location = Column(String(200))
