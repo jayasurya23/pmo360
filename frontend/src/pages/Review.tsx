@@ -14,6 +14,7 @@ import SaveStatus from "@/components/SaveStatus";
 import { SortableList } from "@/components/SortableList";
 import OwnerPicker from "@/components/actions/OwnerPicker";
 import SubProjectSelect from "@/components/SubProjectSelect";
+import RfiPicker from "@/components/RfiPicker";
 import ScheduleItemPicker from "@/components/ScheduleItemPicker";
 import { SaveTemplateModal } from "@/components/TemplateModals";
 import AttachmentsSection from "@/components/AttachmentsSection";
@@ -27,6 +28,7 @@ import {
 } from "@/lib/api";
 import { useAutoSave } from "@/lib/useAutoSave";
 import type {
+  MeetingRfi,
   ParsedAttendee,
   ParsedAgendaItem,
   ParsedDiscussionPoint,
@@ -55,6 +57,8 @@ export default function Review() {
   const [agendaItems, setAgendaItems] = useState<ParsedAgendaItem[]>([]);
   const [discussion, setDiscussion] = useState<ParsedDiscussionPoint[]>([]);
   const [actionItems, setActionItems] = useState<ParsedActionItem[]>([]);
+  /** RFIs discussed in this meeting, snapshotted from monday.com on save. */
+  const [rfis, setRfis] = useState<MeetingRfi[]>([]);
   const [closingRemarks, setClosingRemarks] = useState("");
   /** Sub-project this whole meeting covered. null = the portfolio as a whole,
    *  which is the default and stays the default. Actions raised here inherit
@@ -149,6 +153,7 @@ export default function Review() {
       // A NEW meeting starts untagged. Carrying the last meeting's tag over
       // would silently file an unrelated call under someone else's project.
       setMeetingSubProject(null);
+      setRfis([]);
       return;
     }
     let cancelled = false;
@@ -160,6 +165,9 @@ export default function Review() {
           // Hydrated from the server, so reopening a saved meeting shows the
           // tag it was filed under instead of reverting it on the next save.
           setMeetingSubProject(m.portfolio_project_id ?? null);
+          // Reopening shows the snapshots as saved, not a fresh pull — the
+          // minutes are a record of that day.
+          setRfis((m as any).rfis || []);
         }
       })
       .catch(() => {});
@@ -238,6 +246,8 @@ export default function Review() {
         start_status: d.start_status,
         delivery_date: d.delivery_date,
       })),
+      // Snapshots, not references: what the PM saw is what the minutes print.
+      rfis,
       parsed: {
         attendees,
         agenda_items: agendaItems,
@@ -274,6 +284,9 @@ export default function Review() {
     // also changes — a PM who tags the meeting and nothing else would watch
     // "Saved" appear and still lose it.
     meetingSubProject,
+    // Otherwise adding or removing an RFI would show "Saved" without ever
+    // persisting the change.
+    rfis,
   };
   const autoSave = useAutoSave({
     data: autoSaveData,
@@ -916,6 +929,25 @@ export default function Review() {
           )}
         </div>
       </section>
+
+      {/* ---------- RFIs ----------
+          Only for a real portfolio: the picker resolves RFIs through the
+          monday.com mapping, which is portfolio-scoped. */}
+      {currentProject && (
+        <section className="card">
+          <CardHead
+            title="RFIs"
+            meta={`${rfis.length} ${rfis.length === 1 ? "item" : "items"}`}
+          />
+          <div className="px-5 py-3.5">
+            <RfiPicker
+              portfolioId={currentProject.id}
+              selected={rfis}
+              onChange={setRfis}
+            />
+          </div>
+        </section>
+      )}
 
       {/* ---------- Attachments ----------
           Purely additive — only shown once a draft has been saved so we
