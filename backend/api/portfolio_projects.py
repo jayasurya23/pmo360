@@ -19,7 +19,9 @@ from sqlalchemy.orm import Session
 from core.deps import get_db
 from auth import require_db_user
 from auth.permissions import PROPOSALS, require_permission
-from db.models import PortfolioProject, Project, Proposal
+from db.models import (
+    ActionItem, ChangeOrder, Meeting, PortfolioProject, Project, Proposal,
+)
 from schemas.common import (
     PortfolioProjectOut, PortfolioProjectCreate, PortfolioProjectUpdate,
 )
@@ -136,5 +138,28 @@ def delete_portfolio_project(
         {Proposal.project_id: None, Proposal.is_active_for_project: False},
         synchronize_session=False,
     )
+    # Everything ELSE that can be tagged with this sub-project. Proposals were
+    # the only referent when this handler was written; meetings, action items
+    # and change orders gained the tag later and were never added here, so on
+    # Postgres — where a foreign key defaults to RESTRICT — deleting a
+    # sub-project anybody had tagged raised a ForeignKeyViolation and surfaced
+    # as a 500 with no explanation.
+    #
+    # It passed every local test because LOCAL_DEV_MODE uses SQLite, which does
+    # not enforce foreign keys unless PRAGMA foreign_keys=ON is set, and it is
+    # not. The delete simply succeeded locally and left dangling ids.
+    #
+    # NULLED rather than cascaded on purpose: the tag is optional metadata, and
+    # losing a sub-project must never take a client's meeting minutes, action
+    # items or signed change orders with it. They fall back to portfolio-wide,
+    # which is what they meant before the tag existed.
+    for model, col in (
+        (Meeting, Meeting.portfolio_project_id),
+        (ActionItem, ActionItem.portfolio_project_id),
+        (ChangeOrder, ChangeOrder.portfolio_project_id),
+    ):
+        db.query(model).filter(col == ppid).update(
+            {col: None}, synchronize_session=False,
+        )
     db.delete(pp)
     return None
