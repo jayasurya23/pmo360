@@ -314,6 +314,52 @@ def _draw_header_band(canvas, doc):
 STATUS_OPTIONS = ("Open", "Pending", "Completed", "Cancelled")
 
 
+# RFI statuses come from monday.com and are NOT the action-item vocabulary.
+# Mapped onto the existing pill colours so one document does not use two colour
+# languages for "where does this stand".
+RFI_STATUS_COLORS = {
+    "assigned":    STATUS_COLORS["open"],        # blue  — raised, not started
+    "in progress": STATUS_COLORS["open"],
+    "in review":   STATUS_COLORS["pending"],     # gold  — waiting on somebody
+    "on hold":     STATUS_COLORS["pending"],
+    "completed":   STATUS_COLORS["completed"],   # green
+}
+
+
+def group_rfis_by_subproject(rfis):
+    """Bucket RFIs into (sub_project_name, [rfi, ...]) in first-appearance order.
+
+    A BUCKETING pass, deliberately not itertools.groupby. `Meeting.rfis` is
+    ordered by order_index, not by sub-project, so a PM whose rows interleave
+    two projects would make groupby emit the SAME project's table twice — two
+    tables with the same heading in one client document.
+
+    Keyed on portfolio_project_id rather than the name because two
+    sub-projects under one portfolio may share a name (nothing enforces
+    uniqueness); keying on the name would merge two genuinely different
+    projects into one table.
+
+    None (portfolio-wide) sorts first, matching /api/monday/rfis so the picker
+    and the printed minutes agree on order.
+    """
+    buckets = {}
+    for r in rfis or []:
+        buckets.setdefault(r.portfolio_project_id, []).append(r)
+    def sort_key(item):
+        pid, rows = item
+        if pid is None:
+            return (0, "")
+        name = getattr(rows[0].portfolio_project, "name", None) or ""
+        return (1, name.lower())
+    out = []
+    for pid, rows in sorted(buckets.items(), key=sort_key):
+        name = None
+        if pid is not None:
+            name = getattr(rows[0].portfolio_project, "name", None) or f"Project #{pid}"
+        out.append((name, rows))
+    return out
+
+
 def _status_pill_text(status: str) -> str:
     return (status or "").strip().capitalize() or "Open"
 
@@ -645,6 +691,81 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
             ts.add("BACKGROUND", (4, row_idx), (4, row_idx), bg)
         act_table.setStyle(ts)
         story.append(act_table)
+
+    # ---- RFIs ----
+    # One table PER SUB-PROJECT. Meetings are held at portfolio level, but an
+    # RFI belongs to a specific project under it, and a client reading the
+    # minutes needs them separated the way the work is.
+    #
+    # Only sub-projects that actually HAVE RFIs get a table: a portfolio with
+    # eight projects and RFIs on two would otherwise print six empty
+    # red-header tables. The whole section is skipped when there are no RFIs,
+    # matching how Action Items above behaves.
+    rfi_groups = group_rfis_by_subproject(getattr(meeting, "rfis", None))
+    if rfi_groups:
+        story.append(Paragraph("RFIs", s["section"]))
+        sub_h = _agenda_subheading_style()
+        for group_name, rows in rfi_groups:
+            # Untitled for portfolio-wide, so a portfolio with no sub-projects
+            # gets one clean table rather than a meaningless heading.
+            if group_name:
+                story.append(Paragraph(group_name, sub_h))
+            rfi_data = [["#", "Item / Equipment", "Description", "Needed by", "Status"]]
+            for idx, r in enumerate(rows, start=1):
+                if r.response_needed_by:
+                    try:
+                        needed = r.response_needed_by.strftime("%#m/%#d/%Y")
+                    except ValueError:
+                        needed = r.response_needed_by.strftime("%-m/%-d/%Y")
+                else:
+                    needed = ""
+                # Every field is nullable, and `description` is the one that
+                # actually carries text — monday's "Request / Question" is
+                # empty on every row on the board. `or ""` throughout, because
+                # a bare None reaches the renderer as the string "None".
+                rfi_data.append([
+                    str(idx),
+                    Paragraph(r.item_equipment or "", s["table_body"]),
+                    Paragraph(r.description or r.question or "", s["table_body"]),
+                    Paragraph(needed, s["table_due"]),
+                    Paragraph(_status_pill_text(r.status or ""), s["status_label"]),
+                ])
+            # Sums to 6.8" like Action Items, so the two read as one document.
+            rfi_table = Table(
+                rfi_data,
+                colWidths=[0.35 * inch, 1.6 * inch, 3.0 * inch, 0.85 * inch, 1.0 * inch],
+                repeatRows=1,
+            )
+            rts = TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), DARK_RED),
+                ("TEXTCOLOR",  (0, 0), (-1, 0), white),
+                ("FONTNAME",   (0, 0), (-1, 0), PRIMARY_BOLD),
+                ("FONTSIZE",   (0, 0), (-1, 0), 11),
+                ("FONTNAME",   (0, 1), (-1, -1), PRIMARY_FONT),
+                ("FONTSIZE",   (0, 1), (-1, -1), 10),
+                ("TEXTCOLOR",  (0, 1), (-1, -1), NEAR_BLACK),
+                ("VALIGN",     (0, 0), (-1, 0),  "MIDDLE"),
+                ("VALIGN",     (0, 1), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ("LEFTPADDING",   (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
+                ("LINEBELOW",     (0, 0), (-1, -1), 0.5, LIGHT_GRAY),
+                ("LEFTPADDING",   (3, 1), (4, -1), 4),
+                ("RIGHTPADDING",  (3, 1), (4, -1), 4),
+            ])
+            for row_idx, r in enumerate(rows, start=1):
+                bg = RFI_STATUS_COLORS.get((r.status or "").strip().lower())
+                if bg is not None:
+                    rts.add("BACKGROUND", (4, row_idx), (4, row_idx), bg)
+            rfi_table.setStyle(rts)
+            # Keep a sub-project heading with the head of its table. Nothing
+            # else here uses KeepTogether, but a heading stranded at the foot
+            # of a page reads as a project with no RFIs.
+            if group_name:
+                story.append(KeepTogether([story.pop(), rfi_table]))
+            else:
+                story.append(rfi_table)
 
     # ---- Closing Remarks ----
     story.append(Paragraph("Closing Remarks", s["section"]))
