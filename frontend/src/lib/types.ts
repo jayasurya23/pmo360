@@ -1463,6 +1463,12 @@ export interface MeetingRfi {
   /** Which sub-project's table this prints in. null = portfolio-wide. */
   portfolio_project_id?: number | null;
   portfolio_project_name?: string | null;
+  /** The portfolio it rolls up to, and its client. Set on the browse page,
+   *  where rows from many portfolios share one list and a bare project name
+   *  does not say whose. */
+  project_id?: number | null;
+  project_name?: string | null;
+  client_name?: string | null;
   /** The Monday project it came from — shown when one of ours draws from
    *  several (Coal City 1 / 2 / 3). */
   monday_project_name?: string | null;

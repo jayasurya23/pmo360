@@ -35,6 +35,7 @@ const PRIMARY_NAV: NavItem[] = [
   { to: "/capture", label: "Minutes" },
   { to: "/next-agenda", label: "Pre-Meeting" },
   { to: "/actions", label: "Actions" },
+  { to: "/rfis", label: "RFIs" },
   { to: "/notes", label: "Notes" },
   { to: "/history", label: "History" },
   // Schedule tab retired — the Proposals module covers project schedules. The

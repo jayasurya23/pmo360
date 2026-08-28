@@ -1861,8 +1861,25 @@ export const clearMondayMapping = (params: {
 }) => apiClient.delete("/monday/mapping", { params });
 export const autoMapMonday = () =>
   apiClient.post<AutoMapResult>("/monday/automap").then((r) => r.data);
-/** RFIs for a portfolio, already grouped by the sub-project they print under. */
-export const listPortfolioRfis = (projectId: number) =>
+/** RFIs from monday.com, already tagged with the sub-project they print under.
+ *
+ *  Four widths, narrowest id winning, mirroring the Actions list:
+ *    { portfolio_project_id } -> one project
+ *    { project_id }           -> one portfolio and everything under it
+ *    { client_id }            -> every portfolio under that client
+ *    {}                       -> every mapped RFI in the company
+ */
+export const listPortfolioRfis = (
+  scope: {
+    project_id?: number;
+    client_id?: number;
+    portfolio_project_id?: number;
+  } | number,
+) =>
   apiClient
-    .get<MeetingRfi[]>("/monday/rfis", { params: { project_id: projectId } })
+    .get<MeetingRfi[]>("/monday/rfis", {
+      // A bare number is still accepted so the meeting picker, which only ever
+      // asks for one portfolio, does not have to change.
+      params: typeof scope === "number" ? { project_id: scope } : scope,
+    })
     .then((r) => r.data);

@@ -14,6 +14,7 @@ const Preview = lazy(() => import("./pages/Preview"));
 const Send = lazy(() => import("./pages/Send"));
 const NextAgenda = lazy(() => import("./pages/NextAgenda"));
 const Actions = lazy(() => import("./pages/Actions"));
+const Rfis = lazy(() => import("./pages/Rfis"));
 const Notes = lazy(() => import("./pages/Notes"));
 const History = lazy(() => import("./pages/History"));
 const Schedule = lazy(() => import("./pages/Schedule"));
@@ -66,6 +67,7 @@ export default function App() {
         <Route path="/send" element={<Send />} />
         <Route path="/next-agenda" element={<NextAgenda />} />
         <Route path="/actions" element={<Actions />} />
+        <Route path="/rfis" element={<Rfis />} />
         <Route path="/notes" element={<Notes />} />
         <Route path="/history" element={<History />} />
         <Route path="/schedule" element={<Schedule />} />
