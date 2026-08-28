@@ -238,6 +238,21 @@ input[type="number"] {
   .textarea {
     @apply leading-relaxed;
   }
+  /* Compact select for dense filter bars and table cells.
+     Declared AFTER .select so it wins on equal specificity.
+
+     Do NOT reach for h-7 to shrink one of these: .select carries py-2, and a
+     fixed height smaller than padding + line-height squeezes the text box and
+     clips the label — which is exactly what it did on the RFIs filter bar and
+     the monday.com mapping screen. Shrink the padding instead and let the
+     height follow.
+
+     Width is deliberately NOT set here. .select is w-full, which is right in a
+     form column and wrong in a flex row (every control claims 100% and wraps
+     onto its own line). Callers pass w-auto or w-full for their context. */
+  .select-sm {
+    @apply py-1 text-[12px] leading-5;
+  }
   .label {
     @apply text-[11px] font-semibold uppercase tracking-wider text-brand-gray mb-1.5 block;
   }

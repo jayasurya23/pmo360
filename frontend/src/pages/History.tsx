@@ -446,7 +446,7 @@ export default function History() {
                   them — never see a control that could only ever say "all". */}
               {meetingSubProjects.anyTagged && (
                 <select
-                  className="select h-7 max-w-[14rem] text-[11.5px]"
+                  className="select select-sm w-auto max-w-[14rem]"
                   aria-label="Filter meetings by project"
                   value={projectFilter}
                   onChange={(e) => setProjectFilter(e.target.value)}

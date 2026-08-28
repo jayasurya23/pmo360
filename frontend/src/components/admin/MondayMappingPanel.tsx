@@ -315,7 +315,7 @@ export default function MondayMappingPanel() {
               {/* Always available, even once linked: adding a SECOND link is a
                   real case, not a mistake. */}
               <select
-                className="select h-7 max-w-[26rem] text-[12px]"
+                className="select select-sm w-auto max-w-[26rem]"
                 value=""
                 disabled={busy === row.monday_item_id}
                 aria-label={`Link ${row.name} to a portfolio or project`}

@@ -471,7 +471,7 @@ export default function Review() {
             portfolioId={currentProject.id}
             value={meetingSubProject}
             ariaLabel="Project this meeting covered"
-            className="select h-8 max-w-[16rem] text-[12.5px]"
+            className="select select-sm w-auto max-w-[16rem]"
             onChange={setMeetingSubProject}
           />
           <span className="text-[11.5px] text-brand-gray">
@@ -857,7 +857,7 @@ export default function Review() {
                       portfolioId={currentProject.id}
                       value={a.portfolio_project_id ?? null}
                       ariaLabel={`Project for action ${idx + 1}`}
-                      className="select h-7 w-full text-[11.5px]"
+                      className="select select-sm w-full"
                       onChange={(next) =>
                         setActionItems(
                           actionItems.map((x, i) =>

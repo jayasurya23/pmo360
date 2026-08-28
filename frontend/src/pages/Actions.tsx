@@ -912,7 +912,7 @@ export default function Actions() {
             portfolioId={a.project_id}
             value={a.portfolio_project_id ?? null}
             ariaLabel={`Project for action ${a.id}`}
-            className="select h-7 max-w-[13rem] text-[11.5px]"
+            className="select select-sm w-auto max-w-[13rem]"
             onChange={(next) => {
               setActions((prev) =>
                 prev.map((x) =>

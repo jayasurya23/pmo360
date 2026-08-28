@@ -183,7 +183,7 @@ export default function Rfis() {
         </div>
 
         <select
-          className="select h-7 text-[12px]"
+          className="select select-sm w-auto"
           value={status}
           aria-label="Filter by status"
           onChange={(e) => setStatus(e.target.value)}
@@ -199,7 +199,7 @@ export default function Rfis() {
 
         {disciplines.length > 0 && (
           <select
-            className="select h-7 text-[12px]"
+            className="select select-sm w-auto"
             value={discipline}
             aria-label="Filter by discipline"
             onChange={(e) => setDiscipline(e.target.value)}
