@@ -84,6 +84,11 @@ class RfiOut(BaseModel):
     #: a whole, which is where a portfolio-level link lands.
     portfolio_project_id: Optional[int] = None
     portfolio_project_name: Optional[str] = None
+    #: The portfolio it rolls up to, and its client. The browse page puts rows
+    #: from many portfolios in one list, where "Cobra" alone does not say whose.
+    project_id: Optional[int] = None
+    project_name: Optional[str] = None
+    client_name: Optional[str] = None
     monday_project_code: Optional[str] = None
     #: The Monday project name, so a PM can see which board it came from when
     #: one of ours draws from several (Coal City 1 / 2 / 3).
@@ -374,75 +379,107 @@ def automap(db: Session = Depends(get_db), _user=Depends(require_db_user)):
     return res
 
 @router.get("/rfis", response_model=list[RfiOut])
-def rfis_for_portfolio(
-    project_id: int,
+def list_rfis(
+    project_id: Optional[int] = None,
+    client_id: Optional[int] = None,
+    portfolio_project_id: Optional[int] = None,
     db: Session = Depends(get_db),
     _user=Depends(require_db_user),
 ):
-    """Every RFI reachable from one portfolio, tagged with the sub-project it
-    belongs under.
+    """RFIs from monday.com, at one of four widths.
 
-    Meetings are held at portfolio level, so the picker has to offer everything
-    under that portfolio at once — its own links AND every sub-project's — then
-    let the printed minutes group them. Resolving the grouping HERE rather than
-    in the UI keeps one answer to "which table does this RFI print in", shared
-    by the picker, the PDF and the docx.
+        portfolio_project_id -> that one project
+        project_id           -> that portfolio, and every project under it
+        client_id            -> every portfolio under that client
+        none of them         -> every mapped RFI in the company
 
-    An RFI linked to two Monday projects that both map to the SAME sub-project
-    appears once; one that maps to two DIFFERENT sub-projects appears under
-    each, because it genuinely is on both agendas.
+    Mirrors the Action Items widths so both pages mean the same thing by
+    "scope", with one extra tier: an RFI resolves to a specific project, which
+    an action item does not, so it can be narrowed one level further.
+
+    LIVE from monday.com, deliberately. This is the "what is outstanding right
+    now" view. The snapshots on a meeting are a record of a past conversation
+    and are read from the meeting instead — confusing the two is how somebody
+    starts trusting old minutes to be current.
+
+    Each row is tagged with the sub-project whose table it would print in.
+    Resolving that here keeps ONE answer to "which table does this belong in",
+    shared by the picker, this page, the PDF and the docx.
     """
-    portfolio = db.get(Project, project_id)
-    if portfolio is None:
-        raise HTTPException(404, "Portfolio not found.")
     if not monday.is_configured():
         raise HTTPException(
             503, "monday.com is not connected. Add a MONDAY_API_TOKEN to pull RFIs.",
         )
 
-    subs = {
-        sp.id: sp for sp in
-        db.query(PortfolioProject).filter(PortfolioProject.portfolio_id == project_id).all()
-    }
-    # monday_item_id -> the sub-project it resolves to (None = portfolio-wide).
-    # A list, not a scalar: the same Monday project can be linked to the
-    # portfolio AND to one of its sub-projects, and both are legitimate.
-    targets: dict[int, list[Optional[int]]] = {}
-    codes: dict[int, Optional[str]] = {}
-    links = (
-        db.query(MondayProjectLink)
-        .filter(
+    # Narrowest id wins, same precedence as the Actions list: a stale bookmarked
+    # URL carrying several ids shows the reader LESS than they asked for, never
+    # more, which is the only safe direction for a stale link to be wrong in.
+    q = db.query(MondayProjectLink)
+    subs_q = db.query(PortfolioProject)
+    if portfolio_project_id is not None:
+        q = q.filter(MondayProjectLink.portfolio_project_id == portfolio_project_id)
+        subs_q = subs_q.filter(PortfolioProject.id == portfolio_project_id)
+    elif project_id is not None:
+        sub_ids = [r[0] for r in db.query(PortfolioProject.id)
+                   .filter(PortfolioProject.portfolio_id == project_id).all()]
+        q = q.filter(
             (MondayProjectLink.project_id == project_id)
-            | (MondayProjectLink.portfolio_project_id.in_(list(subs) or [-1]))
-        ).all()
-    )
+            | (MondayProjectLink.portfolio_project_id.in_(sub_ids or [-1]))
+        )
+        subs_q = subs_q.filter(PortfolioProject.portfolio_id == project_id)
+    elif client_id is not None:
+        pf_ids = [r[0] for r in db.query(Project.id)
+                  .filter(Project.client_id == client_id).all()]
+        sub_ids = [r[0] for r in db.query(PortfolioProject.id)
+                   .filter(PortfolioProject.portfolio_id.in_(pf_ids or [-1])).all()]
+        q = q.filter(
+            MondayProjectLink.project_id.in_(pf_ids or [-1])
+            | MondayProjectLink.portfolio_project_id.in_(sub_ids or [-1])
+        )
+        subs_q = subs_q.filter(PortfolioProject.portfolio_id.in_(pf_ids or [-1]))
+
+    links = q.all()
+    if not links:
+        # Nothing mapped in this scope is the normal state before anyone visits
+        # the mapping screen, not an error.
+        return []
+
+    subs = {sp.id: sp for sp in subs_q.all()}
+    portfolios = {p.id: p for p in db.query(Project).all()}
+    clients = {c.id: c.name for c in db.query(Client).all()}
+
+    targets: dict = {}
+    codes: dict = {}
     for link in links:
         item = int(link.monday_item_id)
-        targets.setdefault(item, []).append(link.portfolio_project_id)
+        if link.portfolio_project_id is not None:
+            sp = subs.get(link.portfolio_project_id) or db.get(
+                PortfolioProject, link.portfolio_project_id)
+            if sp is None:
+                continue
+            subs[sp.id] = sp
+            targets.setdefault(item, []).append((sp.id, sp.portfolio_id))
+        else:
+            targets.setdefault(item, []).append((None, link.project_id))
         codes.setdefault(item, link.monday_project_code)
-    if not targets:
-        # Nothing mapped yet is not an error — it is the normal state before
-        # somebody visits the mapping screen.
-        return []
 
     try:
         all_rfis = monday.list_rfis()
     except Exception as exc:
-        raise HTTPException(502, f"Could not reach monday.com: {exc}") from exc
+        raise HTTPException(502, "Could not reach monday.com: {}".format(exc)) from exc
 
     names = {p["monday_item_id"]: p["name"] for p in _safe_projects()}
-    out: list[RfiOut] = []
-    seen: set[tuple[int, Optional[int]]] = set()
+    out = []
+    seen = set()
     for r in all_rfis:
         for item in r["linked_project_ids"]:
-            if item not in targets:
-                continue
-            for sub_id in targets[item]:
-                key = (r["monday_item_id"], sub_id)
+            for sub_id, pf_id in targets.get(item, []):
+                key = (r["monday_item_id"], sub_id, pf_id)
                 if key in seen:
                     continue
                 seen.add(key)
                 sub = subs.get(sub_id) if sub_id else None
+                pf = portfolios.get(pf_id)
                 out.append(RfiOut(
                     monday_item_id=r["monday_item_id"],
                     name=r["name"],
@@ -460,12 +497,18 @@ def rfis_for_portfolio(
                     date_completed=str(r["date_completed"]) if r.get("date_completed") else None,
                     portfolio_project_id=sub_id,
                     portfolio_project_name=sub.name if sub else None,
+                    project_id=pf_id,
+                    project_name=pf.name if pf else None,
+                    client_name=clients.get(pf.client_id) if pf else None,
                     monday_project_code=codes.get(item),
                     monday_project_name=names.get(item),
                 ))
-    # Grouped the way the minutes print: portfolio-wide first, then each
-    # sub-project, so the picker and the PDF agree on order without sorting twice.
-    out.sort(key=lambda x: ((x.portfolio_project_name or ""), x.name))
+    # Ordered the way the documents group them, so the picker, this page and the
+    # printed minutes agree without anyone sorting twice.
+    out.sort(key=lambda x: (
+        (x.client_name or ""), (x.project_name or ""),
+        (x.portfolio_project_name or ""), x.name,
+    ))
     return out
 
 
