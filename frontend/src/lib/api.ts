@@ -1997,3 +1997,61 @@ export interface BridgeRollup {
 
 export const bridgeRollup = () =>
   apiClient.get<BridgeRollup>("/monday/bridge/rollup").then((r) => r.data);
+
+// ---- live per-project task boards -----------------------------------------
+// These read the REAL task boards, not the sandbox: the sandbox exists to make
+// writes safe, and a status dashboard built on copied data would be a mock-up.
+
+export interface BridgeTaskBoardRef {
+  board_id: number;
+  name: string;
+  task_count: number;
+}
+
+export interface BridgePhaseRollup {
+  phase: string;
+  total: number;
+  done: number;
+  in_progress: number;
+  blocked: number;
+  not_started: number;
+  pct_complete: number;
+}
+
+export interface BridgeTaskFlag {
+  id: number;
+  name: string;
+  phase: string | null;
+  status: string | null;
+  owner: string | null;
+  discipline: string | null;
+  reason: string;
+  days_overdue: number | null;
+}
+
+export interface BridgeTaskBoard {
+  board_id: number;
+  board_name: string;
+  task_count: number;
+  totals: {
+    done: number;
+    open: number;
+    pct_complete: number;
+    targeted_hours: number;
+    actual_hours: number;
+    hours_variance: number;
+    billable_cost: number;
+    actual_cost: number;
+    flagged: number;
+  };
+  by_phase: BridgePhaseRollup[];
+  by_status: Record<string, number>;
+  by_discipline: Record<string, number>;
+  by_owner: { owner: string; total: number; open: number; blocked: number }[];
+  flags: BridgeTaskFlag[];
+}
+
+export const bridgeTaskBoards = () =>
+  apiClient.get<BridgeTaskBoardRef[]>("/monday/bridge/task-boards").then((r) => r.data);
+export const bridgeTasks = (boardId: number) =>
+  apiClient.get<BridgeTaskBoard>(`/monday/bridge/tasks/${boardId}`).then((r) => r.data);

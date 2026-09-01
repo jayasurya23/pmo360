@@ -442,3 +442,239 @@ def rollup(_user=Depends(require_db_user)) -> RollupOut:
             "rfis_without_question": no_question,
         },
     )
+
+
+# ---------------------------------------------------------------- task boards
+# Every project on the Portfolio board has its own task board — the real
+# schedule, ~380 tasks each, with phase, status, discipline, owner, targeted
+# vs actual hours and billable vs actual cost. That is the detail management
+# asks for, and none of it exists anywhere in PMO 360.
+#
+# These reads go against the LIVE boards, not the sandbox, and that is
+# deliberate: the sandbox exists to make WRITES safe, and a status dashboard
+# built on copied data would be a mock-up. Reading cannot damage a board. The
+# board id is still never taken from the caller — it must be one of the ids
+# below, which are the boards the Portfolio's "Project Tasks Links" column
+# points at.
+LIVE_TASK_BOARD_IDS = frozenset({
+    18424062924, 18425915159, 18425960038, 18425960070, 18425960122, 18425960165,
+    18425974894, 18425974919, 18425974945, 18426025021, 18426025095, 18426025134,
+    18426025246, 18426025295, 18426318209, 18426318275, 18426318360, 18426318308,
+    18426318429, 18426321668, 18426322197, 18426322212, 18426322617, 18426322628,
+    18426322624, 18426323228, 18426323221, 18426323202, 18426323215, 18426323246,
+    18426323597, 18426323595, 18426323598, 18426323604, 18426323694, 18426323706,
+    18426323699, 18426323693, 18426323786, 18425272063,
+})
+
+TASK_COLS = {
+    "status": "project_status",              # Not Started / In Progress / Completed / Requires action / In QC / On Hold / N/A / Future steps
+    "phase": "color_mm4j79qe",               # Project Initiation / Due Diligence / 10% / 30% / 60% / 90% / IFC / Record Drawings
+    "discipline": "dropdown_mm4jygv4",       # Sales / PMO / Civil / Electrical / Structural
+    "owner": "project_owner",
+    "priority": "project_priority",          # Critical / High / Medium / Low
+    "targeted_hours": "project_planned_effort",
+    "actual_hours": "formula_mm4kqacx",
+    "billable_cost": "formula_mm4kf7zp",
+    "actual_cost": "formula_mm4k6jkt",
+    "dependency_due": "date_mm4knhb7",       # "External Dependency Due Date"
+    "completed_on": "project_task_completion_date",
+    "qc_status": "color_mm522b42",
+}
+
+#: Statuses that mean the task needs nobody's attention any more. "N/A" counts
+#: as settled deliberately — a task marked not-applicable is not outstanding
+#: work, and lumping it in with real work overstates what is left.
+_DONE_STATUSES = {"completed", "n/a"}
+#: Phases in the order a project actually runs, so the phase table reads as a
+#: progression rather than alphabetically.
+_PHASE_ORDER = [
+    "Project Initiation", "Due Diligence", "10%", "30%", "60%", "90%", "IFC",
+    "Record Drawings",
+]
+
+
+class PhaseRollup(BaseModel):
+    phase: str
+    total: int
+    done: int
+    in_progress: int
+    blocked: int
+    not_started: int
+    pct_complete: int
+
+
+class TaskFlag(BaseModel):
+    id: int
+    name: str
+    phase: Optional[str] = None
+    status: Optional[str] = None
+    owner: Optional[str] = None
+    discipline: Optional[str] = None
+    reason: str
+    days_overdue: Optional[int] = None
+
+
+class TaskBoardOut(BaseModel):
+    board_id: int
+    board_name: str
+    task_count: int
+    totals: dict[str, Any]
+    by_phase: list[PhaseRollup]
+    by_status: dict[str, int]
+    by_discipline: dict[str, int]
+    by_owner: list[dict[str, Any]]
+    flags: list[TaskFlag]
+
+
+class TaskBoardRef(BaseModel):
+    board_id: int
+    name: str
+    task_count: int
+
+
+@router.get("/task-boards", response_model=list[TaskBoardRef])
+def task_boards(_user=Depends(require_db_user)) -> list[TaskBoardRef]:
+    """The live per-project task boards, so the UI can offer a picker."""
+    if not monday.is_configured():
+        raise HTTPException(503, "monday.com is not configured on this deployment.")
+    q = """
+    query ($ids: [ID!]) { boards(ids: $ids) { id name items_count } }
+    """
+    try:
+        data = monday._post(q, {"ids": [str(i) for i in sorted(LIVE_TASK_BOARD_IDS)]})
+    except Exception as exc:
+        raise HTTPException(502, f"monday.com read failed: {exc}") from exc
+    out = [
+        TaskBoardRef(board_id=int(b["id"]), name=b.get("name") or "",
+                     task_count=int(b.get("items_count") or 0))
+        for b in (data.get("boards") or [])
+    ]
+    out.sort(key=lambda b: b.name.lower())
+    return out
+
+
+@router.get("/tasks/{board_id}", response_model=TaskBoardOut)
+def tasks(board_id: int, _user=Depends(require_db_user)) -> TaskBoardOut:
+    """One project's task board, aggregated for a management view.
+
+    Returns rollups plus a bounded list of tasks that need somebody to look at
+    them — never all 380 rows, because a wall of tasks is not a dashboard.
+    """
+    if board_id not in LIVE_TASK_BOARD_IDS:
+        raise HTTPException(404, "Not a known project task board.")
+    if not monday.is_configured():
+        raise HTTPException(503, "monday.com is not configured on this deployment.")
+
+    try:
+        data = monday.read_board_items(board_id, list(TASK_COLS.values()), limit=600)
+    except Exception as exc:
+        raise HTTPException(502, f"monday.com read failed: {exc}") from exc
+
+    c = TASK_COLS
+    today = date.today()
+    items = data["items"]
+
+    by_status: dict[str, int] = {}
+    by_discipline: dict[str, int] = {}
+    owners: dict[str, dict[str, int]] = {}
+    phases: dict[str, dict[str, int]] = {}
+    flags: list[TaskFlag] = []
+    targeted = actual = billable = actual_cost = 0.0
+    done_total = 0
+
+    for it in items:
+        cells = it["cells"]
+        status = (cells.get(c["status"]) or "").strip()
+        phase = (cells.get(c["phase"]) or "Unphased").strip() or "Unphased"
+        disc = (cells.get(c["discipline"]) or "Unassigned").strip() or "Unassigned"
+        owner = (cells.get(c["owner"]) or "Unassigned").strip() or "Unassigned"
+        low = status.lower()
+        is_done = low in _DONE_STATUSES
+
+        by_status[status or "(not set)"] = by_status.get(status or "(not set)", 0) + 1
+        by_discipline[disc] = by_discipline.get(disc, 0) + 1
+
+        targeted += _num(cells.get(c["targeted_hours"]))
+        actual += _num(cells.get(c["actual_hours"]))
+        billable += _num(cells.get(c["billable_cost"]))
+        actual_cost += _num(cells.get(c["actual_cost"]))
+        if is_done:
+            done_total += 1
+
+        p = phases.setdefault(phase, {"total": 0, "done": 0, "in_progress": 0,
+                                      "blocked": 0, "not_started": 0})
+        p["total"] += 1
+        if is_done:
+            p["done"] += 1
+        elif low in ("in progress", "in qc"):
+            p["in_progress"] += 1
+        elif low in ("requires action", "on hold"):
+            p["blocked"] += 1
+        else:
+            p["not_started"] += 1
+
+        o = owners.setdefault(owner, {"total": 0, "open": 0, "blocked": 0})
+        o["total"] += 1
+        if not is_done:
+            o["open"] += 1
+        if low in ("requires action", "on hold"):
+            o["blocked"] += 1
+
+        # Things worth a manager's attention, in severity order.
+        if is_done:
+            continue
+        overdue = _age_days(cells.get(c["dependency_due"]), today)
+        if overdue is not None and overdue > 0:
+            flags.append(TaskFlag(
+                id=it["id"], name=it["name"], phase=phase, status=status, owner=owner,
+                discipline=disc, reason="External dependency overdue", days_overdue=overdue,
+            ))
+        elif low == "requires action":
+            flags.append(TaskFlag(id=it["id"], name=it["name"], phase=phase, status=status,
+                                  owner=owner, discipline=disc, reason="Requires action"))
+        elif low == "on hold":
+            flags.append(TaskFlag(id=it["id"], name=it["name"], phase=phase, status=status,
+                                  owner=owner, discipline=disc, reason="On hold"))
+        elif (cells.get(c["priority"]) or "").lower().startswith("critical"):
+            flags.append(TaskFlag(id=it["id"], name=it["name"], phase=phase, status=status,
+                                  owner=owner, discipline=disc, reason="Critical priority"))
+
+    flags.sort(key=lambda f: (-(f.days_overdue or 0), f.reason))
+
+    order = {p: i for i, p in enumerate(_PHASE_ORDER)}
+    by_phase = [
+        PhaseRollup(
+            phase=name, total=v["total"], done=v["done"], in_progress=v["in_progress"],
+            blocked=v["blocked"], not_started=v["not_started"],
+            pct_complete=round(v["done"] / v["total"] * 100) if v["total"] else 0,
+        )
+        for name, v in phases.items()
+    ]
+    by_phase.sort(key=lambda p: (order.get(p.phase, len(order)), p.phase))
+
+    owner_rows = sorted(
+        ({"owner": k, **v} for k, v in owners.items()),
+        key=lambda r: (-r["open"], -r["total"], r["owner"]),
+    )[:12]
+
+    return TaskBoardOut(
+        board_id=board_id,
+        board_name=data["board"],
+        task_count=len(items),
+        totals={
+            "done": done_total,
+            "open": len(items) - done_total,
+            "pct_complete": round(done_total / len(items) * 100) if items else 0,
+            "targeted_hours": round(targeted, 1),
+            "actual_hours": round(actual, 1),
+            "hours_variance": round(targeted - actual, 1),
+            "billable_cost": round(billable, 2),
+            "actual_cost": round(actual_cost, 2),
+            "flagged": len(flags),
+        },
+        by_phase=by_phase,
+        by_status=dict(sorted(by_status.items(), key=lambda kv: -kv[1])),
+        by_discipline=dict(sorted(by_discipline.items(), key=lambda kv: -kv[1])),
+        by_owner=owner_rows,
+        flags=flags[:40],
+    )

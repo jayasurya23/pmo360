@@ -30,6 +30,10 @@ import {
   type BridgePushResult,
   bridgeRollup,
   type BridgeRollup,
+  bridgeTaskBoards,
+  bridgeTasks,
+  type BridgeTaskBoardRef,
+  type BridgeTaskBoard,
 } from "@/lib/api";
 
 type BoardKey = "portfolio" | "rfis" | "change_orders";
@@ -85,6 +89,12 @@ export default function MondayBridge() {
   const [rollupErr, setRollupErr] = useState<string | null>(null);
   const [rollingUp, setRollingUp] = useState(false);
 
+  const [taskBoards, setTaskBoards] = useState<BridgeTaskBoardRef[]>([]);
+  const [taskBoardId, setTaskBoardId] = useState<number | null>(null);
+  const [tasks, setTasks] = useState<BridgeTaskBoard | null>(null);
+  const [tasksErr, setTasksErr] = useState<string | null>(null);
+  const [loadingTasks, setLoadingTasks] = useState(false);
+
   const [log, setLog] = useState<LogLine[]>([]);
   const addLog = useCallback((kind: LogLine["kind"], text: string, ms?: number) => {
     const at = new Date().toLocaleTimeString([], { hour12: false });
@@ -138,6 +148,45 @@ export default function MondayBridge() {
   useEffect(() => {
     if (status?.configured) loadRollup();
   }, [status?.configured, loadRollup]);
+
+  useEffect(() => {
+    if (!status?.configured) return;
+    bridgeTaskBoards()
+      .then((b) => {
+        setTaskBoards(b);
+        const nesler = b.find((x) => x.name === "Nesler") ?? b[0];
+        if (nesler) setTaskBoardId(nesler.board_id);
+      })
+      .catch((e) => addLog("error", `task boards — ${e?.response?.data?.detail || e.message}`));
+  }, [status?.configured, addLog]);
+
+  const loadTasks = useCallback(
+    (id: number) => {
+      setLoadingTasks(true);
+      setTasksErr(null);
+      const t0 = performance.now();
+      bridgeTasks(id)
+        .then((t) => {
+          setTasks(t);
+          addLog(
+            "read",
+            `${t.board_name} · ${t.task_count} tasks · ${t.totals.pct_complete}% complete`,
+            Math.round(performance.now() - t0),
+          );
+        })
+        .catch((e) => {
+          const msg = e?.response?.data?.detail || e.message;
+          setTasksErr(msg);
+          addLog("error", `tasks read failed — ${msg}`);
+        })
+        .finally(() => setLoadingTasks(false));
+    },
+    [addLog],
+  );
+
+  useEffect(() => {
+    if (taskBoardId) loadTasks(taskBoardId);
+  }, [taskBoardId, loadTasks]);
 
   // ---- pull ------------------------------------------------------------
   const pull = useCallback(() => {
@@ -448,6 +497,195 @@ export default function MondayBridge() {
               ageing columns above are measured from the date submitted, which is the only date the
               board actually carries.
             </p>
+          </>
+        )}
+      </section>
+
+      {/* ---------------- LIVE PROJECT TASKS ---------------- */}
+      <section className="card mb-6">
+        <div className="flex items-baseline gap-3 mb-4 flex-wrap">
+          <h2 className="text-base font-semibold">Live project tasks</h2>
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-brand-blue bg-brand-blue/10 px-2 py-0.5 rounded">
+            Live boards · read-only
+          </span>
+          <div className="flex-1" />
+          <select
+            className="select select-sm w-auto min-w-[14rem]"
+            value={taskBoardId ?? ""}
+            onChange={(e) => setTaskBoardId(Number(e.target.value))}
+            aria-label="Project task board"
+          >
+            {taskBoards.length === 0 && <option value="">Loading project boards…</option>}
+            {taskBoards.map((b) => (
+              <option key={b.board_id} value={b.board_id}>
+                {b.name} ({b.task_count})
+              </option>
+            ))}
+          </select>
+          <button
+            className="btn btn-ghost text-xs"
+            onClick={() => taskBoardId && loadTasks(taskBoardId)}
+            disabled={loadingTasks || !taskBoardId}
+          >
+            {loadingTasks ? "Loading…" : "Refresh"}
+          </button>
+        </div>
+
+        {tasksErr && <p className="text-sm text-brand-red">{tasksErr}</p>}
+        {!tasks && !tasksErr && (
+          <p className="text-sm text-brand-gray">Reading the project task board…</p>
+        )}
+
+        {tasks && (
+          <>
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-px bg-surface-line rounded overflow-hidden mb-5">
+              <Big v={tasks.totals.pct_complete + "%"} l="Complete" />
+              <Big v={String(tasks.task_count)} l="Tasks" />
+              <Big v={String(tasks.totals.open)} l="Open" />
+              <Big
+                v={String(tasks.totals.flagged)}
+                l="Need attention"
+                tone={tasks.totals.flagged > 0 ? "text-brand-red" : undefined}
+              />
+              <Big v={tasks.totals.targeted_hours + "h"} l="Targeted" />
+              <Big v={tasks.totals.actual_hours + "h"} l="Actual" />
+              <Big
+                v={(tasks.totals.hours_variance >= 0 ? "+" : "") + tasks.totals.hours_variance + "h"}
+                l="Hours left"
+                tone={tasks.totals.hours_variance < 0 ? "text-brand-red" : undefined}
+              />
+            </div>
+
+            {/* Phase progression — the shape of the project, in order. */}
+            <div className="label mb-2">Progress by phase</div>
+            <div className="mb-5 space-y-1.5">
+              {tasks.by_phase.map((ph) => (
+                <div key={ph.phase} className="flex items-center gap-3">
+                  <div className="w-36 shrink-0 text-sm truncate" title={ph.phase}>
+                    {ph.phase}
+                  </div>
+                  <div className="flex-1 flex h-5 rounded overflow-hidden border border-surface-line min-w-0">
+                    {ph.done > 0 && (
+                      <div className="bg-brand-green" style={{ flex: ph.done }} title={ph.done + " done"} />
+                    )}
+                    {ph.in_progress > 0 && (
+                      <div className="bg-brand-gold" style={{ flex: ph.in_progress }} title={ph.in_progress + " in progress"} />
+                    )}
+                    {ph.blocked > 0 && (
+                      <div className="bg-brand-red" style={{ flex: ph.blocked }} title={ph.blocked + " blocked"} />
+                    )}
+                    {ph.not_started > 0 && (
+                      <div className="bg-surface-mute" style={{ flex: ph.not_started }} title={ph.not_started + " not started"} />
+                    )}
+                  </div>
+                  <div className="w-24 shrink-0 text-right text-sm tabular-nums">
+                    <span className="font-semibold">{ph.pct_complete}%</span>
+                    <span className="text-brand-gray"> of {ph.total}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-brand-gray mb-5">
+              <span className="inline-flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-sm bg-brand-green inline-block" />Done</span>
+              <span className="inline-flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-sm bg-brand-gold inline-block" />In progress / in QC</span>
+              <span className="inline-flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-sm bg-brand-red inline-block" />Blocked</span>
+              <span className="inline-flex items-center gap-1.5"><i className="w-2.5 h-2.5 rounded-sm bg-surface-mute border border-surface-line inline-block" />Not started</span>
+            </div>
+
+            <div className="grid gap-5 md:grid-cols-3 mb-5">
+              <div>
+                <div className="label mb-2">By status</div>
+                {Object.entries(tasks.by_status).map(([k, v]) => (
+                  <div key={k} className="flex justify-between text-sm py-0.5">
+                    <span className="truncate pr-2">{k}</span>
+                    <span className="tabular-nums text-brand-gray">{v}</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div className="label mb-2">By discipline</div>
+                {Object.entries(tasks.by_discipline).map(([k, v]) => (
+                  <div key={k} className="flex justify-between text-sm py-0.5">
+                    <span className="truncate pr-2">{k}</span>
+                    <span className="tabular-nums text-brand-gray">{v}</span>
+                  </div>
+                ))}
+              </div>
+              <div>
+                <div className="label mb-2">Open work by owner</div>
+                {tasks.by_owner.map((o) => (
+                  <div key={o.owner} className="flex justify-between text-sm py-0.5">
+                    <span className="truncate pr-2">{o.owner}</span>
+                    <span className="tabular-nums text-brand-gray">
+                      {o.open}
+                      {o.blocked > 0 && <span className="text-brand-red"> ({o.blocked} blocked)</span>}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Cost, only where the board actually carries it. */}
+            {(tasks.totals.billable_cost > 0 || tasks.totals.actual_cost > 0) && (
+              <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-brand-gray mb-5">
+                <span>
+                  Billable cost — <strong className="text-brand-black">{money(tasks.totals.billable_cost)}</strong>
+                </span>
+                <span>
+                  Actual cost — <strong className="text-brand-black">{money(tasks.totals.actual_cost)}</strong>
+                </span>
+                <span>
+                  Difference{" — "}
+                  <strong
+                    className={
+                      tasks.totals.actual_cost > tasks.totals.billable_cost
+                        ? "text-brand-red"
+                        : "text-brand-black"
+                    }
+                  >
+                    {money(tasks.totals.billable_cost - tasks.totals.actual_cost)}
+                  </strong>
+                </span>
+              </div>
+            )}
+
+            {/* The list a manager actually acts on. Never all 380 rows. */}
+            <div className="label mb-2">
+              Needs attention {tasks.flags.length > 0 && <>({tasks.flags.length})</>}
+            </div>
+            {tasks.flags.length === 0 ? (
+              <p className="text-sm text-brand-gray">
+                Nothing flagged — no overdue dependencies, blocked tasks or critical items open.
+              </p>
+            ) : (
+              <div className="border border-surface-line rounded max-h-80 overflow-y-auto">
+                {tasks.flags.map((f) => (
+                  <div
+                    key={f.id}
+                    className="flex items-start justify-between gap-3 px-3 py-2 border-b border-surface-line last:border-b-0"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">{f.name}</div>
+                      <div className="text-xs text-brand-gray truncate">
+                        {[f.phase, f.discipline, f.owner, f.status].filter(Boolean).join(" · ")}
+                      </div>
+                    </div>
+                    <span
+                      className={clsx(
+                        "text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded whitespace-nowrap",
+                        f.days_overdue
+                          ? "bg-brand-red/15 text-brand-red"
+                          : f.reason === "Critical priority"
+                            ? "bg-brand-red/10 text-brand-red"
+                            : "bg-brand-gold/20 text-brand-deepgold",
+                      )}
+                    >
+                      {f.days_overdue ? f.days_overdue + "d overdue" : f.reason}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
       </section>
