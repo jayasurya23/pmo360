@@ -320,13 +320,13 @@ export default function MondayBridge() {
       />
 
       {status?.note && (
-        <div className="card mb-6 border-l-4 border-brand-gold">
+        <div className="card p-4 mb-6 border-l-4 border-brand-gold">
           <p className="text-sm text-brand-gray">{status.note}</p>
         </div>
       )}
 
       {/* ---------------- EXECUTIVE ROLLUP ---------------- */}
-      <section className="card mb-6">
+      <section className="card p-5 sm:p-6 mb-6">
         <div className="flex items-baseline gap-3 mb-4 flex-wrap">
           <h2 className="text-base font-semibold flex-1">Portfolio rollup</h2>
           {rollup && <span className="text-xs text-brand-gray">as of {rollup.as_of}</span>}
@@ -357,11 +357,11 @@ export default function MondayBridge() {
 
             {/* By client — what upper management reads first. Sorted by contract
                 value, with the accountability column beside it. */}
-            <div className="label mb-2">By client</div>
-            <div className="overflow-x-auto mb-5">
+            <div className="label mb-2.5">By client</div>
+            <div className="overflow-x-auto mb-6">
               <table className="w-full text-sm min-w-[46rem]">
                 <thead>
-                  <tr className="text-left">
+                  <tr className="border-b border-surface-line">
                     <Th>Client</Th>
                     <Th right>Projects</Th>
                     <Th right>Contract value</Th>
@@ -376,8 +376,8 @@ export default function MondayBridge() {
                   {rollup.by_client.map((c) => {
                     const pct = c.open_rfis ? Math.round((c.rfis_on_client / c.open_rfis) * 100) : 0;
                     return (
-                      <tr key={c.client} className="border-t border-surface-line">
-                        <td className="py-1.5 pr-3 font-medium">{c.client}</td>
+                      <tr key={c.client} className="border-b border-surface-line last:border-b-0 hover:bg-surface-mute/50">
+                        <td className="py-2 px-3 font-medium">{c.client}</td>
                         <Td>{c.projects}</Td>
                         <Td>{money(c.contract_value)}</Td>
                         <Td>{c.change_order_value ? money(c.change_order_value) : "—"}</Td>
@@ -413,11 +413,11 @@ export default function MondayBridge() {
             </div>
 
             {/* Where the delay actually is. Only projects with something open. */}
-            <div className="label mb-2">Projects with open RFIs</div>
-            <div className="overflow-x-auto mb-5">
+            <div className="label mt-6 mb-2.5">Projects with open RFIs</div>
+            <div className="overflow-x-auto mb-6">
               <table className="w-full text-sm min-w-[38rem]">
                 <thead>
-                  <tr className="text-left">
+                  <tr className="border-b border-surface-line">
                     <Th>Project</Th>
                     <Th>Client</Th>
                     <Th>Status</Th>
@@ -430,15 +430,15 @@ export default function MondayBridge() {
                   {rollup.by_project
                     .filter((pr) => pr.open_rfis > 0)
                     .map((pr) => (
-                      <tr key={pr.id} className="border-t border-surface-line">
-                        <td className="py-1.5 pr-3 font-medium">
+                      <tr key={pr.id} className="border-b border-surface-line last:border-b-0 hover:bg-surface-mute/50">
+                        <td className="py-2 px-3 font-medium">
                           {pr.name}
                           {pr.project_code && (
                             <span className="text-brand-gray font-normal"> · {pr.project_code}</span>
                           )}
                         </td>
-                        <td className="py-1.5 pr-3 text-brand-gray">{pr.client}</td>
-                        <td className="py-1.5 pr-3">
+                        <td className="py-2 px-3 text-brand-gray">{pr.client}</td>
+                        <td className="py-2 px-3">
                           {pr.contract_status && (
                             <span
                               className={clsx(
@@ -471,7 +471,7 @@ export default function MondayBridge() {
 
             {/* Not a vanity metric: each of these is a field nobody is filling in,
                 and every one caps what a report built on this board can say. */}
-            <div className="label mb-2">Data quality on the boards</div>
+            <div className="label mt-6 mb-2.5">Data quality on the boards</div>
             <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-brand-gray">
               <span>
                 RFIs with no response-needed-by date{" — "}
@@ -502,7 +502,7 @@ export default function MondayBridge() {
       </section>
 
       {/* ---------------- LIVE PROJECT TASKS ---------------- */}
-      <section className="card mb-6">
+      <section className="card p-5 sm:p-6 mb-6">
         <div className="flex items-baseline gap-3 mb-4 flex-wrap">
           <h2 className="text-base font-semibold">Live project tasks</h2>
           <span className="text-[11px] font-semibold uppercase tracking-wider text-brand-blue bg-brand-blue/10 px-2 py-0.5 rounded">
@@ -557,7 +557,7 @@ export default function MondayBridge() {
             </div>
 
             {/* Phase progression — the shape of the project, in order. */}
-            <div className="label mb-2">Progress by phase</div>
+            <div className="label mb-2.5">Progress by phase</div>
             <div className="mb-5 space-y-1.5">
               {tasks.by_phase.map((ph) => (
                 <div key={ph.phase} className="flex items-center gap-3">
@@ -650,7 +650,7 @@ export default function MondayBridge() {
             )}
 
             {/* The list a manager actually acts on. Never all 380 rows. */}
-            <div className="label mb-2">
+            <div className="label mt-6 mb-2.5">
               Needs attention {tasks.flags.length > 0 && <>({tasks.flags.length})</>}
             </div>
             {tasks.flags.length === 0 ? (
@@ -692,7 +692,7 @@ export default function MondayBridge() {
 
       <div className="grid gap-6 lg:grid-cols-2 items-start">
         {/* ---------------- PULL ---------------- */}
-        <section className="card">
+        <section className="card p-5 sm:p-6">
           <div className="flex items-center gap-3 mb-4 flex-wrap">
             <h2 className="text-base font-semibold">Pull</h2>
             <span className="text-[11px] font-semibold uppercase tracking-wider text-brand-blue bg-brand-blue/10 px-2 py-0.5 rounded">
@@ -800,7 +800,7 @@ export default function MondayBridge() {
         </section>
 
         {/* ---------------- PUSH ---------------- */}
-        <section className="card">
+        <section className="card p-5 sm:p-6">
           <div className="flex items-center gap-3 mb-4 flex-wrap">
             <h2 className="text-base font-semibold">Push</h2>
             <span className="text-[11px] font-semibold uppercase tracking-wider text-brand-red bg-brand-red/10 px-2 py-0.5 rounded">
@@ -916,7 +916,7 @@ export default function MondayBridge() {
       </div>
 
       {/* ---------------- LOG ---------------- */}
-      <section className="card mt-6">
+      <section className="card p-5 sm:p-6 mt-6">
         <div className="flex items-center gap-3 mb-3">
           <h2 className="text-base font-semibold flex-1">API activity</h2>
           <button className="btn btn-ghost text-xs" onClick={() => setLog([])}>Clear</button>
@@ -960,26 +960,45 @@ export default function MondayBridge() {
 
 function Big({ v, l, tone }: { v: string; l: string; tone?: string }) {
   return (
-    <div className="bg-surface p-3">
-      <div className={clsx("text-xl font-semibold leading-tight tracking-tight", tone)}>{v}</div>
-      <div className="label mt-0.5">{l}</div>
+    <div className="bg-surface px-3.5 py-3">
+      <div className={clsx("text-[1.35rem] leading-none font-semibold tracking-tight truncate", tone)} title={v}>
+        {v}
+      </div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-brand-gray mt-1.5 truncate">
+        {l}
+      </div>
     </div>
   );
 }
 
+/** A table header cell.
+ *
+ *  Deliberately NOT the shared `.label` class: that carries `display: block`,
+ *  which knocks a <th> out of the table layout and stacks the header
+ *  vertically. Same look, spelled out, without the display rule. */
 function Th({ children, right }: { children: ReactNode; right?: boolean }) {
-  return <th className={clsx("label font-semibold pb-1.5 pr-3", right && "text-right")}>{children}</th>;
+  return (
+    <th
+      className={clsx(
+        "text-[11px] font-semibold uppercase tracking-wider text-brand-gray",
+        "py-2 px-3 whitespace-nowrap align-bottom",
+        right ? "text-right" : "text-left",
+      )}
+    >
+      {children}
+    </th>
+  );
 }
 
 function Td({ children }: { children: ReactNode }) {
-  return <td className="py-1.5 pr-3 text-right tabular-nums">{children}</td>;
+  return <td className="py-2 px-3 text-right tabular-nums whitespace-nowrap">{children}</td>;
 }
 
 function Stat({ n, l }: { n: number; l: string }) {
   return (
-    <div className="bg-surface p-2">
-      <div className="text-lg font-semibold leading-tight">{n}</div>
-      <div className="label">{l}</div>
+    <div className="bg-surface px-3 py-2.5">
+      <div className="text-lg font-semibold leading-none">{n}</div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider text-brand-gray mt-1.5">{l}</div>
     </div>
   );
 }
