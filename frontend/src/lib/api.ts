@@ -1956,7 +1956,11 @@ export const bridgePush = (payload: BridgePushRequest) =>
 export interface BridgeClientRollup {
   client: string;
   projects: number;
+  /** Sum across only this client's priced projects — see projects_priced. */
   contract_value: number;
+  /** How many carry a contract value at all. 0 means "nothing recorded",
+   *  which is not the same claim as "zero dollars". */
+  projects_priced: number;
   change_order_value: number;
   open_rfis: number;
   /** Open RFIs whose response owner is the client — the accountability number. */
@@ -1972,7 +1976,8 @@ export interface BridgeProjectRollup {
   project_code: string | null;
   client: string | null;
   contract_status: string | null;
-  contract_value: number;
+  /** null = not set on the board. Never render this as $0. */
+  contract_value: number | null;
   change_order_value: number;
   open_rfis: number;
   oldest_open_age_days: number | null;
@@ -1989,6 +1994,7 @@ export interface BridgeRollup {
     rfis_open: number;
     rfis_on_client: number;
     pct_on_client: number;
+    projects_priced: number;
   };
   by_client: BridgeClientRollup[];
   by_project: BridgeProjectRollup[];

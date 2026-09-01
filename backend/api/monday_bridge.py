@@ -282,7 +282,11 @@ def _age_days(iso: Any, today: date) -> Optional[int]:
 class ClientRollup(BaseModel):
     client: str
     projects: int
+    #: Sum across only the projects that HAVE a value; see projects_priced.
     contract_value: float
+    #: How many of this client's projects carry a contract value at all. When
+    #: this is 0 the sum above is not "zero dollars", it is "nothing recorded".
+    projects_priced: int = 0
     change_order_value: float
     open_rfis: int
     #: Open RFIs whose response owner is the client — the number that turns a
@@ -299,7 +303,11 @@ class ProjectRollup(BaseModel):
     project_code: Optional[str] = None
     client: Optional[str] = None
     contract_status: Optional[str] = None
-    contract_value: float
+    #: None means NOT SET on the board, which is different from zero. The
+    #: Portfolio board's contract value comes from a Deals mirror that is empty
+    #: for every project today, so most of these are None and the UI must not
+    #: draw them as $0.
+    contract_value: Optional[float] = None
     change_order_value: float
     open_rfis: int
     oldest_open_age_days: Optional[int] = None
@@ -379,9 +387,15 @@ def rollup(_user=Depends(require_db_user)) -> RollupOut:
             no_rfis += 1
         ages = [o["age"] for o in opens if o["age"] is not None]
 
+        # "Priced" means somebody has actually recorded money against this
+        # project, through either a deal value or a linked change order. Absent
+        # both, the project has no contract value — not a contract value of nil.
+        priced = bool(total_val or co_val)
+
         by_project.append(ProjectRollup(
             id=row["id"], name=row["name"], project_code=code, client=client,
-            contract_status=cstatus, contract_value=total_val,
+            contract_status=cstatus,
+            contract_value=total_val if priced else None,
             change_order_value=co_val, open_rfis=len(opens),
             oldest_open_age_days=max(ages) if ages else None,
         ))
@@ -389,9 +403,12 @@ def rollup(_user=Depends(require_db_user)) -> RollupOut:
         c = clients.setdefault(client, {
             "projects": 0, "contract_value": 0.0, "change_order_value": 0.0,
             "open_rfis": 0, "rfis_on_client": 0, "ages": [], "statuses": {},
+            "projects_priced": 0,
         })
         c["projects"] += 1
-        c["contract_value"] += total_val
+        if priced:
+            c["contract_value"] += total_val
+            c["projects_priced"] += 1
         c["change_order_value"] += co_val
         c["open_rfis"] += len(opens)
         c["rfis_on_client"] += sum(
@@ -406,6 +423,7 @@ def rollup(_user=Depends(require_db_user)) -> RollupOut:
             client=name,
             projects=v["projects"],
             contract_value=round(v["contract_value"], 2),
+            projects_priced=v["projects_priced"],
             change_order_value=round(v["change_order_value"], 2),
             open_rfis=v["open_rfis"],
             rfis_on_client=v["rfis_on_client"],
@@ -416,7 +434,7 @@ def rollup(_user=Depends(require_db_user)) -> RollupOut:
         for name, v in clients.items()
     ]
     by_client.sort(key=lambda c: (-c.contract_value, c.client))
-    by_project.sort(key=lambda p: (-p.open_rfis, -p.contract_value, p.name))
+    by_project.sort(key=lambda p: (-p.open_rfis, -(p.contract_value or 0.0), p.name))
 
     total_open = sum(c.open_rfis for c in by_client)
     total_on_client = sum(c.rfis_on_client for c in by_client)
@@ -434,8 +452,11 @@ def rollup(_user=Depends(require_db_user)) -> RollupOut:
             "rfis_open": total_open,
             "rfis_on_client": total_on_client,
             "pct_on_client": round(total_on_client / total_open * 100) if total_open else 0,
+            "projects_priced": sum(c.projects_priced for c in by_client),
         },
         data_quality={
+            "projects_without_contract_value":
+                len(by_project) - sum(c.projects_priced for c in by_client),
             "projects_without_code": no_code,
             "projects_without_rfis": no_rfis,
             "rfis_without_due_date": no_due,

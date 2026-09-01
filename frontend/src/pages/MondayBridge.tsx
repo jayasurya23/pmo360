@@ -52,7 +52,11 @@ const TONE: Record<string, string> = {
 const toneFor = (s?: string | null) =>
   (s && TONE[s.toLowerCase()]) || "bg-surface-mute text-brand-gray";
 
+/** Money, where "not recorded" is a real and distinct answer from zero.
+ *  Number(null) is 0, so null has to be caught before the numeric check or a
+ *  project with no contract value renders as a $0 contract. */
 function money(v: string | number | null | undefined) {
+  if (v === null || v === undefined || v === "") return "—";
   const n = Number(v);
   return Number.isFinite(n) ? `$${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—";
 }
@@ -343,7 +347,10 @@ export default function MondayBridge() {
         {rollup && (
           <>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-px bg-surface-line rounded overflow-hidden mb-5">
-              <Big v={money(rollup.totals.contract_value)} l="Contract value" />
+              <Big
+                v={money(rollup.totals.contract_value)}
+                l={`Contract value \u00b7 ${rollup.totals.projects_priced}/${rollup.totals.projects}`}
+              />
               <Big v={money(rollup.totals.change_order_value)} l="Change orders" />
               <Big v={String(rollup.totals.clients)} l="Clients" />
               <Big v={String(rollup.totals.projects)} l="Projects" />
@@ -379,7 +386,20 @@ export default function MondayBridge() {
                       <tr key={c.client} className="border-b border-surface-line last:border-b-0 hover:bg-surface-mute/50">
                         <td className="py-2 px-3 font-medium">{c.client}</td>
                         <Td>{c.projects}</Td>
-                        <Td>{money(c.contract_value)}</Td>
+                        <Td>
+                          {c.projects_priced === 0 ? (
+                            <span className="text-brand-gray">\u2014</span>
+                          ) : (
+                            <>
+                              {money(c.contract_value)}
+                              {c.projects_priced < c.projects && (
+                                <span className="text-brand-gray text-xs">
+                                  {" "}({c.projects_priced}/{c.projects})
+                                </span>
+                              )}
+                            </>
+                          )}
+                        </Td>
                         <Td>{c.change_order_value ? money(c.change_order_value) : "—"}</Td>
                         <Td>{c.open_rfis || "—"}</Td>
                         <Td>
@@ -450,7 +470,13 @@ export default function MondayBridge() {
                             </span>
                           )}
                         </td>
-                        <Td>{money(pr.contract_value)}</Td>
+                        <Td>
+                        {pr.contract_value == null ? (
+                          <span className="text-brand-gray">\u2014</span>
+                        ) : (
+                          money(pr.contract_value)
+                        )}
+                      </Td>
                         <Td>{pr.open_rfis}</Td>
                         <Td>
                           <span
@@ -473,6 +499,13 @@ export default function MondayBridge() {
                 and every one caps what a report built on this board can say. */}
             <div className="label mt-6 mb-2.5">Data quality on the boards</div>
             <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm text-brand-gray">
+              <span>
+                Projects with no contract value{" — "}
+                <strong className="text-brand-red">
+                  {rollup.data_quality.projects_without_contract_value}
+                </strong>{" "}
+                of {rollup.totals.projects}
+              </span>
               <span>
                 RFIs with no response-needed-by date{" — "}
                 <strong className="text-brand-red">{rollup.data_quality.rfis_without_due_date}</strong> of{" "}
