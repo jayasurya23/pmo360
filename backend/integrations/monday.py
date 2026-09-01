@@ -216,3 +216,90 @@ def list_rfis() -> list[dict]:
         if not cursor:
             break
     return out
+
+
+# ---- generic board reader -------------------------------------------------
+# The two readers above are shaped for specific boards. This one is not: it
+# takes a board and a list of column ids and hands back raw cell text, which is
+# what a screen that lets somebody choose a board needs. It stays here rather
+# than in the write module because it is a read, and the module docstring is
+# explicit that new readers belong in this file.
+
+_GENERIC_QUERY = """
+query ($board: [ID!], $cols: [String!], $limit: Int!, $cursor: String) {
+  boards(ids: $board) {
+    id
+    name
+    items_page(limit: $limit, cursor: $cursor) {
+      cursor
+      items {
+        id
+        name
+        url
+        column_values(ids: $cols) {
+          id
+          text
+          ... on BoardRelationValue { linked_item_ids display_value }
+          ... on MirrorValue { display_value }
+          ... on FormulaValue { display_value }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def read_board_items(
+    board_id: int,
+    column_ids: list[str],
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Read one board's items, returning ``{"board": name, "items": [...]}``.
+
+    Each item is ``{"id", "name", "url", "cells": {column_id: value}}``. A cell
+    is the column's ``text`` where it has one; for mirrors and formulas that is
+    always ``None``, so ``display_value`` is used instead — the single most
+    common way to conclude a mirror is unreadable when it is not. Board
+    relations come back as a list of linked item ids.
+    """
+    out: list[dict[str, Any]] = []
+    board_name = ""
+    cursor: Optional[str] = None
+
+    while True:
+        data = _post(_GENERIC_QUERY, {
+            "board": [str(board_id)],
+            "cols": column_ids,
+            "limit": min(limit, 100),
+            "cursor": cursor,
+        })
+        boards = data.get("boards") or []
+        if not boards:
+            break
+        board_name = boards[0].get("name") or ""
+        page = boards[0].get("items_page") or {}
+
+        for item in page.get("items") or []:
+            cells: dict[str, Any] = {}
+            for c in item.get("column_values") or []:
+                cid = c.get("id")
+                if "linked_item_ids" in c:
+                    cells[cid] = [int(i) for i in (c.get("linked_item_ids") or [])]
+                elif c.get("text"):
+                    cells[cid] = c["text"]
+                else:
+                    # Mirrors and formulas carry no `text` at all.
+                    cells[cid] = c.get("display_value") or None
+            out.append({
+                "id": int(item["id"]),
+                "name": item.get("name") or "",
+                "url": item.get("url") or "",
+                "cells": cells,
+            })
+
+        cursor = page.get("cursor")
+        if not cursor or len(out) >= limit:
+            break
+
+    return {"board": board_name, "items": out[:limit]}

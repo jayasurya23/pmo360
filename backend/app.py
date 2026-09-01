@@ -30,6 +30,7 @@ from api import (
     attachments, members, calendar, lead, timeline, proposals, change_orders,
     portfolio_projects, admin_users, client_contacts,
     settings as settings_router, monday as monday_router,
+    monday_bridge as monday_bridge_router,
 )
 
 
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     app.include_router(calendar.router)
     app.include_router(lead.router)
     app.include_router(monday_router.router)
+    app.include_router(monday_bridge_router.router)
     app.include_router(timeline.router)
     app.include_router(proposals.router)
     app.include_router(change_orders.router)

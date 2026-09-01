@@ -15,6 +15,9 @@ const Send = lazy(() => import("./pages/Send"));
 const NextAgenda = lazy(() => import("./pages/NextAgenda"));
 const Actions = lazy(() => import("./pages/Actions"));
 const Rfis = lazy(() => import("./pages/Rfis"));
+// Demo surface for the monday.com two-way integration. Route-only, not in the
+// primary nav: it is reached by URL so it never shows up as a product feature.
+const MondayBridge = lazy(() => import("./pages/MondayBridge"));
 const Notes = lazy(() => import("./pages/Notes"));
 const History = lazy(() => import("./pages/History"));
 const Schedule = lazy(() => import("./pages/Schedule"));
@@ -68,6 +71,7 @@ export default function App() {
         <Route path="/next-agenda" element={<NextAgenda />} />
         <Route path="/actions" element={<Actions />} />
         <Route path="/rfis" element={<Rfis />} />
+        <Route path="/monday-bridge" element={<MondayBridge />} />
         <Route path="/notes" element={<Notes />} />
         <Route path="/history" element={<History />} />
         <Route path="/schedule" element={<Schedule />} />

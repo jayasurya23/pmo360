@@ -1883,3 +1883,117 @@ export const listPortfolioRfis = (
       params: typeof scope === "number" ? { project_id: scope } : scope,
     })
     .then((r) => r.data);
+
+// ---- monday.com bridge (demo surface) -------------------------------------
+// Two-way: reads the sandbox boards, pushes change orders onto them. The
+// backend refuses to push at all unless it is pointed at the sandbox, so a
+// misconfigured deployment turns the demo off rather than arming it.
+
+export interface BridgeStatus {
+  configured: boolean;
+  profile: string;
+  can_push: boolean;
+  boards: Record<string, string>;
+  note?: string | null;
+}
+
+export interface BridgeRow {
+  id: number;
+  name: string;
+  url: string;
+  cells: Record<string, string | number | number[] | null>;
+}
+
+export interface BridgeBoard {
+  key: string;
+  label: string;
+  board_id: number;
+  /** semantic name -> monday column id, so the page never hardcodes an id */
+  columns: Record<string, string>;
+  rows: BridgeRow[];
+}
+
+export interface BridgePushRequest {
+  monday_project_item_id: number;
+  co_number: number;
+  total_amount: number;
+  status: string;
+  portfolio_name: string;
+  project_code?: string | null;
+  subject?: string | null;
+  description?: string | null;
+  effective_date?: string | null;
+  sent_to?: string | null;
+}
+
+export interface BridgeMoney {
+  id: number;
+  name: string;
+  linked_change_orders: number[];
+  change_order_amount: string | null;
+  total_contract_value: string | null;
+  deal_value: string | null;
+}
+
+export interface BridgePushResult {
+  payload: { item_name: string; column_values: Record<string, unknown>; board: string };
+  item: { id: string; name: string; url: string; action: string };
+  before: BridgeMoney;
+  after: BridgeMoney;
+}
+
+export const bridgeStatus = () =>
+  apiClient.get<BridgeStatus>("/monday/bridge/status").then((r) => r.data);
+export const bridgeBoard = (key: "portfolio" | "rfis" | "change_orders") =>
+  apiClient.get<BridgeBoard>(`/monday/bridge/board/${key}`).then((r) => r.data);
+export const bridgePreview = (payload: BridgePushRequest) =>
+  apiClient
+    .post<{ payload: BridgePushResult["payload"] }>("/monday/bridge/preview", payload)
+    .then((r) => r.data.payload);
+export const bridgePush = (payload: BridgePushRequest) =>
+  apiClient.post<BridgePushResult>("/monday/bridge/push", payload).then((r) => r.data);
+
+export interface BridgeClientRollup {
+  client: string;
+  projects: number;
+  contract_value: number;
+  change_order_value: number;
+  open_rfis: number;
+  /** Open RFIs whose response owner is the client — the accountability number. */
+  rfis_on_client: number;
+  avg_open_age_days: number | null;
+  oldest_open_age_days: number | null;
+  statuses: Record<string, number>;
+}
+
+export interface BridgeProjectRollup {
+  id: number;
+  name: string;
+  project_code: string | null;
+  client: string | null;
+  contract_status: string | null;
+  contract_value: number;
+  change_order_value: number;
+  open_rfis: number;
+  oldest_open_age_days: number | null;
+}
+
+export interface BridgeRollup {
+  as_of: string;
+  totals: {
+    clients: number;
+    projects: number;
+    contract_value: number;
+    change_order_value: number;
+    rfis_total: number;
+    rfis_open: number;
+    rfis_on_client: number;
+    pct_on_client: number;
+  };
+  by_client: BridgeClientRollup[];
+  by_project: BridgeProjectRollup[];
+  data_quality: Record<string, number>;
+}
+
+export const bridgeRollup = () =>
+  apiClient.get<BridgeRollup>("/monday/bridge/rollup").then((r) => r.data);
