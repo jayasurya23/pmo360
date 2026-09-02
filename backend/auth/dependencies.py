@@ -162,8 +162,12 @@ def _validate_bearer(authorization: Optional[str]) -> Optional[User]:
         return None
     parts = authorization.split(None, 1)
     if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1]:
+        # Log the SHAPE, never the value: a portal token presented here by
+        # mistake is a live credential, and "Portal <token>" is 50 chars.
+        scheme = parts[0] if parts and parts[0].isalpha() and len(parts[0]) <= 16 else "?"
         print(
-            f"[auth.dbg] malformed Authorization header: {authorization[:60]!r}",
+            f"[auth.dbg] malformed Authorization header: scheme={scheme!r} "
+            f"parts={len(parts)} len={len(authorization)}",
             flush=True,
         )
         return None

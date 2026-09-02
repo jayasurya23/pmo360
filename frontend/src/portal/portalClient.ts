@@ -8,11 +8,14 @@
  * instance means the two credentials can never be attached to the same
  * request, in either direction.
  *
- * The token arrives once, in the URL the client was sent (`?token=…`). It is
- * moved into sessionStorage and STRIPPED FROM THE URL immediately, so it does
- * not sit in browser history, referrer headers, or a screenshot of the address
- * bar. sessionStorage rather than localStorage: it dies with the tab, which is
- * the right default for a link somebody may open on a shared machine.
+ * The token arrives once, in the URL the client was sent — in the FRAGMENT
+ * (`/portal#token=…`), which the browser never sends to the server, so it is
+ * absent from the request line, from access logs on either deployment path,
+ * and from the Referer of every asset request that follows. It is moved into
+ * sessionStorage and STRIPPED FROM THE URL immediately, so it does not sit in
+ * browser history or a screenshot of the address bar either. sessionStorage
+ * rather than localStorage: it dies with the tab, which is the right default
+ * for a link somebody may open on a shared machine.
  */
 import axios from "axios";
 
@@ -38,15 +41,22 @@ function safeSet(v: string | null) {
 
 let memoryToken: string | null = null;
 
-/** Pull `?token=` out of the URL on first load, keep it, and scrub the URL. */
+/**
+ * Pull the token out of the URL on first load, keep it, and scrub the URL.
+ * Links carry it in the fragment (`#token=`); `?token=` is still honoured for
+ * links issued before that change, and scrubbed the same way.
+ */
 export function captureTokenFromUrl(): void {
   const url = new URL(window.location.href);
-  const t = url.searchParams.get("token");
+  const hashParams = new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
+  const t = hashParams.get("token") || url.searchParams.get("token");
   if (!t) return;
   memoryToken = t;
   safeSet(t);
+  hashParams.delete("token");
   url.searchParams.delete("token");
-  window.history.replaceState({}, "", url.pathname + (url.search || "") + url.hash);
+  const rest = hashParams.toString();
+  window.history.replaceState({}, "", url.pathname + url.search + (rest ? `#${rest}` : ""));
 }
 
 export function getPortalToken(): string | null {

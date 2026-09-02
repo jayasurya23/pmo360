@@ -310,6 +310,11 @@ def reset_account_password(
     """New temporary password, must-change set, lock cleared, every live
     session revoked. The old password stops working immediately."""
     row = _get_account(db, account_id)
+    if not row.is_active:
+        # A temporary password for a disabled account cannot be used (login
+        # and the auth dependency both check is_active). Handing it to the
+        # admin as if it could is worse than refusing.
+        raise HTTPException(status.HTTP_409_CONFLICT, "Enable the account before resetting its password.")
     temp = generate_temp_password()
     row.password_hash = hash_password(temp)
     row.must_change_password = True

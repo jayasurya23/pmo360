@@ -18,8 +18,8 @@ WHAT THE ACCOUNT TABLE DOES AND DOES NOT DO
   password_hash        argon2id via argon2-cffi. Never anything weaker.
   failed_attempts /    Per-account lockout: five consecutive failures locks
   locked_until         for fifteen minutes. The lock is NOT extended by further
-                       attempts, so an attacker cannot hold a client out
-                       indefinitely by hammering the form.
+                       attempts made while it holds; sustained re-locking is
+                       bounded by the per-source throttle on the login route.
   must_change_password Set on admin-issued temporary passwords; the portal
                        refuses everything but change-password until cleared.
   is_active            Deactivation is immediate: the auth dependency checks it

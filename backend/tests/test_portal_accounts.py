@@ -6,14 +6,20 @@ Properties under test, most expensive-to-get-wrong first:
      is one identical 401. Nothing tells an attacker which emails exist.
   2. A successful login mints a SESSION token that behaves exactly like an
      invite link everywhere else, and carries the account behind it.
-  3. Five wrong passwords lock the account; the lock expires; the correct
+  3. A temporary-password session reaches /me and nothing else: every data
+     route is 403 ON THE SERVER until the password is changed.
+  4. Five wrong passwords lock the account; the lock expires; the correct
      password is refused while locked.
-  4. Deactivation kills live sessions immediately, not at next login.
-  5. Change-password re-verifies the current password, enforces policy,
-     clears must-change, and revokes every OTHER session.
-  6. Reset issues a new temporary password once, sets must-change, and
+  5. Deactivation kills live sessions immediately, not at next login.
+  6. Change-password checks policy BEFORE verifying the current password (so
+     it cannot be used as an oracle), refuses reuse, clears must-change, and
+     revokes every OTHER session.
+  7. Reset issues a new temporary password once, sets must-change, and
      revokes every session.
-  7. Temporary passwords appear on create/reset and never on list.
+  8. Temporary passwords appear on create/reset and never on list.
+
+The throttle, the atomic counter and the change-password lockout have their
+own file: test_portal_hardening.py.
 """
 from __future__ import annotations
 
@@ -41,6 +47,11 @@ def _session(client, email, password):
     r = _login(client, email, password)
     assert r.status_code == 200, r.text
     return {"Authorization": f"Portal {r.json()['token']}"}, r.json()
+
+
+def _change(client, headers, current, new):
+    return client.post("/api/portal/change-password", headers=headers,
+                       json={"current_password": current, "new_password": new})
 
 
 # ---------------------------------------------------------------- admin
@@ -88,6 +99,18 @@ def test_login_mints_a_session_that_behaves_like_a_link(client, world, as_client
     assert me.json()["email"] == "s1@utopian.example"
     assert me.json()["must_change_password"] is True
     assert me.json()["client_name"] == world.client_a.name
+
+    # On a temporary password the server serves /me and NOTHING with data in
+    # it — the SPA's forced-change screen is a convenience, not the control.
+    pid = world.portfolio_a.id
+    assert client.get("/api/portal/projects", headers=h).status_code == 403
+    for surface in ("dashboard", "rfis", "waiting-on-you", "change-orders"):
+        assert client.get(f"/api/portal/projects/{pid}/{surface}", headers=h).status_code == 403, surface
+    # ...and the gate answers before scoping, so another client's id is 403
+    # too, not 404: a must-change session learns nothing about anybody.
+    assert client.get(f"/api/portal/projects/{world.portfolio_b.id}/dashboard", headers=h).status_code == 403
+
+    assert _change(client, h, a["temporary_password"], "a brand new passphrase").status_code == 204
 
     # Same scope rules as an invite link: own portfolio yes, other client no.
     assert client.get("/api/portal/projects", headers=h).json()[0]["name"] == world.portfolio_a.name
@@ -155,21 +178,22 @@ def test_change_password_flow(client, world, as_client_manager):
     other, _ = _session(client, "cp@utopian.example", temp)
 
     # Invite links have no account behind them.
-    r = client.post("/api/portal/change-password", headers=world.headers(),
-                    json={"current_password": "x", "new_password": "y" * 12})
-    assert r.status_code == 400
+    assert _change(client, world.headers(), "x", "y" * 12).status_code == 400
 
-    # Wrong current password, then too-short new one.
-    assert client.post("/api/portal/change-password", headers=h,
-                       json={"current_password": "not-it", "new_password": "a-perfectly-fine-one"}).status_code == 400
-    assert client.post("/api/portal/change-password", headers=h,
-                       json={"current_password": temp, "new_password": "short"}).status_code == 422
-    assert client.post("/api/portal/change-password", headers=h,
-                       json={"current_password": temp, "new_password": "cp@utopian.example"}).status_code == 422
+    # Policy is checked BEFORE the current password is verified. A wrong
+    # current password paired with a bad new one is therefore 422, exactly as
+    # the right current password would be — nothing about the guess leaks.
+    assert _change(client, h, "not-it", "short").status_code == 422
+    assert _change(client, h, temp, "short").status_code == 422
+    assert _change(client, h, temp, "cp@utopian.example").status_code == 422
+    # A temporary password cannot be "changed" to itself.
+    assert _change(client, h, temp, temp).status_code == 422
+    # Wrong current password with an acceptable new one: refused, and counted
+    # (test_portal_hardening covers the count).
+    assert _change(client, h, "not-it-either", "a-perfectly-fine-one").status_code == 400
 
     new_pw = "correct horse battery staple"
-    assert client.post("/api/portal/change-password", headers=h,
-                       json={"current_password": temp, "new_password": new_pw}).status_code == 204
+    assert _change(client, h, temp, new_pw).status_code == 204
 
     # This session survives; the other one is revoked; old password is dead.
     me = client.get("/api/portal/me", headers=h)

@@ -7,12 +7,18 @@
  * endpoints, and the shape of each screen is exactly the shape of its endpoint.
  *
  * TWO DOORS, ONE PRINCIPAL. A client arrives either through an invite link
- * (?token=… in the URL) or by signing in with email and password. A login does
+ * (#token=… in the URL) or by signing in with email and password. A login does
  * not create a different kind of credential — it returns a portal token that
  * is stored exactly as an invite token is. Everything after that is identical.
  *
  * Every 401 renders the same "sign in" state. The backend deliberately does
  * not say WHY (absent / revoked / expired / wrong password), and neither do we.
+ *
+ * THE URL NEVER CARRIES STATE. Whenever this app hands control back to the
+ * login screen it also puts the address back to /portal. A sentinel left in
+ * the URL (/portal/expired) would be re-entered on the next successful login
+ * and throw that fresh session away — a loop the client cannot escape without
+ * editing the address bar.
  */
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Link, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
@@ -116,11 +122,12 @@ function Shell({ me, onLogout, children }: { me: PortalMe | null; onLogout?: () 
   );
 }
 
-function Notice({ title, body }: { title: string; body: string }) {
+function Notice({ title, body, action }: { title: string; body: string; action?: ReactNode }) {
   return (
     <div className="mx-auto max-w-lg mt-16 card p-8 text-center">
       <div className="text-lg font-semibold mb-2">{title}</div>
       <p className="text-sm text-brand-gray">{body}</p>
+      {action && <div className="mt-5">{action}</div>}
     </div>
   );
 }
@@ -198,7 +205,15 @@ function LoginScreen({ notice, onSignedIn }: { notice?: string; onSignedIn: (me:
   );
 }
 
-function ChangePasswordScreen({ forced, onDone }: { forced: boolean; onDone: () => void }) {
+function ChangePasswordScreen({
+  forced,
+  email,
+  onDone,
+}: {
+  forced: boolean;
+  email: string | null | undefined;
+  onDone: () => void;
+}) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [again, setAgain] = useState("");
@@ -228,6 +243,18 @@ function ChangePasswordScreen({ forced, onDone }: { forced: boolean; onDone: () 
           : "At least 12 characters. Longer is better; symbols are optional."}
       </p>
       <form onSubmit={submit} className="grid gap-3">
+        {/* Not for the person — for their password manager, which needs a
+            username in the same form to know WHICH saved login to update.
+            Visually hidden rather than display:none so managers still see it. */}
+        <input
+          className="sr-only"
+          type="email"
+          autoComplete="username"
+          value={email ?? ""}
+          readOnly
+          tabIndex={-1}
+          aria-hidden="true"
+        />
         <div>
           <label className="label" htmlFor="cp-cur">{forced ? "Temporary password" : "Current password"}</label>
           <input id="cp-cur" className="select" type="password" autoComplete="current-password" required
@@ -447,7 +474,7 @@ function ChangeOrders({ pid }: { pid: number }) {
 
 // ----------------------------------------------------------------- app
 
-type State = "boot" | "login" | "mustchange" | "ok";
+type State = "boot" | "bootfail" | "login" | "mustchange" | "ok";
 
 export default function PortalApp() {
   const [me, setMe] = useState<PortalMe | null>(null);
@@ -460,33 +487,60 @@ export default function PortalApp() {
     setState(m.must_change_password ? "mustchange" : "ok");
   };
 
+  /** Back to the login screen, with the address back at /portal. The ONLY
+   *  way this app drops a session — see the file comment on URL state. */
+  const toLogin = (why?: string) => {
+    clearPortalToken();
+    setMe(null);
+    setNotice(why);
+    setState("login");
+    navigate("/portal", { replace: true });
+  };
+
+  const boot = () => {
+    setState("boot");
+    portalMe()
+      .then(settle)
+      .catch((e) => {
+        if (statusOf(e) === 401) {
+          // The token is genuinely dead.
+          toLogin("That link is no longer valid. Sign in, or ask your project manager for a new link.");
+        } else {
+          // The API restarting or the network dropping is not the token's
+          // fault — and the URL was scrubbed already, so throwing the token
+          // away here would strand a client holding a perfectly good link.
+          setState("bootfail");
+        }
+      });
+  };
+
   useEffect(() => {
     captureTokenFromUrl();
     if (!getPortalToken()) {
       setState("login");
       return;
     }
-    portalMe()
-      .then(settle)
-      .catch(() => {
-        clearPortalToken();
-        setNotice("That link is no longer valid. Sign in, or ask your project manager for a new link.");
-        setState("login");
-      });
+    boot();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const signOut = () => {
-    portalLogout().catch(() => undefined).finally(() => {
-      clearPortalToken();
-      setMe(null);
-      setNotice(undefined);
-      setState("login");
-      navigate("/portal", { replace: true });
-    });
+    portalLogout().catch(() => undefined).finally(() => toLogin(undefined));
   };
 
   if (state === "boot") {
     return <Shell me={null}><p className="text-sm text-brand-gray">Opening…</p></Shell>;
+  }
+  if (state === "bootfail") {
+    return (
+      <Shell me={null}>
+        <Notice
+          title="Could not reach the portal"
+          body="Your link is still valid. Please try again in a moment."
+          action={<button className="btn btn-primary" onClick={boot}>Try again</button>}
+        />
+      </Shell>
+    );
   }
   if (state === "login") {
     return (
@@ -498,7 +552,19 @@ export default function PortalApp() {
   if (state === "mustchange") {
     return (
       <Shell me={me} onLogout={signOut}>
-        <ChangePasswordScreen forced onDone={() => portalMe().then(settle)} />
+        <ChangePasswordScreen
+          forced
+          email={me?.email}
+          onDone={() =>
+            portalMe().then((m) => {
+              settle(m);
+              // The header's "Change password" link is live during a forced
+              // change; had it been clicked, the URL is /portal/account and
+              // would land the client on a second, optional change screen.
+              navigate("/portal", { replace: true });
+            })
+          }
+        />
       </Shell>
     );
   }
@@ -513,7 +579,7 @@ export default function PortalApp() {
           path="/portal/account"
           element={
             me?.kind === "session" ? (
-              <ChangePasswordScreen forced={false} onDone={() => navigate("/portal", { replace: true })} />
+              <ChangePasswordScreen forced={false} email={me.email} onDone={() => navigate("/portal", { replace: true })} />
             ) : (
               <Navigate to="/portal" replace />
             )
@@ -521,7 +587,7 @@ export default function PortalApp() {
         />
         <Route
           path="/portal/expired"
-          element={<ExpiredRedirect onExpired={() => { clearPortalToken(); setMe(null); setNotice("Your session ended. Please sign in again."); setState("login"); }} />}
+          element={<ExpiredRedirect onExpired={() => toLogin("Your session ended. Please sign in again.")} />}
         />
         <Route path="*" element={<Navigate to="/portal" replace />} />
       </Routes>
@@ -529,7 +595,8 @@ export default function PortalApp() {
   );
 }
 
-/** A 401 mid-session lands here; it hands control back to the login screen. */
+/** A 401 mid-session lands here; it hands control back to the login screen
+ *  (which also moves the address off this route — it must never persist). */
 function ExpiredRedirect({ onExpired }: { onExpired: () => void }) {
   useEffect(() => {
     onExpired();

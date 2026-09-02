@@ -160,4 +160,22 @@ def as_plain_user(app, db):
         app.dependency_overrides.pop(get_current_db_user, None)
 
 
+@pytest.fixture(autouse=True)
+def _fresh_login_throttle():
+    """The login throttle is process-global. Each test starts with an empty
+    window and the default limits, so one test's attempts never 429 the next
+    and a test that lowers a limit cannot leak it."""
+    from api import portal as portal_api
+    limiters = (portal_api.login_ip_limiter, portal_api.login_email_limiter)
+    defaults = [lim.limit for lim in limiters]
+    for lim in limiters:
+        lim.reset()
+    try:
+        yield
+    finally:
+        for lim, d in zip(limiters, defaults):
+            lim.reset()
+            lim.limit = d
+
+
 __all__ = ["datetime", "timedelta"]

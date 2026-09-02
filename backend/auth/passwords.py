@@ -6,10 +6,14 @@ if argon2-cffi is missing the import fails at boot, which is the right time
 to find out, rather than silently degrading to something that will be in the
 news later.
 
-CONSTANT-TIME MISSES. ``verify_password`` always runs a full argon2 verify
+CONSTANT-COST MISSES. ``verify_password`` always runs a full argon2 verify
 even when there is no account for the email — against a precomputed dummy
-hash — so an attacker timing the login form cannot tell "no such user" from
-"wrong password". The login route also returns one identical message for both.
+hash — so the HASHING step costs the same whether or not the account exists.
+That is the step worth equalising; the login route's other work (a failure
+counter written for a live account, not for an unknown one) is not identical,
+and the route's per-source throttle is what limits how many timing samples
+anyone can take. The login route returns one identical message for every
+failure.
 
 POLICY is length-based only: at least 12 characters, at most 128, and not the
 account's own email. Composition rules (one digit, one symbol…) push people

@@ -1432,15 +1432,20 @@ class ClientPortalAccount(Base):
     client unchanged. One principal type, two doors.
 
     `password_hash` is argon2id (auth/passwords.py). Lockout is per account:
-    five consecutive failures set `locked_until` fifteen minutes out, and the
-    lock is deliberately NOT extended by further attempts, so hammering the
-    form cannot hold a client out indefinitely. `is_active` is checked on every
-    portal request, not only at login, so deactivation is immediate.
+    five consecutive failures set `locked_until` fifteen minutes out; the lock
+    is not extended by attempts made while it holds. That alone does not stop
+    a determined source from re-locking the account every fifteen minutes —
+    the per-source throttle on /api/portal/login is what bounds that, and an
+    admin "Enable" clears any lock. The counter is incremented in SQL, not in
+    the ORM, so concurrent failures cannot lose the update. `is_active` is
+    checked on every portal request, not only at login, so deactivation is
+    immediate.
 
-    `must_change_password` is set on admin-issued temporary passwords; the
-    portal refuses everything but change-password until it clears. There is
-    no self-service reset — resets are admin-driven until that email surface
-    is designed on its own terms.
+    `must_change_password` is set on admin-issued temporary passwords; every
+    data route answers 403 until it clears — on the server, via
+    auth/portal.py::require_settled_portal_client, not only in the SPA. There
+    is no self-service reset — resets are admin-driven until that email
+    surface is designed on its own terms.
     """
     __tablename__ = "client_portal_accounts"
     __table_args__ = (

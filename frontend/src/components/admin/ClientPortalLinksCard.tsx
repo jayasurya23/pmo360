@@ -10,12 +10,19 @@
  * and this card does not soften them: there is no "show it again", only
  * "revoke and reissue" / "reset".
  *
+ * The one-time secret is shown until the admin dismisses it, revokes it, or
+ * acts on another row — never silently across an unrelated reload, and never
+ * for a link that has just been revoked.
+ *
  * The invite link is assembled here from window.location.origin because the
- * server does not reliably know the public hostname behind the ingress.
+ * server does not reliably know the public hostname behind the ingress. The
+ * token goes in the URL FRAGMENT: a fragment never reaches the server, so it
+ * cannot land in an access log or a Referer header.
  */
 import { useCallback, useEffect, useState } from "react";
 import clsx from "clsx";
 import { useApp } from "@/lib/state";
+import { useConfirm } from "@/components/ConfirmDialog";
 import {
   createPortalAccount,
   issuePortalToken,
@@ -52,6 +59,20 @@ function CopyBox({ value }: { value: string }) {
       >
         {copied ? "Copied" : "Copy"}
       </button>
+    </div>
+  );
+}
+
+/** The one-time secret box. Same chrome for a password and for a link. */
+function SecretBox({ title, hint, value, onDismiss }: { title: string; hint: string; value: string; onDismiss: () => void }) {
+  return (
+    <div className="border border-brand-green rounded p-4 mb-5 bg-brand-green/5">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="text-sm font-semibold mb-1">{title}</div>
+        <button className="btn btn-ghost text-xs" onClick={onDismiss}>Dismiss</button>
+      </div>
+      <p className="text-xs text-brand-gray mb-2">{hint}</p>
+      <CopyBox value={value} />
     </div>
   );
 }
@@ -95,6 +116,7 @@ export default function ClientPortalLinksCard() {
 // ----------------------------------------------------------------- accounts
 
 function AccountsPanel({ clientId, portalOrigin }: { clientId: number; portalOrigin: string }) {
+  const confirm = useConfirm();
   const [rows, setRows] = useState<PortalAccountOut[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -129,13 +151,31 @@ function AccountsPanel({ clientId, portalOrigin }: { clientId: number; portalOri
       .finally(() => setBusy(false));
   };
 
-  const reset = (id: number) => {
+  // Reset and Disable both sign the client out everywhere; neither is a thing
+  // to do on a misclick.
+  const reset = async (a: PortalAccountOut) => {
+    const ok = await confirm({
+      title: `Reset the password for ${a.email}?`,
+      body: "This signs them out everywhere and invalidates their current password. You will get a new temporary password to hand over.",
+      confirmLabel: "Reset password",
+    });
+    if (!ok) return;
     setErr(null);
-    resetPortalAccountPassword(id).then((a) => { setCreated(a); load(); }).catch((e) => setErr(errText(e)));
+    setCreated(null);
+    resetPortalAccountPassword(a.id).then((r) => { setCreated(r); load(); }).catch((e) => setErr(errText(e)));
   };
 
-  const toggle = (a: PortalAccountOut) => {
+  const toggle = async (a: PortalAccountOut) => {
+    if (a.is_active) {
+      const ok = await confirm({
+        title: `Disable ${a.email}?`,
+        body: "They are signed out everywhere immediately and cannot sign in until the account is enabled again.",
+        confirmLabel: "Disable",
+      });
+      if (!ok) return;
+    }
     setErr(null);
+    setCreated(null);
     setPortalAccountActive(a.id, !a.is_active).then(load).catch((e) => setErr(errText(e)));
   };
 
@@ -144,7 +184,7 @@ function AccountsPanel({ clientId, portalOrigin }: { clientId: number; portalOri
       <h3 className="text-sm font-semibold mb-1">Sign-in accounts</h3>
       <p className="text-sm text-brand-gray mb-4 max-w-2xl">
         The client signs in at <code className="text-xs">{portalOrigin}/portal</code> with their email. They must choose their own
-        password on first sign-in.
+        password on first sign-in; until they do, the portal shows them nothing.
       </p>
 
       <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] items-end mb-5">
@@ -166,13 +206,12 @@ function AccountsPanel({ clientId, portalOrigin }: { clientId: number; portalOri
       {err && <p className="text-sm text-brand-red mb-3">{err}</p>}
 
       {created && (
-        <div className="border border-brand-green rounded p-4 mb-5 bg-brand-green/5">
-          <div className="text-sm font-semibold mb-1">Temporary password for {created.email}</div>
-          <p className="text-xs text-brand-gray mb-2">
-            Give this to the client now — it will not be shown again. They will be asked to replace it on first sign-in.
-          </p>
-          <CopyBox value={created.temporary_password} />
-        </div>
+        <SecretBox
+          title={`Temporary password for ${created.email}`}
+          hint="Give this to the client now — it will not be shown again. They will be asked to replace it on first sign-in."
+          value={created.temporary_password}
+          onDismiss={() => setCreated(null)}
+        />
       )}
 
       {loading ? (
@@ -202,8 +241,11 @@ function AccountsPanel({ clientId, portalOrigin }: { clientId: number; portalOri
                 )}>
                   {a.is_active ? "Active" : "Disabled"}
                 </span>
-                <button className="btn btn-ghost text-xs" onClick={() => reset(a.id)}>Reset password</button>
-                <button className="btn btn-ghost text-xs" onClick={() => toggle(a)}>{a.is_active ? "Disable" : "Enable"}</button>
+                {/* A disabled account cannot use a new password; the server refuses the reset too. */}
+                {a.is_active && (
+                  <button className="btn btn-ghost text-xs" onClick={() => void reset(a)}>Reset password</button>
+                )}
+                <button className="btn btn-ghost text-xs" onClick={() => void toggle(a)}>{a.is_active ? "Disable" : "Enable"}</button>
               </div>
             </div>
           ))}
@@ -216,6 +258,7 @@ function AccountsPanel({ clientId, portalOrigin }: { clientId: number; portalOri
 // ----------------------------------------------------------------- links
 
 function LinksPanel({ clientId, portalOrigin }: { clientId: number; portalOrigin: string }) {
+  const confirm = useConfirm();
   const [rows, setRows] = useState<PortalTokenOut[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -245,13 +288,21 @@ function LinksPanel({ clientId, portalOrigin }: { clientId: number; portalOrigin
       .finally(() => setIssuing(false));
   };
 
-  const revoke = (id: number) => {
+  const revoke = async (r: PortalTokenOut) => {
+    const ok = await confirm({
+      title: `Revoke "${r.label}"?`,
+      body: "Anyone holding this link loses access immediately. A new link can be issued at any time.",
+      confirmLabel: "Revoke",
+    });
+    if (!ok) return;
     setErr(null);
-    revokePortalToken(id).then(load).catch((e) => setErr(errText(e)));
+    // Never keep showing a link that has just been killed.
+    if (issued?.id === r.id) setIssued(null);
+    revokePortalToken(r.id).then(load).catch((e) => setErr(errText(e)));
   };
 
-  const link = issued ? `${portalOrigin}/portal?token=${issued.raw_token}` : null;
-  const invites = rows.filter((r) => (r as PortalTokenOut & { kind?: string }).kind !== "session");
+  const link = issued ? `${portalOrigin}/portal#token=${issued.raw_token}` : null;
+  const invites = rows.filter((r) => r.kind !== "session");
 
   return (
     <section className="card p-5 sm:p-6">
@@ -284,11 +335,12 @@ function LinksPanel({ clientId, portalOrigin }: { clientId: number; portalOrigin
       {err && <p className="text-sm text-brand-red mb-3">{err}</p>}
 
       {issued && link && (
-        <div className="border border-brand-green rounded p-4 mb-5 bg-brand-green/5">
-          <div className="text-sm font-semibold mb-1">Link issued for {issued.label}</div>
-          <p className="text-xs text-brand-gray mb-2">Copy it now — it will not be shown again. Valid until {fmt(issued.expires_at)}.</p>
-          <CopyBox value={link} />
-        </div>
+        <SecretBox
+          title={`Link issued for ${issued.label}`}
+          hint={`Copy it now — it will not be shown again. Valid until ${fmt(issued.expires_at)}.`}
+          value={link}
+          onDismiss={() => setIssued(null)}
+        />
       )}
 
       {loading ? (
@@ -316,7 +368,7 @@ function LinksPanel({ clientId, portalOrigin }: { clientId: number; portalOrigin
                 )}>
                   {r.revoked_at ? "Revoked" : r.is_live ? "Live" : "Expired"}
                 </span>
-                {r.is_live && <button className="btn btn-ghost text-xs" onClick={() => revoke(r.id)}>Revoke</button>}
+                {r.is_live && <button className="btn btn-ghost text-xs" onClick={() => void revoke(r)}>Revoke</button>}
               </div>
             </div>
           ))}

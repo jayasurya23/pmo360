@@ -138,6 +138,25 @@ def require_portal_client(
     )
 
 
+def require_settled_portal_client(
+    principal: PortalPrincipal = Depends(require_portal_client),
+) -> PortalPrincipal:
+    """``require_portal_client`` plus: the account is not on a temporary
+    password. Every DATA route uses this one.
+
+    A session minted from a temporary password may call /me, /logout and
+    /change-password and nothing else. That has to hold on the server: the
+    SPA's forced-change screen is a convenience, and anyone who intercepts a
+    temporary password would otherwise read the whole portal with curl —
+    without ever burning the password, so the real client never notices."""
+    if principal.must_change_password:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Password change required.",
+        )
+    return principal
+
+
 # --------------------------------------------------------------------------
 # Scoping helpers — the only way portal routes reach portfolio rows.
 # --------------------------------------------------------------------------

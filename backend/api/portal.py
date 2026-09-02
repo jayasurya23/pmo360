@@ -13,8 +13,10 @@ margin disclosure.
 
 THREE RULES, ALL ENFORCED IN THIS FILE
 --------------------------------------
-1. Every route depends on ``require_portal_client``. There is no anonymous
-   portal route and no way to reach one with an internal Bearer token.
+1. Every route depends on ``require_portal_client`` — and every DATA route on
+   ``require_settled_portal_client``, which additionally refuses a session
+   that is still on a temporary password. There is no anonymous portal route
+   and no way to reach one with an internal Bearer token.
 2. Every query starts from ``portal_portfolios``/``scoped_portfolio``. Nothing
    in this module takes a client_id from the request — scope comes from the
    token, full stop.
@@ -56,11 +58,15 @@ Omitted on purpose, each for a reason the audit established:
 """
 from __future__ import annotations
 
+import threading
+import time
+from collections import deque
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import DateTime, case, func, literal, select, update
 from sqlalchemy.orm import Session
 
 from auth.passwords import (
@@ -68,7 +74,7 @@ from auth.passwords import (
 )
 from auth.portal import (
     PortalPrincipal, hash_token, new_raw_token, portal_portfolios,
-    require_portal_client, scoped_portfolio,
+    require_portal_client, require_settled_portal_client, scoped_portfolio,
 )
 from core.deps import get_db
 from db.models import (
@@ -102,6 +108,12 @@ class PortalMeOut(BaseModel):
 _SESSION_HOURS = 12
 _LOCKOUT_ATTEMPTS = 5
 _LOCKOUT_MINUTES = 15
+#: Longest password accepted on the wire. Enforced in the handlers rather than
+#: as a Field constraint: a Pydantic 422 echoes the rejected value back in the
+#: response body, and a password must never appear in a response.
+_PASSWORD_WIRE_MAX = 256
+#: ClientPortalToken.label is String(120); an email can be 255.
+_LABEL_MAX = 120
 #: One message for every failure — unknown email, wrong password, inactive,
 #: locked. Distinguishing them tells an attacker which emails have accounts.
 _BAD_LOGIN = "Incorrect email or password."
@@ -110,7 +122,7 @@ _BAD_LOGIN = "Incorrect email or password."
 class PortalLoginIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: str = Field(min_length=3, max_length=255)
-    password: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1)
 
 
 class PortalLoginOut(BaseModel):
@@ -122,8 +134,81 @@ class PortalLoginOut(BaseModel):
 
 class PortalChangePasswordIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    current_password: str = Field(min_length=1, max_length=256)
-    new_password: str = Field(min_length=1, max_length=256)
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=1)
+
+
+# ---------------------------------------------------------------- throttle
+# Per-account lockout on its own is not enough. It does nothing for unknown
+# emails, each of which still costs a full argon2 verify (~50 ms, 64 MiB), and
+# "five failures per fifteen minutes" is exactly the budget an attacker needs
+# to keep ONE account locked indefinitely. A per-source ceiling bounds both.
+#
+# In-process and per worker: with N uvicorn workers the real ceiling is N×.
+# That is fine for a login form — the point is to make floods and sustained
+# re-locking expensive, not to count exactly.
+
+class _SlidingWindow:
+    """At most ``limit`` hits per key per rolling ``window`` seconds."""
+
+    def __init__(self, limit: int, window_seconds: int) -> None:
+        self.limit = limit
+        self.window = window_seconds
+        self._hits: dict[str, deque[float]] = {}
+        self._lock = threading.Lock()
+
+    def hit(self, key: str) -> Optional[int]:
+        """Record one hit. None when allowed; otherwise seconds until a slot
+        frees up, for a Retry-After header."""
+        now = time.monotonic()
+        cutoff = now - self.window
+        with self._lock:
+            q = self._hits.get(key)
+            if q is None:
+                q = self._hits[key] = deque()
+            while q and q[0] <= cutoff:
+                q.popleft()
+            if len(q) >= self.limit:
+                return max(1, int(q[0] + self.window - now) + 1)
+            q.append(now)
+            if len(self._hits) > 5000:   # opportunistic sweep of idle keys
+                for k in [k for k, v in self._hits.items() if not v or v[-1] <= cutoff]:
+                    del self._hits[k]
+            return None
+
+    def reset(self) -> None:
+        with self._lock:
+            self._hits.clear()
+
+
+#: 20 attempts a minute per source address, 10 per email — whether or not the
+#: email exists, so the throttle itself cannot be used to enumerate.
+login_ip_limiter = _SlidingWindow(limit=20, window_seconds=60)
+login_email_limiter = _SlidingWindow(limit=10, window_seconds=60)
+
+
+def _client_ip(request: Request) -> str:
+    """The caller's address as the ingress saw it.
+
+    Behind Container Apps the ingress APPENDS the real peer to X-Forwarded-For,
+    so the last entry is the one a client cannot forge; the first entry is
+    whatever the client chose to send. (uvicorn's --proxy-headers takes the
+    first, which is why this reads the header itself.) With no proxy header at
+    all — local dev — the socket peer."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        last = xff.rsplit(",", 1)[-1].strip()
+        if last:
+            return last
+    return request.client.host if request.client else "unknown"
+
+
+def _too_many(retry_after: int, detail: str = "Too many sign-in attempts. Try again in a minute.") -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=detail,
+        headers={"Retry-After": str(retry_after)},
+    )
 
 
 def _bad_login() -> HTTPException:
@@ -138,7 +223,7 @@ def _mint_session(db: Session, acct: ClientPortalAccount, now: datetime) -> tupl
         contact_id=acct.contact_id,
         account_id=acct.id,
         kind="session",
-        label=f"session · {acct.email}",
+        label=f"session · {acct.email}"[:_LABEL_MAX],
         token_hash=hash_token(raw),
         expires_at=expires,
     ))
@@ -156,17 +241,59 @@ def _revoke_sessions(db: Session, account_id: int, now: datetime, keep_token_id:
     q.update({"revoked_at": now}, synchronize_session=False)
 
 
+def _record_failure(db: Session, account_id: int, now: datetime) -> bool:
+    """Count one wrong password and lock at the threshold — in ONE statement.
+
+    Read-increment-write through the ORM is a lost update: concurrent requests
+    each read the same starting value during their ~50 ms verify and each
+    write start+1, so twelve parallel guesses left failed_attempts at 1 and no
+    lock. Doing the arithmetic in SQL makes the increment atomic on SQLite and
+    Postgres alike. Committed here, before the caller raises, because get_db
+    rolls back on an exception — and a rolled-back counter is a lockout that
+    never fires. Returns True when the account is locked after this failure."""
+    nxt = func.coalesce(ClientPortalAccount.failed_attempts, 0) + 1
+    tripped = nxt >= _LOCKOUT_ATTEMPTS
+    db.execute(
+        update(ClientPortalAccount)
+        .where(ClientPortalAccount.id == account_id)
+        .values(
+            failed_attempts=case((tripped, 0), else_=nxt),
+            locked_until=case(
+                (tripped, literal(now + timedelta(minutes=_LOCKOUT_MINUTES), DateTime())),
+                else_=ClientPortalAccount.locked_until,
+            ),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    locked_until = db.execute(
+        select(ClientPortalAccount.locked_until).where(ClientPortalAccount.id == account_id)
+    ).scalar_one()
+    return locked_until is not None and locked_until > now
+
+
 @router.post("/login", response_model=PortalLoginOut)
-def login(body: PortalLoginIn, db: Session = Depends(get_db)) -> PortalLoginOut:
+def login(body: PortalLoginIn, request: Request, db: Session = Depends(get_db)) -> PortalLoginOut:
     """Verify a client's password and mint a 12-hour portal session.
 
-    Order matters for timing: the argon2 verify runs BEFORE any account-state
-    branch, against a dummy hash when there is no account, so every failure
-    path costs the same. Failure counters are committed explicitly, because
-    get_db rolls back when we raise — and a rolled-back failed_attempts is a
-    lockout that never fires.
+    The argon2 verify runs BEFORE any account-state branch, against a dummy
+    hash when there is no account, so the hashing step costs the same on every
+    path. That is not a complete timing blind: a wrong password on a live
+    account also writes and commits the failure counter, which an unknown
+    email does not, and that difference is measurable in a few dozen samples.
+    The per-source throttle is what bounds how many samples anybody gets; the
+    message is identical on every path regardless.
     """
+    wait = login_ip_limiter.hit(_client_ip(request))
+    if wait is not None:
+        raise _too_many(wait)
     email = body.email.strip().lower()
+    wait = login_email_limiter.hit(email)
+    if wait is not None:
+        raise _too_many(wait)
+    if len(body.password) > _PASSWORD_WIRE_MAX:
+        raise _bad_login()
+
     now = datetime.utcnow()
     acct = (
         db.query(ClientPortalAccount)
@@ -179,11 +306,7 @@ def login(body: PortalLoginIn, db: Session = Depends(get_db)) -> PortalLoginOut:
         raise _bad_login()
 
     if not ok:
-        acct.failed_attempts = int(acct.failed_attempts or 0) + 1
-        if acct.failed_attempts >= _LOCKOUT_ATTEMPTS:
-            acct.locked_until = now + timedelta(minutes=_LOCKOUT_MINUTES)
-            acct.failed_attempts = 0
-        db.commit()
+        _record_failure(db, acct.id, now)
         raise _bad_login()
 
     acct.failed_attempts = 0
@@ -217,20 +340,53 @@ def change_password(
     """Set a new password on the account behind this session.
 
     Re-verifies the current password even though the caller holds a live
-    session — a stolen session must not be enough to lock the real owner out.
-    Every OTHER session on the account is revoked; this one survives."""
+    session — a stolen session must not be enough to take the account over.
+    That re-verify is a login in disguise, so it gets every login control:
+    refused while the account is locked, each miss counted through the same
+    atomic counter as the login form, and when the misses trip the lock THIS
+    session is revoked along with the rest — a session guessing at its own
+    password is the signal of theft, not of a forgetful owner.
+
+    Order matters. The new password is checked against policy BEFORE the
+    current one is verified, so a deliberately bad new password can never be
+    used to test a guess for free (the old 400-then-422 ordering was a
+    password oracle). On success every OTHER session on the account is
+    revoked; this one survives.
+    """
     if principal.kind != "session" or principal.account_id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "This link is not a password account.")
     acct = db.get(ClientPortalAccount, principal.account_id)
     if acct is None or not acct.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "A valid portal session is required.")
-    if not verify_password(acct.password_hash, body.current_password):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The current password is incorrect.")
+
+    now = datetime.utcnow()
+    if acct.is_locked:
+        wait = max(1, int((acct.locked_until - now).total_seconds()) + 1)
+        raise _too_many(wait, "Too many attempts. Try again later.")
+
+    # Policy first — see the docstring. Neither check touches the stored hash.
     problem = validate_new_password(body.new_password, email=acct.email)
     if problem:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
+    if body.new_password == body.current_password:
+        # Once current_password is verified below this is exactly
+        # verify(hash, new_password), for free. Without it a temporary
+        # password can be "changed" to itself, clearing must-change while the
+        # admin who issued it still knows it.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "The new password must be different from the current one.",
+        )
 
-    now = datetime.utcnow()
+    if (
+        len(body.current_password) > _PASSWORD_WIRE_MAX
+        or not verify_password(acct.password_hash, body.current_password)
+    ):
+        if _record_failure(db, acct.id, now):
+            _revoke_sessions(db, acct.id, now)   # every session, this one included
+            db.commit()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The current password is incorrect.")
+
     acct.password_hash = hash_password(body.new_password)
     acct.must_change_password = False
     acct.password_changed_at = now
@@ -279,7 +435,7 @@ def me(principal: PortalPrincipal = Depends(require_portal_client)) -> PortalMeO
 
 @router.get("/projects", response_model=list[PortalPortfolioOut])
 def projects(
-    principal: PortalPrincipal = Depends(require_portal_client),
+    principal: PortalPrincipal = Depends(require_settled_portal_client),
     db: Session = Depends(get_db),
 ) -> list[PortalPortfolioOut]:
     """The client's portfolios and the sub-projects under each. This is the
@@ -521,7 +677,7 @@ def _co_summary(rows: list[ChangeOrder]) -> PortalChangeOrderSummaryOut:
 @router.get("/projects/{portfolio_id}/dashboard", response_model=PortalDashboardOut)
 def dashboard(
     portfolio_id: int,
-    principal: PortalPrincipal = Depends(require_portal_client),
+    principal: PortalPrincipal = Depends(require_settled_portal_client),
     db: Session = Depends(get_db),
 ) -> PortalDashboardOut:
     p = scoped_portfolio(db, principal, portfolio_id)
@@ -564,7 +720,7 @@ def dashboard(
 @router.get("/projects/{portfolio_id}/rfis", response_model=list[PortalRfiOut])
 def rfis(
     portfolio_id: int,
-    principal: PortalPrincipal = Depends(require_portal_client),
+    principal: PortalPrincipal = Depends(require_settled_portal_client),
     db: Session = Depends(get_db),
 ) -> list[PortalRfiOut]:
     p = scoped_portfolio(db, principal, portfolio_id)
@@ -575,7 +731,7 @@ def rfis(
 @router.get("/projects/{portfolio_id}/waiting-on-you", response_model=PortalWaitingOut)
 def waiting_on_you(
     portfolio_id: int,
-    principal: PortalPrincipal = Depends(require_portal_client),
+    principal: PortalPrincipal = Depends(require_settled_portal_client),
     db: Session = Depends(get_db),
 ) -> PortalWaitingOut:
     """What the CLIENT owes Castillo: RFIs monday marks as waiting on the
@@ -600,7 +756,7 @@ def waiting_on_you(
 @router.get("/projects/{portfolio_id}/change-orders", response_model=PortalChangeOrdersOut)
 def change_orders(
     portfolio_id: int,
-    principal: PortalPrincipal = Depends(require_portal_client),
+    principal: PortalPrincipal = Depends(require_settled_portal_client),
     db: Session = Depends(get_db),
 ) -> PortalChangeOrdersOut:
     p = scoped_portfolio(db, principal, portfolio_id)
