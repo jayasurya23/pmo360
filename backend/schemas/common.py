@@ -592,6 +592,10 @@ class ActionItemOut(ORMModel):
     # render in the action log without a User row.
     owner_user_id: Optional[int] = None
     owner_user: Optional[UserStub] = None
+    # Who closes this: None = nobody has triaged it, False = ours, True = the
+    # client's. Three-valued because False and "never looked" are different
+    # answers, and only True puts the row on a client-facing screen.
+    client_owed: Optional[bool] = None
     due_date: Optional[date] = None
     status: str
     created_by: Optional[UserStub] = None
@@ -741,6 +745,12 @@ class ParsedActionItemOut(BaseModel):
     # null = the portfolio as a whole (the default). Round-trips so a saved
     # meeting reopens with its tags intact.
     portfolio_project_id: Optional[int] = None
+    # Who closes it: null = untriaged, false = ours, true = the client's.
+    # Carried here as well as on ActionItemUpdate because a meeting re-save
+    # DELETES and rebuilds its actions (core/services.py) — a flag that lived
+    # only on the Actions page would be wiped the next time somebody edited
+    # the minutes, and the client's "waiting on you" list would empty itself.
+    client_owed: Optional[bool] = None
     due_date: Optional[str] = None
     status: str = "open"
 
@@ -814,6 +824,10 @@ class ActionItemUpdate(BaseModel):
     # explicitly clear the user link (e.g. action reassigned to a vendor);
     # omit the field entirely to leave the existing link untouched.
     owner_user_id: Optional[int] = None
+    # Who closes this. Send true (client's), false (ours) or null (back to
+    # untriaged); omit to leave it alone. Read through model_fields_set for the
+    # same reason as owner_user_id — null here is a value, not an absence.
+    client_owed: Optional[bool] = None
     due_date: Optional[date] = None
     status: Optional[str] = None
     closing_meeting_id: Optional[int] = None
@@ -828,6 +842,7 @@ class ActionItemCreate(BaseModel):
     text: str
     owner: Optional[str] = ""
     owner_user_id: Optional[int] = None
+    client_owed: Optional[bool] = None
     due_date: Optional[date] = None
     status: str = "open"
 

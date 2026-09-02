@@ -299,9 +299,17 @@ export default function History() {
           sub_points: [],
         })),
       })),
+      // Every field the Review editor can set has to come back, because a
+      // re-save REBUILDS this meeting's actions from exactly this payload
+      // (backend/core/services.py). Anything omitted here is not "left alone",
+      // it is erased — which is what used to happen to the owner link and the
+      // sub-project tag.
       action_items: detail.raised_actions.map((a) => ({
         text: a.text,
         owner: a.owner || "",
+        owner_user_id: a.owner_user_id ?? null,
+        portfolio_project_id: a.portfolio_project_id ?? null,
+        client_owed: a.client_owed ?? null,
         due_date: a.due_date || null,
         status: a.status,
       })),

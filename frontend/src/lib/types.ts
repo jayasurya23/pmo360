@@ -322,6 +322,10 @@ export interface ActionItem {
    *  freeform `owner` string so external owners (vendors) still render. */
   owner_user_id?: number | null;
   owner_user?: UserStub | null;
+  /** Who closes it: `null`/undefined = nobody has triaged it, `false` = ours,
+   *  `true` = the client's. Only `true` puts the action on the client portal's
+   *  "waiting on you" list, and only once its meeting has been sent. */
+  client_owed?: boolean | null;
   due_date?: string | null;
   status: string;
   created_by?: UserStub | null;
@@ -499,6 +503,9 @@ export interface ParsedActionItem {
    *  whole, which is the default. Carried through to the saved ActionItem and
    *  round-tripped on reopen, so a saved meeting keeps its tags. */
   portfolio_project_id?: number | null;
+  /** Who closes it — see `ActionItem.client_owed`. Carried on the parsed shape
+   *  too because a meeting re-save rebuilds its actions from this payload. */
+  client_owed?: boolean | null;
   due_date: string | null;
   status: string;
 }

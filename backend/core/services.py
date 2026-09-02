@@ -192,6 +192,9 @@ def _write_meeting_children(session: Session, meeting: Meeting,
             originating_meeting_id=meeting.id,
             text=a.text, owner=a.owner,
             owner_user_id=getattr(a, "owner_user_id", None),
+            # getattr, like owner_user_id above: an older client's payload
+            # simply has no opinion, and untriaged is the right default.
+            client_owed=getattr(a, "client_owed", None),
             due_date=due, status=a.status,
             created_by_id=actor_id, updated_by_id=actor_id,
         ))

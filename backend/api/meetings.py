@@ -335,6 +335,7 @@ def regenerate_summary(
             # sub-projects it was filed with, rather than silently reverting
             # every action to portfolio-wide on the next save.
             portfolio_project_id=a.portfolio_project_id,
+            client_owed=a.client_owed,
             due_date=a.due_date.isoformat() if a.due_date else None,
             status=a.status or "open",
         ) for a in meeting.client_facing_actions],

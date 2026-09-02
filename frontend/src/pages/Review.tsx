@@ -10,6 +10,7 @@ import EmptyState from "@/components/EmptyState";
 import DiscussionPointsEditor from "@/components/DiscussionPointsEditor";
 import AgendaEditor from "@/components/AgendaEditor";
 import { StatusPill, StatusSelect } from "@/components/StatusPill";
+import OwedBySelect from "@/components/actions/OwedBySelect";
 import SaveStatus from "@/components/SaveStatus";
 import { SortableList } from "@/components/SortableList";
 import OwnerPicker from "@/components/actions/OwnerPicker";
@@ -867,6 +868,20 @@ export default function Review() {
                       }
                     />
                   )}
+                  {/* Set it here, while the call is fresh, rather than hunting
+                      the row down on the Actions page afterwards. Nothing is
+                      client-visible until these minutes are SENT. */}
+                  <OwedBySelect
+                    value={a.client_owed}
+                    ariaLabel={`Who closes action ${idx + 1}`}
+                    onChange={(next) =>
+                      setActionItems(
+                        actionItems.map((x, i) =>
+                          i === idx ? { ...x, client_owed: next } : x
+                        )
+                      )
+                    }
+                  />
                 </div>
                 <input
                   type="date"

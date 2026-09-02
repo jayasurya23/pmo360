@@ -6,6 +6,7 @@ import PageHeader from "@/components/PageHeader";
 import { DraftTextarea, type DraftCommit } from "@/components/DraftField";
 import EmptyState from "@/components/EmptyState";
 import { StatusSelect } from "@/components/StatusPill";
+import OwedBySelect, { OWED_BY_HINT } from "@/components/actions/OwedBySelect";
 import { useConfirm } from "@/components/ConfirmDialog";
 import OwnerPicker from "@/components/actions/OwnerPicker";
 import SubProjectSelect from "@/components/SubProjectSelect";
@@ -316,7 +317,7 @@ export default function Actions() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkMode, setBulkMode] = useState<null | "owner" | "due">(null);
+  const [bulkMode, setBulkMode] = useState<null | "owner" | "due" | "owed">(null);
   /** Rows awaiting a move/copy destination. Holds ids rather than the action
    *  objects so a refetch underneath the open dialog cannot leave it acting on
    *  stale copies. */
@@ -777,6 +778,10 @@ export default function Actions() {
   // re-rendered every row on every character, which is the same stutter this
   // page was reported for.
   const bulkApplyOwner = (owner: string) => runBulk({ owner });
+  /** Triage the selection in one go. `null` puts rows back to untriaged, which
+   *  is how a mis-swept batch is undone. */
+  const bulkApplyOwed = (client_owed: boolean | null) =>
+    runBulk({ client_owed } as Partial<ActionItem>);
 
   const bulkApplyDue = async () => {
     await runBulk({ due_date: bulkDueValue || null });
@@ -930,7 +935,7 @@ export default function Actions() {
           </div>
         </div>
 
-        <div>
+        <div className="space-y-1">
           <CellLabel>Owner</CellLabel>
           <OwnerPicker
             value={a.owner || ""}
@@ -942,6 +947,20 @@ export default function Actions() {
                 ),
               );
               void handlePatch(a.id, { owner, owner_user_id });
+            }}
+          />
+          {/* Who closes it. Sits under the owner because it answers the
+              question the owner column cannot: `owner` is free text and a null
+              owner_user_id covers vendors as well as clients. */}
+          <OwedBySelect
+            value={a.client_owed}
+            ariaLabel={`Who closes action ${a.id}`}
+            className="select select-sm w-full text-[12.5px]"
+            onChange={(next) => {
+              setActions((prev) =>
+                prev.map((x) => (x.id === a.id ? { ...x, client_owed: next } : x)),
+              );
+              void handlePatch(a.id, { client_owed: next });
             }}
           />
         </div>
@@ -1185,6 +1204,12 @@ export default function Actions() {
             Change due date…
           </BulkButton>
           <BulkButton
+            onClick={() => setBulkMode(bulkMode === "owed" ? null : "owed")}
+            disabled={bulkBusy}
+          >
+            Owed by…
+          </BulkButton>
+          <BulkButton
             onClick={() => setReassigning({ ids: Array.from(selectedIds) })}
             disabled={bulkBusy}
           >
@@ -1204,6 +1229,42 @@ export default function Actions() {
               onApply={bulkApplyOwner}
               onCancel={() => setBulkMode(null)}
             />
+          )}
+
+          {bulkMode === "owed" && (
+            <div className="flex w-full flex-wrap items-center gap-2 border-t border-surface-hairline pt-2.5">
+              <span className="text-xs text-brand-gray">{OWED_BY_HINT}</span>
+              <div className="ml-auto flex items-center gap-2">
+                <button
+                  className="btn-ghost"
+                  onClick={() => bulkApplyOwed(null)}
+                  disabled={bulkBusy}
+                >
+                  Untriaged
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={() => bulkApplyOwed(false)}
+                  disabled={bulkBusy}
+                >
+                  Us
+                </button>
+                <button
+                  className="btn-primary"
+                  onClick={() => bulkApplyOwed(true)}
+                  disabled={bulkBusy}
+                >
+                  The client
+                </button>
+                <button
+                  className="btn-ghost"
+                  onClick={() => setBulkMode(null)}
+                  disabled={bulkBusy}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
           )}
 
           {bulkMode === "due" && (

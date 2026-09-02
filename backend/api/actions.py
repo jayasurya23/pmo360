@@ -182,6 +182,7 @@ def create_action(
         text=payload.text,
         owner=payload.owner or None,
         owner_user_id=payload.owner_user_id,
+        client_owed=payload.client_owed,
         due_date=payload.due_date,
         status=payload.status or "open",
         created_by_id=actor.id,
@@ -222,6 +223,10 @@ def patch_action(
         action.owner = payload.owner
     if "owner_user_id" in sent:
         action.owner_user_id = payload.owner_user_id
+    if "client_owed" in sent:
+        # Straight assignment, null included: "put it back to untriaged" is a
+        # thing a PM does after deciding an action was never the client's.
+        action.client_owed = payload.client_owed
     if "due_date" in sent:
         action.due_date = payload.due_date
     if "status" in sent and payload.status is not None:

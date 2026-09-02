@@ -532,6 +532,10 @@ export const updateAction = (
      *  explicitly clear the link (action reassigned to a vendor). Omit
      *  to leave the existing link untouched. */
     owner_user_id: number | null;
+    /** Who closes it: true = the client's, false = ours, null = back to
+     *  untriaged. Omit to leave it alone. Only `true` reaches the client
+     *  portal, and only after the originating meeting is sent. */
+    client_owed: boolean | null;
     due_date: string | null;
     status: string;
     closing_meeting_id: number;
@@ -543,6 +547,7 @@ export const createAction = (payload: {
   text: string;
   owner?: string;
   owner_user_id?: number | null;
+  client_owed?: boolean | null;
   due_date?: string | null;
   status?: string;
 }) => apiClient.post<ActionItem>("/actions", payload).then((r) => r.data);

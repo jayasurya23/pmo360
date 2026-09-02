@@ -50,6 +50,10 @@ class ParsedActionItem(BaseModel):
     # belongs to the portfolio as a whole, which is the default and the common
     # case — the model is not asked to guess a project from the notes.
     portfolio_project_id: Optional[int] = Field(default=None, exclude=False)
+    # Never produced by the LLM either: notes say "Client to confirm", not
+    # whose action it is to close, and guessing would put third-party names on
+    # a client-facing screen. A PM sets it in Review or on the Actions page.
+    client_owed: Optional[bool] = Field(default=None, exclude=False)
     due_date: Optional[str] = Field(default=None, description="ISO date YYYY-MM-DD if stated")
     status: str = Field(default="open", description="open / pending / completed / cancelled")
 
