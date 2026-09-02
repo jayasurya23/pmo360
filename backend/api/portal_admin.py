@@ -30,9 +30,10 @@ from sqlalchemy.orm import Session
 
 from auth import require_db_user
 from auth.permissions import CLIENT_MGMT, require_permission
+from auth.passwords import generate_temp_password, hash_password
 from auth.portal import hash_token, new_raw_token
 from core.deps import get_db
-from db.models import Client, ClientContact, ClientPortalToken
+from db.models import Client, ClientContact, ClientPortalAccount, ClientPortalToken
 
 router = APIRouter(prefix="/api/portal-admin", tags=["portal-admin"])
 
@@ -62,6 +63,8 @@ class TokenOut(BaseModel):
     revoked_at: Optional[datetime]
     last_used_at: Optional[datetime]
     is_live: bool
+    #: "invite" or "session" — so the links screen can leave sessions out.
+    kind: str
 
 
 class IssuedTokenOut(TokenOut):
@@ -83,6 +86,7 @@ def _to_out(row: ClientPortalToken) -> TokenOut:
         revoked_at=row.revoked_at,
         last_used_at=row.last_used_at,
         is_live=row.is_live,
+        kind=row.kind or "invite",
     )
 
 
@@ -166,3 +170,183 @@ def revoke_token(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Link not found.")
     if row.revoked_at is None:
         row.revoked_at = datetime.utcnow()
+
+
+# ============================================================================
+# Password accounts
+# ============================================================================
+# A temporary password crosses the wire exactly once — on create and on reset.
+# It is never stored (argon2id hash only) and never retrievable. Losing it means
+# a reset, which also revokes every live session on the account.
+
+
+class CreateAccountIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=255)
+    display_name: Optional[str] = Field(default=None, max_length=200)
+    contact_id: Optional[int] = None
+
+
+class AccountOut(BaseModel):
+    """What the list shows. Never a password, never a hash."""
+    model_config = ConfigDict(extra="forbid")
+    id: int
+    client_id: int
+    contact_id: Optional[int]
+    email: str
+    display_name: Optional[str]
+    is_active: bool
+    must_change_password: bool
+    locked_until: Optional[datetime]
+    created_at: datetime
+    created_by: Optional[str]
+    last_login_at: Optional[datetime]
+
+
+class CreatedAccountOut(AccountOut):
+    """The create / reset response — the ONE place a temporary password appears."""
+    temporary_password: str
+
+
+def _account_out(a: ClientPortalAccount) -> AccountOut:
+    return AccountOut(
+        id=a.id,
+        client_id=a.client_id,
+        contact_id=a.contact_id,
+        email=a.email,
+        display_name=a.display_name,
+        is_active=bool(a.is_active),
+        must_change_password=bool(a.must_change_password),
+        locked_until=a.locked_until,
+        created_at=a.created_at,
+        created_by=(a.created_by.name if a.created_by else None),
+        last_login_at=a.last_login_at,
+    )
+
+
+def _revoke_account_sessions(db: Session, account_id: int) -> None:
+    db.query(ClientPortalToken).filter(
+        ClientPortalToken.account_id == account_id,
+        ClientPortalToken.kind == "session",
+        ClientPortalToken.revoked_at.is_(None),
+    ).update({"revoked_at": datetime.utcnow()}, synchronize_session=False)
+
+
+def _get_account(db: Session, account_id: int) -> ClientPortalAccount:
+    row = db.get(ClientPortalAccount, account_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found.")
+    return row
+
+
+@router.get("/clients/{client_id}/accounts", response_model=list[AccountOut])
+def list_accounts(
+    client_id: int,
+    db: Session = Depends(get_db),
+    _user=Depends(require_db_user),
+) -> list[AccountOut]:
+    if db.get(Client, client_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Client not found.")
+    rows = (
+        db.query(ClientPortalAccount)
+        .filter(ClientPortalAccount.client_id == client_id)
+        .order_by(ClientPortalAccount.email)
+        .all()
+    )
+    return [_account_out(a) for a in rows]
+
+
+@router.post(
+    "/clients/{client_id}/accounts",
+    response_model=CreatedAccountOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_account(
+    client_id: int,
+    body: CreateAccountIn,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CLIENT_MGMT)),
+) -> CreatedAccountOut:
+    if db.get(Client, client_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Client not found.")
+
+    email = body.email.strip().lower()
+    if "@" not in email:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Enter a valid email address.")
+    if db.query(ClientPortalAccount).filter(ClientPortalAccount.email == email).first():
+        # Emails are global, not per client: one person, one login.
+        raise HTTPException(status.HTTP_409_CONFLICT, "An account with that email already exists.")
+
+    contact = None
+    if body.contact_id is not None:
+        contact = db.get(ClientContact, body.contact_id)
+        if contact is None or contact.client_id != client_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Contact not found for this client.")
+
+    temp = generate_temp_password()
+    row = ClientPortalAccount(
+        client_id=client_id,
+        contact_id=contact.id if contact else None,
+        email=email,
+        display_name=(body.display_name or "").strip() or None,
+        password_hash=hash_password(temp),
+        is_active=True,
+        must_change_password=True,
+        created_by_id=actor.id,
+    )
+    db.add(row)
+    db.flush()
+    return CreatedAccountOut(**_account_out(row).model_dump(), temporary_password=temp)
+
+
+@router.post("/accounts/{account_id}/reset-password", response_model=CreatedAccountOut)
+def reset_account_password(
+    account_id: int,
+    db: Session = Depends(get_db),
+    _actor=Depends(require_db_user),
+    guard=Depends(require_permission(CLIENT_MGMT)),
+) -> CreatedAccountOut:
+    """New temporary password, must-change set, lock cleared, every live
+    session revoked. The old password stops working immediately."""
+    row = _get_account(db, account_id)
+    temp = generate_temp_password()
+    row.password_hash = hash_password(temp)
+    row.must_change_password = True
+    row.failed_attempts = 0
+    row.locked_until = None
+    row.password_changed_at = datetime.utcnow()
+    _revoke_account_sessions(db, row.id)
+    db.flush()
+    return CreatedAccountOut(**_account_out(row).model_dump(), temporary_password=temp)
+
+
+@router.post("/accounts/{account_id}/deactivate", response_model=AccountOut)
+def deactivate_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    _actor=Depends(require_db_user),
+    guard=Depends(require_permission(CLIENT_MGMT)),
+) -> AccountOut:
+    """Immediate: the auth dependency checks is_active on every request, and
+    live sessions are revoked here as well so nothing lingers."""
+    row = _get_account(db, account_id)
+    row.is_active = False
+    _revoke_account_sessions(db, row.id)
+    db.flush()
+    return _account_out(row)
+
+
+@router.post("/accounts/{account_id}/activate", response_model=AccountOut)
+def activate_account(
+    account_id: int,
+    db: Session = Depends(get_db),
+    _actor=Depends(require_db_user),
+    guard=Depends(require_permission(CLIENT_MGMT)),
+) -> AccountOut:
+    row = _get_account(db, account_id)
+    row.is_active = True
+    row.failed_attempts = 0
+    row.locked_until = None
+    db.flush()
+    return _account_out(row)

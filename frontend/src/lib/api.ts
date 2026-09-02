@@ -2078,6 +2078,8 @@ export interface PortalTokenOut {
   revoked_at: string | null;
   last_used_at: string | null;
   is_live: boolean;
+  /** "invite" (hand-issued link) or "session" (minted by a password login). */
+  kind: "invite" | "session";
 }
 
 export interface IssuedPortalToken extends PortalTokenOut {
@@ -2092,3 +2094,36 @@ export const issuePortalToken = (
 ) => apiClient.post<IssuedPortalToken>(`/portal-admin/clients/${clientId}/tokens`, body).then((r) => r.data);
 export const revokePortalToken = (tokenId: number) =>
   apiClient.delete(`/portal-admin/tokens/${tokenId}`);
+
+// ---- client portal ACCOUNTS (INTERNAL admin side) ---------------------------
+// Username/password accounts for clients. A temporary password appears exactly
+// once — on create and on reset — and is never retrievable afterwards.
+
+export interface PortalAccountOut {
+  id: number;
+  client_id: number;
+  contact_id: number | null;
+  email: string;
+  display_name: string | null;
+  is_active: boolean;
+  must_change_password: boolean;
+  locked_until: string | null;
+  created_at: string;
+  created_by: string | null;
+  last_login_at: string | null;
+}
+
+export interface CreatedPortalAccount extends PortalAccountOut {
+  temporary_password: string;
+}
+
+export const listPortalAccounts = (clientId: number) =>
+  apiClient.get<PortalAccountOut[]>(`/portal-admin/clients/${clientId}/accounts`).then((r) => r.data);
+export const createPortalAccount = (
+  clientId: number,
+  body: { email: string; display_name?: string | null; contact_id?: number | null },
+) => apiClient.post<CreatedPortalAccount>(`/portal-admin/clients/${clientId}/accounts`, body).then((r) => r.data);
+export const resetPortalAccountPassword = (accountId: number) =>
+  apiClient.post<CreatedPortalAccount>(`/portal-admin/accounts/${accountId}/reset-password`).then((r) => r.data);
+export const setPortalAccountActive = (accountId: number, active: boolean) =>
+  apiClient.post<PortalAccountOut>(`/portal-admin/accounts/${accountId}/${active ? "activate" : "deactivate"}`).then((r) => r.data);

@@ -60,12 +60,20 @@ def hash_token(raw: str) -> str:
 
 @dataclass(frozen=True)
 class PortalPrincipal:
-    """Who is reading, and what they are allowed to see."""
+    """Who is reading, and what they are allowed to see.
+
+    ``kind`` is "invite" (a hand-issued link) or "session" (minted by a
+    password login). ``account_id``/``email`` are set only for sessions; an
+    invite link has no account behind it and cannot change a password."""
     client_id: int
     client_name: str
     token_id: int
     label: str
     expires_at: Optional[datetime]
+    kind: str = "invite"
+    account_id: Optional[int] = None
+    email: Optional[str] = None
+    must_change_password: bool = False
 
 
 def _parse_portal(authorization: Optional[str]) -> Optional[str]:
@@ -105,6 +113,13 @@ def require_portal_client(
     if row is None or not row.is_live:
         raise _unauthorized()
 
+    # A session token is only as alive as its account. Checking here, on every
+    # request, is what makes "deactivate" take effect immediately rather than
+    # at the next login.
+    acct = row.account
+    if (row.kind or "invite") == "session" and (acct is None or not acct.is_active):
+        raise _unauthorized()
+
     # Best-effort usage stamp. get_db commits at the request boundary, so this
     # persists without a second round-trip; if it ever fails the read still
     # succeeds — the stamp is telemetry, not a control.
@@ -116,6 +131,10 @@ def require_portal_client(
         token_id=row.id,
         label=row.label,
         expires_at=row.expires_at,
+        kind=row.kind or "invite",
+        account_id=acct.id if acct else None,
+        email=acct.email if acct else None,
+        must_change_password=bool(acct.must_change_password) if acct else False,
     )
 
 

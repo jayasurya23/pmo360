@@ -53,6 +53,12 @@ export function getPortalToken(): string | null {
   return memoryToken ?? safeGet();
 }
 
+/** Store a token minted by a password login, exactly as an invite token is stored. */
+export function setPortalToken(raw: string): void {
+  memoryToken = raw;
+  safeSet(raw);
+}
+
 export function clearPortalToken(): void {
   memoryToken = null;
   safeSet(null);
@@ -72,6 +78,16 @@ export interface PortalMe {
   client_name: string;
   label: string;
   expires_at: string | null;
+  /** "invite" (a hand-issued link) or "session" (a password login). */
+  kind: "invite" | "session";
+  email: string | null;
+  must_change_password: boolean;
+}
+
+export interface PortalLoginResult {
+  token: string;
+  expires_at: string;
+  must_change_password: boolean;
 }
 
 export interface PortalSubProject {
@@ -152,3 +168,13 @@ export const portalWaiting = (pid: number) =>
   portalClient.get<PortalWaiting>(`/portal/projects/${pid}/waiting-on-you`).then((r) => r.data);
 export const portalChangeOrders = (pid: number) =>
   portalClient.get<PortalChangeOrders>(`/portal/projects/${pid}/change-orders`).then((r) => r.data);
+
+// ---- password login --------------------------------------------------------
+// Login does not attach a token (there is none yet); it RETURNS one, which the
+// caller stores with setPortalToken so every later request carries it.
+
+export const portalLogin = (email: string, password: string) =>
+  portalClient.post<PortalLoginResult>("/portal/login", { email, password }).then((r) => r.data);
+export const portalLogout = () => portalClient.post("/portal/logout");
+export const portalChangePassword = (current_password: string, new_password: string) =>
+  portalClient.post("/portal/change-password", { current_password, new_password });

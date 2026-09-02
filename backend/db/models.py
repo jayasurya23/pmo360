@@ -1423,6 +1423,54 @@ class ChangeOrderLineItem(Base):
     change_order = relationship("ChangeOrder", back_populates="line_items")
 
 
+class ClientPortalAccount(Base):
+    """A client's username/password login to the portal.
+
+    Logging in does NOT create a new kind of credential. It mints a
+    ClientPortalToken of kind "session" — the same row an invite link is — so
+    every scope rule, allowlist and test on the portal applies to a logged-in
+    client unchanged. One principal type, two doors.
+
+    `password_hash` is argon2id (auth/passwords.py). Lockout is per account:
+    five consecutive failures set `locked_until` fifteen minutes out, and the
+    lock is deliberately NOT extended by further attempts, so hammering the
+    form cannot hold a client out indefinitely. `is_active` is checked on every
+    portal request, not only at login, so deactivation is immediate.
+
+    `must_change_password` is set on admin-issued temporary passwords; the
+    portal refuses everything but change-password until it clears. There is
+    no self-service reset — resets are admin-driven until that email surface
+    is designed on its own terms.
+    """
+    __tablename__ = "client_portal_accounts"
+    __table_args__ = (
+        UniqueConstraint("email", name="uq_client_portal_accounts_email"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    contact_id = Column(Integer, ForeignKey("client_contacts.id"))
+    email = Column(String(255), nullable=False)            # stored lower-case
+    display_name = Column(String(200))
+    password_hash = Column(String(255), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+    must_change_password = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    failed_attempts = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    locked_until = Column(DateTime)
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    last_login_at = Column(DateTime)
+    password_changed_at = Column(DateTime)
+
+    client = relationship("Client")
+    contact = relationship("ClientContact")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+    @property
+    def is_locked(self) -> bool:
+        return self.locked_until is not None and self.locked_until > datetime.utcnow()
+
+
 class ClientPortalToken(Base):
     """A signed invite link that lets one CLIENT read its own slice of PMO 360.
 
@@ -1460,10 +1508,16 @@ class ClientPortalToken(Base):
     expires_at = Column(DateTime)                          # NULL = does not expire
     revoked_at = Column(DateTime)
     last_used_at = Column(DateTime)
+    # "invite" — a link issued by hand; "session" — minted by a password login.
+    # Kept apart so revoking an account's sessions never touches an invite link
+    # issued to the same client, and so the admin screen can show them apart.
+    kind = Column(String(16), nullable=False, default="invite", server_default="invite")
+    account_id = Column(Integer, ForeignKey("client_portal_accounts.id"), index=True)
 
     client = relationship("Client")
     contact = relationship("ClientContact")
     created_by = relationship("User", foreign_keys=[created_by_id])
+    account = relationship("ClientPortalAccount")
 
     @property
     def is_live(self) -> bool:

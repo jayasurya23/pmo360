@@ -56,18 +56,25 @@ Omitted on purpose, each for a reason the audit established:
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from auth.passwords import (
+    hash_password, needs_rehash, validate_new_password, verify_password,
+)
 from auth.portal import (
-    PortalPrincipal, portal_portfolios, require_portal_client, scoped_portfolio,
+    PortalPrincipal, hash_token, new_raw_token, portal_portfolios,
+    require_portal_client, scoped_portfolio,
 )
 from core.deps import get_db
-from db.models import ActionItem, ChangeOrder, Meeting, MeetingRFI, PortfolioProject
+from db.models import (
+    ActionItem, ChangeOrder, ClientPortalAccount, ClientPortalToken, Meeting,
+    MeetingRFI, PortfolioProject,
+)
 
 router = APIRouter(prefix="/api/portal", tags=["portal"])
 
@@ -80,6 +87,156 @@ class PortalMeOut(BaseModel):
     client_name: str
     label: str
     expires_at: Optional[datetime]
+    #: "invite" or "session". The UI shows a logout button and a
+    #: change-password screen only for sessions.
+    kind: str
+    email: Optional[str]
+    must_change_password: bool
+
+
+# ---------------------------------------------------------------- login
+# A password login MINTS a portal session token. It does not create a new kind
+# of credential: the browser stores the returned token exactly as it would an
+# invite link, and every scope rule and allowlist below applies unchanged.
+
+_SESSION_HOURS = 12
+_LOCKOUT_ATTEMPTS = 5
+_LOCKOUT_MINUTES = 15
+#: One message for every failure — unknown email, wrong password, inactive,
+#: locked. Distinguishing them tells an attacker which emails have accounts.
+_BAD_LOGIN = "Incorrect email or password."
+
+
+class PortalLoginIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class PortalLoginOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    token: str
+    expires_at: datetime
+    must_change_password: bool
+
+
+class PortalChangePasswordIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=1, max_length=256)
+
+
+def _bad_login() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_BAD_LOGIN)
+
+
+def _mint_session(db: Session, acct: ClientPortalAccount, now: datetime) -> tuple[str, datetime]:
+    raw = new_raw_token()
+    expires = now + timedelta(hours=_SESSION_HOURS)
+    db.add(ClientPortalToken(
+        client_id=acct.client_id,
+        contact_id=acct.contact_id,
+        account_id=acct.id,
+        kind="session",
+        label=f"session · {acct.email}",
+        token_hash=hash_token(raw),
+        expires_at=expires,
+    ))
+    return raw, expires
+
+
+def _revoke_sessions(db: Session, account_id: int, now: datetime, keep_token_id: Optional[int] = None) -> None:
+    q = db.query(ClientPortalToken).filter(
+        ClientPortalToken.account_id == account_id,
+        ClientPortalToken.kind == "session",
+        ClientPortalToken.revoked_at.is_(None),
+    )
+    if keep_token_id is not None:
+        q = q.filter(ClientPortalToken.id != keep_token_id)
+    q.update({"revoked_at": now}, synchronize_session=False)
+
+
+@router.post("/login", response_model=PortalLoginOut)
+def login(body: PortalLoginIn, db: Session = Depends(get_db)) -> PortalLoginOut:
+    """Verify a client's password and mint a 12-hour portal session.
+
+    Order matters for timing: the argon2 verify runs BEFORE any account-state
+    branch, against a dummy hash when there is no account, so every failure
+    path costs the same. Failure counters are committed explicitly, because
+    get_db rolls back when we raise — and a rolled-back failed_attempts is a
+    lockout that never fires.
+    """
+    email = body.email.strip().lower()
+    now = datetime.utcnow()
+    acct = (
+        db.query(ClientPortalAccount)
+        .filter(ClientPortalAccount.email == email)
+        .one_or_none()
+    )
+    ok = verify_password(acct.password_hash if acct else None, body.password)
+
+    if acct is None or not acct.is_active or acct.is_locked:
+        raise _bad_login()
+
+    if not ok:
+        acct.failed_attempts = int(acct.failed_attempts or 0) + 1
+        if acct.failed_attempts >= _LOCKOUT_ATTEMPTS:
+            acct.locked_until = now + timedelta(minutes=_LOCKOUT_MINUTES)
+            acct.failed_attempts = 0
+        db.commit()
+        raise _bad_login()
+
+    acct.failed_attempts = 0
+    acct.locked_until = None
+    acct.last_login_at = now
+    if needs_rehash(acct.password_hash):
+        acct.password_hash = hash_password(body.password)
+
+    raw, expires = _mint_session(db, acct, now)
+    return PortalLoginOut(token=raw, expires_at=expires, must_change_password=bool(acct.must_change_password))
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(
+    principal: PortalPrincipal = Depends(require_portal_client),
+    db: Session = Depends(get_db),
+) -> None:
+    """Revoke THIS token. Works for invite links too — a client who wants a
+    shared link dead can kill it from the page they opened it on."""
+    row = db.get(ClientPortalToken, principal.token_id)
+    if row is not None and row.revoked_at is None:
+        row.revoked_at = datetime.utcnow()
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_password(
+    body: PortalChangePasswordIn,
+    principal: PortalPrincipal = Depends(require_portal_client),
+    db: Session = Depends(get_db),
+) -> None:
+    """Set a new password on the account behind this session.
+
+    Re-verifies the current password even though the caller holds a live
+    session — a stolen session must not be enough to lock the real owner out.
+    Every OTHER session on the account is revoked; this one survives."""
+    if principal.kind != "session" or principal.account_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This link is not a password account.")
+    acct = db.get(ClientPortalAccount, principal.account_id)
+    if acct is None or not acct.is_active:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "A valid portal session is required.")
+    if not verify_password(acct.password_hash, body.current_password):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The current password is incorrect.")
+    problem = validate_new_password(body.new_password, email=acct.email)
+    if problem:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
+
+    now = datetime.utcnow()
+    acct.password_hash = hash_password(body.new_password)
+    acct.must_change_password = False
+    acct.password_changed_at = now
+    acct.failed_attempts = 0
+    acct.locked_until = None
+    _revoke_sessions(db, acct.id, now, keep_token_id=principal.token_id)
 
 
 class PortalSubProjectOut(BaseModel):
@@ -114,6 +271,9 @@ def me(principal: PortalPrincipal = Depends(require_portal_client)) -> PortalMeO
         client_name=principal.client_name,
         label=principal.label,
         expires_at=principal.expires_at,
+        kind=principal.kind,
+        email=principal.email,
+        must_change_password=principal.must_change_password,
     )
 
 

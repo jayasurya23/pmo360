@@ -6,21 +6,30 @@
  * the employee site with cards hidden; it is four screens over four allowlisted
  * endpoints, and the shape of each screen is exactly the shape of its endpoint.
  *
- * Every 401 renders the same "this link is no longer valid" state. The backend
- * deliberately does not say WHY (absent / revoked / expired), and neither do we.
+ * TWO DOORS, ONE PRINCIPAL. A client arrives either through an invite link
+ * (?token=… in the URL) or by signing in with email and password. A login does
+ * not create a different kind of credential — it returns a portal token that
+ * is stored exactly as an invite token is. Everything after that is identical.
+ *
+ * Every 401 renders the same "sign in" state. The backend deliberately does
+ * not say WHY (absent / revoked / expired / wrong password), and neither do we.
  */
-import { useEffect, useState, type ReactNode } from "react";
-import { Link, Navigate, Route, Routes, useParams } from "react-router-dom";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { Link, Navigate, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import {
   captureTokenFromUrl,
   clearPortalToken,
   getPortalToken,
   portalChangeOrders,
+  portalChangePassword,
   portalDashboard,
+  portalLogin,
+  portalLogout,
   portalMe,
   portalProjects,
   portalRfis,
   portalWaiting,
+  setPortalToken,
   type PortalChangeOrders,
   type PortalDashboard,
   type PortalMe,
@@ -42,8 +51,12 @@ function fmtDate(iso: string | null | undefined) {
   return isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
-function isUnauthorized(e: unknown): boolean {
-  return (e as { response?: { status?: number } })?.response?.status === 401;
+function statusOf(e: unknown): number | undefined {
+  return (e as { response?: { status?: number } })?.response?.status;
+}
+function detailOf(e: unknown): string | undefined {
+  const d = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  return typeof d === "string" ? d : undefined;
 }
 
 /** One request, three states. Keeps every screen honest about failure. */
@@ -57,7 +70,7 @@ function useLoad<T>(fn: () => Promise<T>, deps: unknown[]) {
     setErr(null);
     fn()
       .then((d) => live && setData(d))
-      .catch((e) => live && setErr(isUnauthorized(e) ? "unauthorized" : "failed"))
+      .catch((e) => live && setErr(statusOf(e) === 401 ? "unauthorized" : "failed"))
       .finally(() => live && setLoading(false));
     return () => {
       live = false;
@@ -69,7 +82,7 @@ function useLoad<T>(fn: () => Promise<T>, deps: unknown[]) {
 
 // ----------------------------------------------------------------- chrome
 
-function Shell({ me, children }: { me: PortalMe | null; children: ReactNode }) {
+function Shell({ me, onLogout, children }: { me: PortalMe | null; onLogout?: () => void; children: ReactNode }) {
   return (
     <div className="min-h-screen bg-surface text-brand-black">
       <header className="border-b border-surface-line bg-surface-card">
@@ -78,11 +91,20 @@ function Shell({ me, children }: { me: PortalMe | null; children: ReactNode }) {
             <div className="text-[11px] font-semibold uppercase tracking-wider text-brand-gray">
               Castillo Engineering · Client portal
             </div>
-            <div className="text-lg font-semibold">{me?.client_name ?? " "}</div>
+            <div className="text-lg font-semibold">{me?.client_name ?? " "}</div>
           </div>
-          {me?.expires_at && (
-            <div className="text-xs text-brand-gray">Link valid until {fmtDate(me.expires_at)}</div>
-          )}
+          <div className="flex items-center gap-4 text-xs text-brand-gray">
+            {me?.kind === "session" && me.email && <span>{me.email}</span>}
+            {me?.kind === "session" && (
+              <Link to="/portal/account" className="hover:text-brand-red">Change password</Link>
+            )}
+            {me?.kind === "invite" && me.expires_at && <span>Link valid until {fmtDate(me.expires_at)}</span>}
+            {me && onLogout && (
+              <button className="btn btn-ghost text-xs" onClick={onLogout}>
+                {me.kind === "session" ? "Sign out" : "Close link"}
+              </button>
+            )}
+          </div>
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-5 py-6">{children}</main>
@@ -125,14 +147,119 @@ function Pill({ open }: { open: boolean }) {
   );
 }
 
+// ----------------------------------------------------------------- auth screens
+
+function LoginScreen({ notice, onSignedIn }: { notice?: string; onSignedIn: (me: PortalMe) => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr(null);
+    portalLogin(email.trim(), password)
+      .then((r) => {
+        setPortalToken(r.token);
+        return portalMe();
+      })
+      .then(onSignedIn)
+      .catch((e) => setErr(detailOf(e) || "Could not sign in. Please try again."))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="mx-auto max-w-sm mt-14 card p-7">
+      <div className="text-lg font-semibold mb-1">Sign in</div>
+      <p className="text-sm text-brand-gray mb-5">
+        {notice || "Use the email and password your Castillo project manager gave you."}
+      </p>
+      <form onSubmit={submit} className="grid gap-3">
+        <div>
+          <label className="label" htmlFor="pl-email">Email</label>
+          <input id="pl-email" className="select" type="email" autoComplete="username" required
+            value={email} onChange={(e) => setEmail(e.target.value)} />
+        </div>
+        <div>
+          <label className="label" htmlFor="pl-pw">Password</label>
+          <input id="pl-pw" className="select" type="password" autoComplete="current-password" required
+            value={password} onChange={(e) => setPassword(e.target.value)} />
+        </div>
+        {err && <p className="text-sm text-brand-red">{err}</p>}
+        <button className="btn btn-primary mt-1" type="submit" disabled={busy}>
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
+      </form>
+      <p className="text-xs text-brand-gray mt-5">
+        Were you sent a link instead? Open it from the email — it signs you in on its own.
+      </p>
+    </div>
+  );
+}
+
+function ChangePasswordScreen({ forced, onDone }: { forced: boolean; onDone: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [again, setAgain] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (next !== again) {
+      setErr("The new passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    portalChangePassword(current, next)
+      .then(onDone)
+      .catch((e) => setErr(detailOf(e) || "Could not change the password."))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="mx-auto max-w-sm mt-10 card p-7">
+      <div className="text-lg font-semibold mb-1">{forced ? "Choose a new password" : "Change password"}</div>
+      <p className="text-sm text-brand-gray mb-5">
+        {forced
+          ? "You are signed in with a temporary password. Choose your own before continuing."
+          : "At least 12 characters. Longer is better; symbols are optional."}
+      </p>
+      <form onSubmit={submit} className="grid gap-3">
+        <div>
+          <label className="label" htmlFor="cp-cur">{forced ? "Temporary password" : "Current password"}</label>
+          <input id="cp-cur" className="select" type="password" autoComplete="current-password" required
+            value={current} onChange={(e) => setCurrent(e.target.value)} />
+        </div>
+        <div>
+          <label className="label" htmlFor="cp-new">New password</label>
+          <input id="cp-new" className="select" type="password" autoComplete="new-password" required minLength={12}
+            value={next} onChange={(e) => setNext(e.target.value)} />
+        </div>
+        <div>
+          <label className="label" htmlFor="cp-again">New password again</label>
+          <input id="cp-again" className="select" type="password" autoComplete="new-password" required minLength={12}
+            value={again} onChange={(e) => setAgain(e.target.value)} />
+        </div>
+        {err && <p className="text-sm text-brand-red">{err}</p>}
+        <button className="btn btn-primary mt-1" type="submit" disabled={busy}>
+          {busy ? "Saving…" : "Save password"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 // ----------------------------------------------------------------- screens
 
 function PortfolioList() {
   const { data, err, loading } = useLoad(portalProjects, []);
   if (loading) return <p className="text-sm text-brand-gray">Loading your projects…</p>;
-  if (err === "unauthorized") return <Navigate to="/portal/invalid" replace />;
+  if (err === "unauthorized") return <Navigate to="/portal/expired" replace />;
   if (err) return <Notice title="Could not load" body="Please try again in a moment." />;
-  if (!data?.length) return <Notice title="No projects yet" body="Nothing has been shared with this link." />;
+  if (!data?.length) return <Notice title="No projects yet" body="Nothing has been shared with this account." />;
   return (
     <div className="grid gap-4 sm:grid-cols-2">
       {data.map((p: PortalPortfolio) => (
@@ -142,9 +269,7 @@ function PortfolioList() {
             {[p.location, p.state, p.size_mw ? `${p.size_mw} MW` : null].filter(Boolean).join(" · ")}
           </div>
           {p.projects.length > 0 && (
-            <div className="text-xs text-brand-gray mt-3">
-              {p.projects.map((s) => s.name).join(" · ")}
-            </div>
+            <div className="text-xs text-brand-gray mt-3">{p.projects.map((s) => s.name).join(" · ")}</div>
           )}
         </Link>
       ))}
@@ -173,9 +298,7 @@ function PortfolioScreen() {
             to={`/portal/p/${pid}/${key}`}
             className={
               "px-3 py-2 text-sm -mb-px border-b-2 " +
-              (tab === key
-                ? "border-brand-red font-semibold"
-                : "border-transparent text-brand-gray hover:text-brand-black")
+              (tab === key ? "border-brand-red font-semibold" : "border-transparent text-brand-gray hover:text-brand-black")
             }
           >
             {label}
@@ -193,7 +316,7 @@ function PortfolioScreen() {
 function Overview({ pid }: { pid: number }) {
   const { data, err, loading } = useLoad(() => portalDashboard(pid), [pid]);
   if (loading) return <p className="text-sm text-brand-gray">Loading…</p>;
-  if (err === "unauthorized") return <Navigate to="/portal/invalid" replace />;
+  if (err === "unauthorized") return <Navigate to="/portal/expired" replace />;
   if (err || !data) return <Notice title="Not available" body="This project could not be loaded." />;
   const d: PortalDashboard = data;
   return (
@@ -245,7 +368,7 @@ function RfiRows({ rows }: { rows: PortalRfi[] }) {
 function Rfis({ pid }: { pid: number }) {
   const { data, err, loading } = useLoad(() => portalRfis(pid), [pid]);
   if (loading) return <p className="text-sm text-brand-gray">Loading…</p>;
-  if (err === "unauthorized") return <Navigate to="/portal/invalid" replace />;
+  if (err === "unauthorized") return <Navigate to="/portal/expired" replace />;
   if (err || !data) return <Notice title="Not available" body="RFIs could not be loaded." />;
   return (
     <div>
@@ -258,7 +381,7 @@ function Rfis({ pid }: { pid: number }) {
 function Waiting({ pid }: { pid: number }) {
   const { data, err, loading } = useLoad(() => portalWaiting(pid), [pid]);
   if (loading) return <p className="text-sm text-brand-gray">Loading…</p>;
-  if (err === "unauthorized") return <Navigate to="/portal/invalid" replace />;
+  if (err === "unauthorized") return <Navigate to="/portal/expired" replace />;
   if (err || !data) return <Notice title="Not available" body="This list could not be loaded." />;
   const w: PortalWaiting = data;
   return (
@@ -289,7 +412,7 @@ function Waiting({ pid }: { pid: number }) {
 function ChangeOrders({ pid }: { pid: number }) {
   const { data, err, loading } = useLoad(() => portalChangeOrders(pid), [pid]);
   if (loading) return <p className="text-sm text-brand-gray">Loading…</p>;
-  if (err === "unauthorized") return <Navigate to="/portal/invalid" replace />;
+  if (err === "unauthorized") return <Navigate to="/portal/expired" replace />;
   if (err || !data) return <Notice title="Not available" body="Change orders could not be loaded." />;
   const c: PortalChangeOrders = data;
   return (
@@ -324,50 +447,93 @@ function ChangeOrders({ pid }: { pid: number }) {
 
 // ----------------------------------------------------------------- app
 
+type State = "boot" | "login" | "mustchange" | "ok";
+
 export default function PortalApp() {
   const [me, setMe] = useState<PortalMe | null>(null);
-  const [state, setState] = useState<"boot" | "ok" | "nolink" | "invalid">("boot");
+  const [state, setState] = useState<State>("boot");
+  const [notice, setNotice] = useState<string | undefined>(undefined);
+  const navigate = useNavigate();
+
+  const settle = (m: PortalMe) => {
+    setMe(m);
+    setState(m.must_change_password ? "mustchange" : "ok");
+  };
 
   useEffect(() => {
     captureTokenFromUrl();
     if (!getPortalToken()) {
-      setState("nolink");
+      setState("login");
       return;
     }
     portalMe()
-      .then((m) => {
-        setMe(m);
-        setState("ok");
-      })
-      .catch((e) => {
-        if (isUnauthorized(e)) clearPortalToken();
-        setState("invalid");
+      .then(settle)
+      .catch(() => {
+        clearPortalToken();
+        setNotice("That link is no longer valid. Sign in, or ask your project manager for a new link.");
+        setState("login");
       });
   }, []);
 
-  if (state === "boot") return <Shell me={null}><p className="text-sm text-brand-gray">Opening…</p></Shell>;
-  if (state === "nolink")
+  const signOut = () => {
+    portalLogout().catch(() => undefined).finally(() => {
+      clearPortalToken();
+      setMe(null);
+      setNotice(undefined);
+      setState("login");
+      navigate("/portal", { replace: true });
+    });
+  };
+
+  if (state === "boot") {
+    return <Shell me={null}><p className="text-sm text-brand-gray">Opening…</p></Shell>;
+  }
+  if (state === "login") {
     return (
       <Shell me={null}>
-        <Notice title="Open the link you were sent" body="This page is reached from a private link provided by your Castillo project manager." />
+        <LoginScreen notice={notice} onSignedIn={settle} />
       </Shell>
     );
-  if (state === "invalid")
+  }
+  if (state === "mustchange") {
     return (
-      <Shell me={null}>
-        <Notice title="This link is no longer valid" body="It may have expired or been replaced. Please ask your Castillo project manager for a new one." />
+      <Shell me={me} onLogout={signOut}>
+        <ChangePasswordScreen forced onDone={() => portalMe().then(settle)} />
       </Shell>
     );
+  }
 
   return (
-    <Shell me={me}>
+    <Shell me={me} onLogout={signOut}>
       <Routes>
         <Route path="/portal" element={<PortfolioList />} />
         <Route path="/portal/p/:id" element={<PortfolioScreen />} />
         <Route path="/portal/p/:id/:tab" element={<PortfolioScreen />} />
-        <Route path="/portal/invalid" element={<Notice title="This link is no longer valid" body="Please ask your Castillo project manager for a new one." />} />
+        <Route
+          path="/portal/account"
+          element={
+            me?.kind === "session" ? (
+              <ChangePasswordScreen forced={false} onDone={() => navigate("/portal", { replace: true })} />
+            ) : (
+              <Navigate to="/portal" replace />
+            )
+          }
+        />
+        <Route
+          path="/portal/expired"
+          element={<ExpiredRedirect onExpired={() => { clearPortalToken(); setMe(null); setNotice("Your session ended. Please sign in again."); setState("login"); }} />}
+        />
         <Route path="*" element={<Navigate to="/portal" replace />} />
       </Routes>
     </Shell>
   );
+}
+
+/** A 401 mid-session lands here; it hands control back to the login screen. */
+function ExpiredRedirect({ onExpired }: { onExpired: () => void }) {
+  useEffect(() => {
+    onExpired();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
 }

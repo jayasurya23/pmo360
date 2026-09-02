@@ -33,3 +33,5 @@ numpy>=1.26,<2                  # business-day vectorised counting (np.busday_co
 holidays>=0.50                 # US federal holidays for schedule calendar math
 matplotlib>=3.8                # server-side Gantt chart rendering (Agg backend)
 pandas>=2.0                    # proposal Excel parsing (lazy-imported)
+
+argon2-cffi>=23.1.0            # client portal passwords (argon2id)

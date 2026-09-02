@@ -93,6 +93,7 @@ def test_me(client, world):
     assert r.status_code == 200
     assert r.json() == {
         "client_name": world.client_a.name, "label": "Utopian — test", "expires_at": None,
+        "kind": "invite", "email": None, "must_change_password": False,
     }
 
 
