@@ -201,6 +201,15 @@ function LoginScreen({ notice, onSignedIn }: { notice?: string; onSignedIn: (me:
       <p className="text-xs text-brand-gray mt-5">
         Were you sent a link instead? Open it from the email — it signs you in on its own.
       </p>
+      {/* The return leg, and a plain anchor for the same reason as the one on
+          the staff gate: main.tsx picks the app from the path at mount, so
+          crossing between them is a page load. */}
+      <p className="text-xs text-brand-gray mt-3 pt-3 border-t border-surface-line">
+        Castillo staff:{" "}
+        <a href="/" className="font-semibold text-brand-red hover:underline underline-offset-2">
+          sign in with Microsoft
+        </a>
+      </p>
     </div>
   );
 }

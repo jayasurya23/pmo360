@@ -2,7 +2,14 @@
  * LoginPage — the branded sign-in gate. Shown by <AuthGate> whenever MSAL is
  * configured and the visitor is not signed in, so the app can't be used
  * anonymously. Castillo red washing down a solar-field background into the app
- * surface, PMO 360 logo, and a single "Sign in with Microsoft" button.
+ * surface, PMO 360 logo, and a "Sign in with Microsoft" button.
+ *
+ * It also has to answer the other question this URL gets asked. A client who
+ * was given the hostname rather than a full link lands HERE, on a Microsoft
+ * button they cannot use and no indication that a door for them exists — so
+ * there is a quiet second line pointing at /portal. Nothing is disclosed by
+ * it: the portal page is credential-gated and every failure there is one
+ * identical 401, so the existence of a client sign-in was never the secret.
  */
 import { useState } from "react";
 import { useAuth } from "@/auth/useAuth";
@@ -118,6 +125,23 @@ export default function LoginPage({ busy = false }: { busy?: boolean }) {
             Sign in with your Castillo Microsoft 365 account. Access is restricted
             to authorized Castillo Engineering staff.
           </p>
+
+          {/* A PLAIN ANCHOR, never a router <Link>. main.tsx decides which of
+              the two apps to mount ONCE, from window.location.pathname at
+              startup; a client-side navigation would change the URL with the
+              internal bundle still mounted and PortalApp never booted. The
+              full page load is the mechanism, not an oversight. */}
+          <div className="mt-7 border-t border-surface-hairline pt-5">
+            <p className="text-[11px] text-brand-lightgray">
+              Not Castillo staff?{" "}
+              <a
+                href="/portal"
+                className="font-semibold text-brand-red underline-offset-2 hover:underline"
+              >
+                Go to the client portal
+              </a>
+            </p>
+          </div>
         </div>
       </div>
 
