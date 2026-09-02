@@ -32,6 +32,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import MondayMappingPanel from "@/components/admin/MondayMappingPanel";
+import ClientPortalLinksCard from "@/components/admin/ClientPortalLinksCard";
 import { useSearchParams } from "react-router-dom";
 import PageHeader from "@/components/PageHeader";
 import SaveStatus from "@/components/SaveStatus";
@@ -50,7 +51,7 @@ import {
 import type { Project } from "@/lib/types";
 import clsx from "clsx";
 
-type TabKey = "preferences" | "users" | "clients" | "monday";
+type TabKey = "preferences" | "users" | "clients" | "monday" | "portal";
 
 const DEFAULT_PREFS: UserPreferences = {
   default_project_id: null,
@@ -177,9 +178,11 @@ export default function Settings() {
       ? "clients"
       : requestedTab === "monday"
         ? "monday"
-        : requestedTab === "users" && canManageUsers
-          ? "users"
-          : "preferences";
+        : requestedTab === "portal"
+          ? "portal"
+          : requestedTab === "users" && canManageUsers
+            ? "users"
+            : "preferences";
 
   function selectTab(next: TabKey) {
     setParams(
@@ -206,7 +209,9 @@ export default function Settings() {
     <div className="space-y-[18px]">
       <PageHeader
         kicker={
-          tab === "monday"
+          tab === "portal"
+            ? "issue and revoke client portal links · a link shows one client its own projects only"
+            : tab === "monday"
             ? "link monday.com projects to portfolios and projects here · RFIs follow the links"
             : tab === "users"
             ? "who can reach what · changes here affect everyone"
@@ -247,6 +252,9 @@ export default function Settings() {
         </TabBtn>
         <TabBtn active={tab === "monday"} onClick={() => selectTab("monday")}>
           monday.com
+        </TabBtn>
+        <TabBtn active={tab === "portal"} onClick={() => selectTab("portal")}>
+          Client links
         </TabBtn>
       </div>
 
@@ -434,6 +442,7 @@ export default function Settings() {
       {tab === "users" && <AdminUsersCard />}
 
       {tab === "monday" && <MondayMappingPanel />}
+      {tab === "portal" && <ClientPortalLinksCard />}
 
       {/* ---------- Clients ----------
           Contacts first: it is the list people come here to search, and the

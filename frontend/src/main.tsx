@@ -6,6 +6,7 @@ import { AppProvider } from "./lib/state";
 import { ConfirmProvider } from "./components/ConfirmDialog";
 import AuthProvider from "./auth/AuthProvider";
 import AuthGate from "./auth/AuthGate";
+import PortalApp from "./portal/PortalApp";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { msalInstance } from "./auth/msalConfig";
 import "./styles/index.css";
@@ -18,6 +19,10 @@ import "./styles/index.css";
 // SPAs). When init fails we still render the app; the Sign-in button just
 // stays inert until conditions allow it.
 function mount() {
+  // The client portal is a separate app on a separate API namespace. It is
+  // mounted OUTSIDE AuthProvider and AuthGate so nothing on /portal can touch
+  // MSAL or trigger an internal API call — see portal/PortalApp.tsx.
+  const isPortal = window.location.pathname.startsWith("/portal");
   ReactDOM.createRoot(document.getElementById("root")!).render(
     <React.StrictMode>
       {/* Last resort. The boundary that matters is inside Layout, around the
@@ -28,15 +33,19 @@ function mount() {
           mode the MSAL comment below already refuses to accept. */}
       <ErrorBoundary title="PMO 360 could not start">
         <BrowserRouter>
-          <AuthProvider>
-            <AuthGate>
-              <AppProvider>
-                <ConfirmProvider>
-                  <App />
-                </ConfirmProvider>
-              </AppProvider>
-            </AuthGate>
-          </AuthProvider>
+          {isPortal ? (
+            <PortalApp />
+          ) : (
+            <AuthProvider>
+              <AuthGate>
+                <AppProvider>
+                  <ConfirmProvider>
+                    <App />
+                  </ConfirmProvider>
+                </AppProvider>
+              </AuthGate>
+            </AuthProvider>
+          )}
         </BrowserRouter>
       </ErrorBoundary>
     </React.StrictMode>,

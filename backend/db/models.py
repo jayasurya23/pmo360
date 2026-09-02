@@ -142,6 +142,15 @@ class User(Base):
         Boolean, default=False, nullable=False, server_default=false(),
     )
 
+    # ---- client portal (reserved) ------------------------------------------
+    # Which client this account belongs to, or NULL for a Castillo employee.
+    # NOTHING READS THIS YET. v1 of the client portal authenticates with signed
+    # invite links (ClientPortalToken), not accounts. The column exists now so
+    # that nothing built in the meantime can assume every User row is internal
+    # — the one assumption that is free to avoid today and expensive to unwind
+    # after a year of features has grown up on top of it.
+    client_id = Column(Integer, ForeignKey("clients.id"), index=True)
+
 
 class ProjectMember(Base):
     """A user assigned to a portfolio. Multiple PMs per project allowed,
@@ -570,6 +579,14 @@ class ActionItem(Base):
     # When set, "actions assigned to me" filtering can join on this directly
     # instead of the brittle substring-match-on-display-name fallback.
     owner_user_id = Column(Integer, ForeignKey("users.id"))
+    # Is this the CLIENT's action to close? An explicit flag a PM sets, because
+    # nothing else here can answer it: `owner` is free text and a NULL
+    # `owner_user_id` covers vendors as well as clients. Deriving it from
+    # either would put third-party names on a client-facing screen. The client
+    # portal's "waiting on you" list reads ONLY rows where this is TRUE.
+    # Three-valued on purpose: NULL means "never triaged", which the internal
+    # UI can surface, where FALSE would be indistinguishable from it.
+    client_owed = Column(Boolean)
     due_date = Column(Date)
     status = Column(String(20), default="open")  # open / pending / completed / cancelled
     last_status_change = Column(DateTime, default=datetime.utcnow)
@@ -1404,6 +1421,55 @@ class ChangeOrderLineItem(Base):
     internal_notes = Column(Text)
 
     change_order = relationship("ChangeOrder", back_populates="line_items")
+
+
+class ClientPortalToken(Base):
+    """A signed invite link that lets one CLIENT read its own slice of PMO 360.
+
+    This is the v1 client identity, deliberately not an account: no Entra
+    guest, no directory, no password. A Castillo user with `client_mgmt`
+    issues a token for a client — optionally to a named contact — and hands
+    over the link. Every portal read is scoped to `client_id`, and the scope is
+    derived from Client -> Project, data that already exists and is already
+    correct, rather than from a membership table somebody has to maintain
+    (see auth/permissions.py::is_portfolio_member for why that matters here).
+
+    THE RAW TOKEN IS NEVER STORED. It is shown once at issuance; `token_hash`
+    is its SHA-256. A database dump therefore contains no usable links.
+
+    Revocation is `revoked_at`, not deletion, so an audit can still answer
+    "who had access, and until when". `last_used_at` is best-effort — it is
+    written on each successful read and is the only record of a client
+    actually opening the portal.
+
+    A token presented to an INTERNAL route is a malformed Bearer and is treated
+    as anonymous; the two principal types share a header name and nothing else.
+    """
+    __tablename__ = "client_portal_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_client_portal_tokens_token_hash"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False, index=True)
+    contact_id = Column(Integer, ForeignKey("client_contacts.id"))
+    label = Column(String(120), nullable=False)          # e.g. "Utopian — J. Smith"
+    token_hash = Column(String(64), nullable=False)       # sha256 hex of the raw token
+    created_by_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    expires_at = Column(DateTime)                          # NULL = does not expire
+    revoked_at = Column(DateTime)
+    last_used_at = Column(DateTime)
+
+    client = relationship("Client")
+    contact = relationship("ClientContact")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+
+    @property
+    def is_live(self) -> bool:
+        if self.revoked_at is not None:
+            return False
+        return self.expires_at is None or self.expires_at > datetime.utcnow()
 
 
 class ChangeOrderApprovalRequest(Base):

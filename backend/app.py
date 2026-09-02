@@ -31,6 +31,7 @@ from api import (
     portfolio_projects, admin_users, client_contacts,
     settings as settings_router, monday as monday_router,
     monday_bridge as monday_bridge_router,
+    portal as portal_router, portal_admin as portal_admin_router,
 )
 
 
@@ -87,6 +88,9 @@ def create_app() -> FastAPI:
     app.include_router(lead.router)
     app.include_router(monday_router.router)
     app.include_router(monday_bridge_router.router)
+    # Client portal: a separate namespace on purpose — see api/portal.py.
+    app.include_router(portal_router.router)
+    app.include_router(portal_admin_router.router)
     app.include_router(timeline.router)
     app.include_router(proposals.router)
     app.include_router(change_orders.router)

@@ -2061,3 +2061,34 @@ export const bridgeTaskBoards = () =>
   apiClient.get<BridgeTaskBoardRef[]>("/monday/bridge/task-boards").then((r) => r.data);
 export const bridgeTasks = (boardId: number) =>
   apiClient.get<BridgeTaskBoard>(`/monday/bridge/tasks/${boardId}`).then((r) => r.data);
+
+// ---- client portal links (INTERNAL admin side) -----------------------------
+// The raw token appears exactly once, in the issue response. The list never
+// carries it. There is deliberately no "show link again".
+
+export interface PortalTokenOut {
+  id: number;
+  client_id: number;
+  contact_id: number | null;
+  contact_name: string | null;
+  label: string;
+  created_at: string;
+  created_by: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+  last_used_at: string | null;
+  is_live: boolean;
+}
+
+export interface IssuedPortalToken extends PortalTokenOut {
+  raw_token: string;
+}
+
+export const listPortalTokens = (clientId: number) =>
+  apiClient.get<PortalTokenOut[]>(`/portal-admin/clients/${clientId}/tokens`).then((r) => r.data);
+export const issuePortalToken = (
+  clientId: number,
+  body: { label: string; contact_id?: number | null; expires_in_days?: number | null },
+) => apiClient.post<IssuedPortalToken>(`/portal-admin/clients/${clientId}/tokens`, body).then((r) => r.data);
+export const revokePortalToken = (tokenId: number) =>
+  apiClient.delete(`/portal-admin/tokens/${tokenId}`);
