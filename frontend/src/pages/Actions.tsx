@@ -47,6 +47,18 @@ const STATUS_FILTERS = [
   { value: "cancelled", label: "Cancelled only" },
 ] as const;
 
+/** Filter on who closes the action. "Untriaged" is the working half: it is
+ *  how a PM finds the rows nobody has decided about yet, which is the only way
+ *  the flag gets set on a list of any size. */
+const OWED_FILTERS = [
+  { value: "any", label: "Anyone owes" },
+  { value: "client", label: "Client owes" },
+  { value: "us", label: "We owe" },
+  { value: "untriaged", label: "Not triaged" },
+] as const;
+
+type OwedFilter = (typeof OWED_FILTERS)[number]["value"];
+
 /**
  * The scope segmented control, narrow → wide.
  *
@@ -309,6 +321,7 @@ export default function Actions() {
   const [ownerFilter, setOwnerFilter] = useState<string>(
     entry.ownerMine ? OWNER_MINE : OWNER_ALL,
   );
+  const [owedFilter, setOwedFilter] = useState<OwedFilter>("any");
   const [loading, setLoading] = useState(false);
   // Bumped on every completed load. The owner dropdown fetches its own grouped
   // list from the server, so it has no way to notice that a PM just retyped an
@@ -476,7 +489,19 @@ export default function Actions() {
     return splitOwners(a.owner).some((p) => p.toLowerCase() === needle);
   };
 
-  const filtered = actions.filter((a) => matchesStatus(a) && matchesOwner(a));
+  /** Three-valued, so `false` and "never triaged" have to be told apart —
+   *  `!a.client_owed` would fold them together and hide exactly the rows the
+   *  "Not triaged" option exists to surface. */
+  const matchesOwed = (a: ActionItem) => {
+    if (owedFilter === "any") return true;
+    if (owedFilter === "client") return a.client_owed === true;
+    if (owedFilter === "us") return a.client_owed === false;
+    return a.client_owed == null;
+  };
+
+  const filtered = actions.filter(
+    (a) => matchesStatus(a) && matchesOwner(a) && matchesOwed(a),
+  );
 
   // Open/pending per portfolio, over everything in scope rather than over the
   // status-filtered rows — see PortfolioGroup for why that asymmetry is the
@@ -1081,6 +1106,19 @@ export default function Actions() {
                 </option>
               ))}
             </select>
+            <select
+              className="select w-40 rounded-lg text-[13px]"
+              value={owedFilter}
+              onChange={(e) => setOwedFilter(e.target.value as OwedFilter)}
+              aria-label="Owed-by filter"
+              title={OWED_BY_HINT}
+            >
+              {OWED_FILTERS.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}
+                </option>
+              ))}
+            </select>
             {/* Custom, not a <select>: browsers ignore colour on <option>, and
                 colour-per-company was the point. See OwnerFilterSelect for
                 what that costs and what it reimplements. */}
@@ -1332,7 +1370,7 @@ export default function Actions() {
       ) : filtered.length === 0 ? (
         <EmptyState
           title="No actions match this filter"
-          hint="Try a different status or owner filter, widen the scope, or add a new item."
+          hint="Try a different status, owner or owed-by filter, widen the scope, or add a new item."
         />
       ) : (
         <div className="card overflow-hidden">
