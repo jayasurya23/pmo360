@@ -1241,6 +1241,10 @@ export interface ChangeOrder {
   approved_by_user_id?: number | null;
   approved_at?: string | null;
   client_name?: string | null;
+  /** Castillo job number SNAPSHOT, e.g. "264-066". Copied from the portfolio
+   *  when the CO is created, then edited here — a signed document must not
+   *  change if the portfolio's number is corrected later. */
+  project_number?: string | null;
   location?: string | null;
   state?: string | null;
   size_mw?: string | null;

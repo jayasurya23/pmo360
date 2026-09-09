@@ -1188,6 +1188,12 @@ class ChangeOrder(Base):
     location = Column(String(200))         # PDF header (e.g. "Lawrenceburg")
     state = Column(String(50))             # PDF header (e.g. "TN")
     size_mw = Column(String(50))           # PDF header (e.g. "8") — free text
+    # Castillo job number SNAPSHOT for the PDF, e.g. "264-066". Pre-filled from
+    # Project.project_number on create and editable after. Snapshotted rather
+    # than read live for the same reason client_name and project_name are: this
+    # prints on a signed money document, and correcting a portfolio's job number
+    # a year later must not silently re-write an already-executed change order.
+    project_number = Column(String(50))
     signatory_name = Column(String(200))   # Castillo signature block: Print Name
     signatory_title = Column(String(200))  # Castillo signature block: Title
     signatory_phone = Column(String(50))   # back-cover "PREPARED BY" contact

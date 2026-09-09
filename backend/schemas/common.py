@@ -1920,6 +1920,8 @@ class ChangeOrderOut(ORMModel):
     updated_at: Optional[datetime] = None
     # Set by the list/detail endpoints for display (not an ORM column).
     project_name: Optional[str] = None
+    #: Castillo job number snapshot, e.g. "264-066".
+    project_number: Optional[str] = None
     # Derived, not stored: filled in by the endpoints' shared `_out()` helper so
     # there is one place that can forget it rather than one per route.
     pricing: Optional[ChangeOrderPricing] = None
@@ -1932,6 +1934,7 @@ class ChangeOrderIn(BaseModel):
     portfolio_project_id: Optional[int] = None
     co_version: str = "V1"
     project_name: Optional[str] = None   # editable Project label (snapshot)
+    project_number: Optional[str] = None # job number snapshot; defaults from the portfolio
     title: Optional[str] = None
     rate_type: str = "fixed"   # fixed | hourly
     request_date: Optional[date] = None
@@ -2002,6 +2005,7 @@ class ChangeOrderUpdate(BaseModel):
     portfolio_project_id: Optional[int] = None
     co_version: Optional[str] = None
     project_name: Optional[str] = None
+    project_number: Optional[str] = None
     title: Optional[str] = None
     rate_type: Optional[str] = None
     request_date: Optional[date] = None
