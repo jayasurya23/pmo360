@@ -23,6 +23,10 @@ import { findBySlug, nameToSlug } from "./slugs";
 
 /** Persistence key for the dashboard/portfolio scope toggle. */
 const SCOPE_LS_KEY = "pmo360_scope";
+/** Set only when the user picks a scope themselves. Without it, a stored
+ *  scope is a remembered DEFAULT, not consent, and is re-derived each time
+ *  identity resolves. See the note in `attemptMe`. */
+const SCOPE_EXPLICIT_LS_KEY = "pmo360_scope_explicit";
 
 /** "mine" = membership-filtered (when signed-in + non-admin);
  *  "all"  = everything. Admins and anonymous users always see everything
@@ -134,6 +138,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setScope = useCallback((s: Scope) => {
     _setScope(s);
     localStorage.setItem(SCOPE_LS_KEY, s);
+    // Only a deliberate toggle counts as a choice. Everything else is a
+    // default we stay free to re-derive.
+    localStorage.setItem(SCOPE_EXPLICIT_LS_KEY, "1");
   }, []);
 
   const [draftMeetingId, setDraftMeetingId] = useState<number | null>(null);
@@ -281,38 +288,58 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // ---- /api/me: resolve identity + admin flag once the Bearer is attached ----
-  // We poll briefly on mount because the MSAL interceptor may not have a token
-  // ready on the first try (silent acquire happens async). After 401 we treat
-  // the user as anonymous and never retry — they'll get re-fetched on the
-  // next manual `refreshMe()` call (e.g. after sign-in completes).
-  const refreshMe = useCallback(async () => {
+  // Resolves the signed-in identity. Returns whether it succeeded so the mount
+  // effect below knows when to stop retrying.
+  const attemptMe = useCallback(async (): Promise<boolean> => {
     try {
       const m = await api.fetchMe();
       setMe(m);
-      // Bootstrap scope on first identity resolution. If the user has
-      // never touched the toggle, admins land on "all" (their typical
-      // workflow), everyone else stays on the "mine" default.
-      if (!localStorage.getItem(SCOPE_LS_KEY)) {
+      // Re-derive the scope default EVERY time identity resolves, unless the
+      // user has explicitly toggled. A stored value on its own is not consent.
+      //
+      // This used to run only when nothing was stored, which pinned the first
+      // value forever. An admin whose `is_admin` was still false when the SPA
+      // loaded — the users.is_admin migration backfills FALSE and the
+      // ADMIN_EMAILS floor only raises it on the next request — got "mine"
+      // written permanently. Admins bypass ProjectMember and so have no
+      // memberships, and "mine" filters to memberships, so the app rendered
+      // completely empty with no error and no way back except clearing
+      // storage. Re-deriving here self-heals that on the next load.
+      if (localStorage.getItem(SCOPE_EXPLICIT_LS_KEY) !== "1") {
         const initial: Scope = m.is_admin ? "all" : "mine";
         _setScope(initial);
         localStorage.setItem(SCOPE_LS_KEY, initial);
       }
+      return true;
     } catch {
       setMe(null);
+      return false;
     }
   }, []);
 
+  const refreshMe = useCallback(async () => {
+    await attemptMe();
+  }, [attemptMe]);
+
   useEffect(() => {
-    // Try once now (covers the case where MSAL already has a cached token)
-    // and again after 500ms (covers the cold-start race where the
-    // interceptor's acquireTokenSilent is still pending).
-    void refreshMe();
-    const t = setTimeout(() => {
-      if (me === null) void refreshMe();
-    }, 500);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // Retry with backoff. This was a single 500ms retry, and its `me === null`
+    // guard read a value captured at mount so it never actually gated anything.
+    // One slow acquireTokenSilent left the session anonymous for the whole page
+    // load, and nothing in the app calls refreshMe() to recover it, so the only
+    // way out was a reload.
+    let cancelled = false;
+    void (async () => {
+      for (const wait of [0, 300, 800, 1800]) {
+        if (cancelled) return;
+        if (wait) await new Promise((r) => setTimeout(r, wait));
+        if (cancelled) return;
+        if (await attemptMe()) return;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [attemptMe]);
 
   // ---- Projects load whenever client changes ----
   // The picker dropdown ALWAYS shows every portfolio under the chosen
