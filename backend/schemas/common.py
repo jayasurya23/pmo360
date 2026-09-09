@@ -474,6 +474,8 @@ class ProjectOut(ORMModel):
     id: int
     client_id: int
     name: str
+    #: Castillo job number, e.g. "264-066". Opaque string, never parsed.
+    project_number: Optional[str] = None
     scope: Optional[str] = None
     location: Optional[str] = None
     state: Optional[str] = None
@@ -486,6 +488,7 @@ class ProjectOut(ORMModel):
 class ProjectCreate(BaseModel):
     client_id: int
     name: str
+    project_number: Optional[str] = None
     scope: Optional[str] = None
     location: Optional[str] = None
     state: Optional[str] = None
@@ -496,6 +499,7 @@ class ProjectCreate(BaseModel):
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
+    project_number: Optional[str] = None
     scope: Optional[str] = None
     location: Optional[str] = None
     state: Optional[str] = None

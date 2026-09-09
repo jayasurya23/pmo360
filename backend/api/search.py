@@ -88,22 +88,31 @@ def search(
             client_slug=_slugify(c.name),
         ))
 
-    # ---- Portfolios (max 5). Search portfolio name OR client name. ----
+    # ---- Portfolios (max 5). Search portfolio name, client name OR job number. ----
+    # The job number is how the business actually refers to a project on the
+    # phone and on drawings, so "264-066" has to find it the same way the name does.
     portfolios = (
         db.query(Project)
         .join(Client, Project.client_id == Client.id)
-        .filter(or_(Project.name.ilike(needle), Client.name.ilike(needle)))
+        .filter(or_(
+            Project.name.ilike(needle),
+            Client.name.ilike(needle),
+            Project.project_number.ilike(needle),
+        ))
         .order_by(Project.name)
         .limit(5)
         .all()
     )
     for p in portfolios:
         client_name = p.client.name if p.client else ""
+        # Job number leads the subtitle when present — it is the more precise
+        # identifier, and it is what confirms you matched the right project.
+        subtitle = " · ".join(x for x in (p.project_number, client_name) if x)
         results.append(SearchResultOut(
             kind="portfolio",
             id=p.id,
             label=p.name,
-            subtitle=client_name or None,
+            subtitle=subtitle or None,
             client_id=p.client_id,
             project_id=p.id,
             client_slug=_slugify(client_name),

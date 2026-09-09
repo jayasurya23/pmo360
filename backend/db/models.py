@@ -301,6 +301,22 @@ class Project(Base):
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
     name = Column(String(300), nullable=False)
     scope = Column(Text)
+    # Castillo job number, e.g. "264-066" or "2512-053".
+    #
+    # monday.com's Portfolio board (18403099969, the column TITLED "Project ID")
+    # is the source of truth; `scripts/sync_projects_from_monday.py` fills it,
+    # and a PM can correct it here when Monday is wrong or silent.
+    #
+    # OPAQUE STRING — never parsed, split or validated. Two formats are in
+    # circulation (NNN-NNN and YYMM-NNN) and the scheme has already changed once.
+    #
+    # Indexed but deliberately NOT unique. One Monday item can legitimately
+    # cover two of our portfolios, which then correctly share a number, so
+    # UNIQUE would make correct data unrepresentable. Migrations run in
+    # prestart.py BEFORE uvicorn, so a uniqueness violation on a free-text
+    # value typed into Monday would be a container boot loop, not a failed
+    # write. The sync reports duplicates instead.
+    project_number = Column(String(50), index=True)
     # Reusable project facts (shown on the CO header, deliverables, etc.).
     location = Column(String(200))    # city / site, e.g. "Lawrenceburg"
     state = Column(String(50))        # e.g. "TN"

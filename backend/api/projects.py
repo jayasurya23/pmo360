@@ -100,6 +100,7 @@ def create_project(
     project = Project(
         client_id=payload.client_id,
         name=payload.name,
+        project_number=(payload.project_number or None),
         scope=payload.scope,
         location=payload.location,
         state=payload.state,
@@ -144,6 +145,11 @@ def update_project(
         raise HTTPException(404, "Project not found")
     if payload.name is not None:
         project.name = payload.name
+    if payload.project_number is not None:
+        # "" clears the number. The other fields here keep "" as-is, but an
+        # empty job number is meaningless and NULL is what "no number" means
+        # everywhere else (2 of 40 Monday rows have none), so normalise it.
+        project.project_number = payload.project_number.strip() or None
     if payload.scope is not None:
         project.scope = payload.scope
     if payload.location is not None:

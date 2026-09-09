@@ -27,6 +27,7 @@ export default function RenameDialog({ open, onClose }: Props) {
   const [name, setName] = useState("");
   const [secondary, setSecondary] = useState(""); // scope
   // Portfolio-only reusable project facts.
+  const [projectNumber, setProjectNumber] = useState("");
   const [location, setLocation] = useState("");
   const [stateCode, setStateCode] = useState("");
   const [sizeMw, setSizeMw] = useState("");
@@ -38,6 +39,7 @@ export default function RenameDialog({ open, onClose }: Props) {
     if (!open) return;
     setName(entity?.name ?? "");
     setSecondary(currentProject?.scope ?? "");
+    setProjectNumber(currentProject?.project_number ?? "");
     setLocation(currentProject?.location ?? "");
     setStateCode(currentProject?.state ?? "");
     setSizeMw(currentProject?.size_mw ?? "");
@@ -70,6 +72,7 @@ export default function RenameDialog({ open, onClose }: Props) {
       await updateProject(entity!.id, {
         name: trimmed,
         scope: secondary.trim(),
+        project_number: projectNumber.trim(),
         location: location.trim(),
         state: stateCode.trim(),
         size_mw: sizeMw.trim(),
@@ -131,6 +134,16 @@ export default function RenameDialog({ open, onClose }: Props) {
             Project details — reused on Change Orders &amp; documents
           </div>
           <div className="grid grid-cols-2 gap-3">
+            <label className="block col-span-2">
+              <span className="label">Job number</span>
+              <input
+                type="text"
+                className="input"
+                placeholder="e.g. 264-066"
+                value={projectNumber}
+                onChange={(e) => setProjectNumber(e.target.value)}
+              />
+            </label>
             <label className="block col-span-2">
               <span className="label">Location</span>
               <input

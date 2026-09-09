@@ -473,6 +473,15 @@ function ContextRow({ admin }: { admin: AdminActions }) {
 
       <div className="flex-1" />
 
+      {project?.project_number && (
+        <span
+          className="hidden md:inline-flex items-center text-xs text-brand-gray shrink-0 tabular-nums"
+          title="Castillo job number"
+        >
+          Job&nbsp;
+          <b className="text-brand-black">{project.project_number}</b>
+        </span>
+      )}
       {project?.schedule_version && (
         <span className="hidden md:inline-flex items-center text-xs text-brand-gray shrink-0">
           Schedule&nbsp;

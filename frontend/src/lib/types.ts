@@ -240,6 +240,8 @@ export interface Project {
   id: number;
   client_id: number;
   name: string;
+  /** Castillo job number, e.g. "264-066". Opaque — never parse or split it. */
+  project_number?: string | null;
   scope?: string | null;
   location?: string | null;
   state?: string | null;
