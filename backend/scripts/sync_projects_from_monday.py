@@ -229,7 +229,7 @@ def report(res, projects, writes, skipped, args) -> None:
     def block(title, n):
         print(f"\n{'=' * W}\n{title}  ({n})\n{'=' * W}")
 
-    block("WILL WRITE" if args.apply else "WOULD WRITE (dry run — pass --apply)", len(writes))
+    block("WILL WRITE" if args.apply else "WOULD WRITE (dry run - pass --apply)", len(writes))
     for p, row in writes:
         was = f"  (was {p.project_number!r})" if p.project_number else ""
         print(f"  {p.name:<44} -> {row['number']}{was}")
@@ -237,7 +237,7 @@ def report(res, projects, writes, skipped, args) -> None:
         print("  (nothing)")
 
     if skipped:
-        block("ALREADY SET, DIFFERENT IN MONDAY — not overwritten", len(skipped))
+        block("ALREADY SET, DIFFERENT IN MONDAY - not overwritten", len(skipped))
         print("  Pass --overwrite to take Monday's value, or fix Monday.\n")
         for p, row in skipped:
             print(f"  {p.name:<44} ours={p.project_number!r}  monday={row['number']!r}")
@@ -257,12 +257,12 @@ def report(res, projects, writes, skipped, args) -> None:
     dupes = {k: v for k, v in final.items() if len(v) > 1}
     if dupes:
         block("DUPLICATE JOB NUMBERS after this run", len(dupes))
-        print("  Not an error — one Monday item can cover two portfolios. Confirm each.\n")
+        print("  Not an error - one Monday item can cover two portfolios. Confirm each.\n")
         for num, names in sorted(dupes.items()):
             print(f"  {num}: {', '.join(names)}")
 
     if res["ambiguous"]:
-        block("AMBIGUOUS — same name more than once", len(res["ambiguous"]))
+        block("AMBIGUOUS - same name more than once", len(res["ambiguous"]))
         for side, group in res["ambiguous"]:
             if side == "monday":
                 print(f"  Monday has {len(group)} items named {group[0]['name']!r}:")
@@ -275,7 +275,7 @@ def report(res, projects, writes, skipped, args) -> None:
                 print(f"    {row['url']}")
 
     if res["sub_only"]:
-        block("MATCHES A SUB-PROJECT, NOT A PORTFOLIO — never written", len(res["sub_only"]))
+        block("MATCHES A SUB-PROJECT, NOT A PORTFOLIO - never written", len(res["sub_only"]))
         print("  The job number lives on the portfolio. Set it by hand if it belongs there.\n")
         for row, portfolios in res["sub_only"]:
             print(f"  {row['name']:<44} {row['number'] or 'no number'}")
@@ -290,7 +290,7 @@ def report(res, projects, writes, skipped, args) -> None:
     if res["orphan"]:
         block("IN MONDAY, NOT IN PMO 360", len(res["orphan"]))
         print("  Usually a naming difference, occasionally a genuinely absent portfolio.")
-        print("  Nothing is created automatically — check each, then rename or add by hand.\n")
+        print("  Nothing is created automatically - check each, then rename or add by hand.\n")
         for row in res["orphan"]:
             print(f"  {row['name']:<44} {row['number'] or 'no number':<12} {row['client'] or ''}")
             print(f"    {row['url']}")
@@ -305,6 +305,16 @@ def report(res, projects, writes, skipped, args) -> None:
 # ---------------------------------------------------------------- main
 
 def main() -> int:
+    # Windows consoles default to cp1252, which cannot encode the box-drawing
+    # and dash characters this report used to print. Output is ASCII now, but
+    # portfolio and client names come from Monday and may not be, so make the
+    # stream tolerant rather than let one accented name kill the whole report.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--apply", action="store_true",
                     help="write to the database (default is a dry run)")
@@ -367,7 +377,7 @@ def main() -> int:
                 p.project_number = row["number"]
             print(f"\nApplied {len(writes)} update(s).")
         else:
-            print(f"\nDry run — nothing written. Re-run with --apply to write {len(writes)}.")
+            print(f"\nDry run - nothing written. Re-run with --apply to write {len(writes)}.")
     return 0
 
 
