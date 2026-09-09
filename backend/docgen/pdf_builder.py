@@ -498,6 +498,14 @@ def generate_meeting_minutes_pdf(meeting: Meeting, output_path: Optional[Path] =
             f"<b>Client:</b>&nbsp;&nbsp;&nbsp;&nbsp;{meeting.project.client.name}",
             s["kv"],
         ))
+    # Live read, like Client and Scope above. Minutes are regenerated freely and
+    # are not a signed document, so the current number is the right one. (Change
+    # orders snapshot it instead — see ChangeOrder.project_number.)
+    if meeting.project.project_number:
+        story.append(Paragraph(
+            f"<b>Job No.:</b>&nbsp;&nbsp;&nbsp;&nbsp;{meeting.project.project_number}",
+            s["kv"],
+        ))
     if meeting.project.scope:
         story.append(Paragraph(
             f"<b>Scope:</b>&nbsp;&nbsp;&nbsp;&nbsp;{meeting.project.scope}",
@@ -880,6 +888,14 @@ def generate_premeeting_agenda_pdf(
     if meeting.project.client:
         story.append(Paragraph(
             f"<b>Client:</b>&nbsp;&nbsp;&nbsp;&nbsp;{meeting.project.client.name}",
+            s["kv"],
+        ))
+    # Live read, like Client and Scope above. Minutes are regenerated freely and
+    # are not a signed document, so the current number is the right one. (Change
+    # orders snapshot it instead — see ChangeOrder.project_number.)
+    if meeting.project.project_number:
+        story.append(Paragraph(
+            f"<b>Job No.:</b>&nbsp;&nbsp;&nbsp;&nbsp;{meeting.project.project_number}",
             s["kv"],
         ))
     if meeting.project.scope:

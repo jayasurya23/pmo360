@@ -438,6 +438,9 @@ def create_change_order(
         # Editable Project label: use the supplied value, else snapshot the
         # portfolio name so existing behaviour is unchanged when left as-is.
         project_name=(payload.project_name or (project.name if project else None)),
+        # Snapshot the portfolio's job number unless the PM supplied one.
+        project_number=(payload.project_number
+                        or (project.project_number if project else None)),
         location=payload.location,
         state=payload.state,
         size_mw=payload.size_mw,
@@ -612,6 +615,7 @@ def preview_change_order_pdf(
             requested_by_user_id=payload.requested_by_user_id,
             client_name=(project.client.name if project.client else None),
             project_name=(payload.project_name or project.name),
+            project_number=(payload.project_number or project.project_number),
             location=payload.location,
             state=payload.state,
             size_mw=payload.size_mw,
@@ -664,7 +668,7 @@ def update_change_order(
             "current_version": co.version,
         })
     sent = payload.model_fields_set
-    for field in ("co_version", "project_name", "title", "rate_type",
+    for field in ("co_version", "project_name", "project_number", "title", "rate_type",
                   "request_date", "requested_by", "requested_by_user_id",
                   "location", "state", "size_mw", "signatory_name",
                   "signatory_title", "signatory_phone", "signatory_email",

@@ -198,6 +198,10 @@ def generate_meeting_minutes_docx(meeting: Meeting, output_path: Optional[Path] 
         kv = doc.add_paragraph()
         _body_run(kv, "Client:  ")
         _body_run(kv, meeting.project.client.name)
+    if meeting.project.project_number:
+        kv = doc.add_paragraph()
+        _body_run(kv, "Job No.:  ")
+        _body_run(kv, meeting.project.project_number)
     if meeting.project.scope:
         kv = doc.add_paragraph()
         _body_run(kv, "Scope:  ")
@@ -434,6 +438,11 @@ def generate_premeeting_agenda_docx(
         b = kv.add_run("Client:  ")
         b.bold = True
         kv.add_run(meeting.project.client.name)
+    if meeting.project.project_number:
+        kv = doc.add_paragraph()
+        b = kv.add_run("Job No.:  ")
+        b.bold = True
+        kv.add_run(meeting.project.project_number)
     if meeting.project.scope:
         kv = doc.add_paragraph()
         b = kv.add_run("Scope:  ")

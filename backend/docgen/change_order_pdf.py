@@ -196,16 +196,29 @@ def _build_data_page(co) -> bytes:
     def mv(s):
         return Paragraph(s or "", S["mv"])
 
+    meta_rows = [
+        [mk("Date"), mv(_fmt_long_date(co.request_date)),
+         Paragraph(co.co_version or "V1", S["ver"]),
+         mk("Location"), mv(co.location)],
+        [mk("Client"), mv(co.client_name), "",
+         mk("State"), mv(co.state)],
+        [mk("Project"), mv(proj_name), "",
+         mk("Size MW"), mv(co.size_mw)],
+    ]
+    # Job number reads the CO's OWN snapshot, never the live portfolio: this
+    # document gets signed, so it must not change underneath a counterparty when
+    # someone corrects the portfolio's number later. The row is omitted entirely
+    # when there is no number — every CO written before this shipped has none,
+    # and a bare label with nothing after it reads as a mistake on a signed
+    # document. Omitting keeps those PDFs byte-identical to what was sent.
+    co_number_snapshot = getattr(co, "project_number", None)
+    if co_number_snapshot:
+        meta_rows.append(
+            [mk("Job No."), mv(co_number_snapshot), "", "", ""]
+        )
+
     meta = Table(
-        [
-            [mk("Date"), mv(_fmt_long_date(co.request_date)),
-             Paragraph(co.co_version or "V1", S["ver"]),
-             mk("Location"), mv(co.location)],
-            [mk("Client"), mv(co.client_name), "",
-             mk("State"), mv(co.state)],
-            [mk("Project"), mv(proj_name), "",
-             mk("Size MW"), mv(co.size_mw)],
-        ],
+        meta_rows,
         colWidths=[0.62 * inch, 1.55 * inch, 0.55 * inch, 0.78 * inch, 1.2 * inch],
     )
     meta.setStyle(TableStyle([

@@ -232,6 +232,7 @@ export const createProject = (payload: {
   client_id: number;
   name: string;
   scope?: string;
+  project_number?: string;
   schedule_version?: string;
   sub_projects_json?: string[];
 }) => apiClient.post<Project>("/projects", payload).then((r) => r.data);
@@ -240,6 +241,7 @@ export const updateProject = (
   payload: Partial<{
     name: string;
     scope: string;
+    project_number: string;
     location: string;
     state: string;
     size_mw: string;
