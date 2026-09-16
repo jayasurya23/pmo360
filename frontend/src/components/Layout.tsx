@@ -4,6 +4,7 @@ import { useAuth } from "@/auth/useAuth";
 import { useEffect, useState, useRef, Suspense } from "react";
 import clsx from "clsx";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import ProjectIdLinkNotice from "@/components/ProjectIdLinkNotice";
 import { isStagingHost, EMAIL_BLOCKED_NOTE } from "@/lib/graph";
 import NewPortfolioDialog from "@/components/admin/NewPortfolioDialog";
 import DeletePortfolioDialog from "@/components/admin/DeletePortfolioDialog";
@@ -193,6 +194,7 @@ export default function Layout() {
         }}
       />
       <main className={clsx("flex-1 px-9 py-7 w-full mx-auto", contentWidth)}>
+        <ProjectIdLinkNotice />
         {/* Inside the shell on purpose: a page that throws leaves the nav,
             the portfolio switcher and the theme alive, so it is something you
             navigate away from rather than a white screen you have to reload.

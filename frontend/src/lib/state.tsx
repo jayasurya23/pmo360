@@ -20,6 +20,7 @@ import type {
   MeResponse,
 } from "./types";
 import { findBySlug, nameToSlug } from "./slugs";
+import { PROJECT_ID_PARAM, portfoliosWithProjectId } from "./projectIdLink";
 
 /** Persistence key for the dashboard/portfolio scope toggle. */
 const SCOPE_LS_KEY = "pmo360_scope";
@@ -29,6 +30,14 @@ const SCOPE_LS_KEY = "pmo360_scope";
  *  regardless of this flag — the toggle is a dashboard-scoping
  *  preference, not an access-control rule. */
 export type Scope = "mine" | "all";
+
+/** A `?project_id=` link that did not resolve to exactly one portfolio. */
+export interface ProjectIdLinkOutcome {
+  /** The Castillo Project ID the link carried (monday's "Project ID"). */
+  projectId: string;
+  /** Empty: no portfolio carries it. Two or more: the PM picks. */
+  candidates: Project[];
+}
 
 interface AppState {
   // ---- reference data ----
@@ -50,6 +59,12 @@ interface AppState {
   setSelectedClientId: (id: number | null) => void;
   setSelectedProjectId: (id: number | null) => void;
   setSelectedSubProject: (name: string | null) => void;
+  // ---- `?project_id=` deep links ----
+  /** Set when a Project ID link matched no portfolio, or several. */
+  projectIdLink: ProjectIdLinkOutcome | null;
+  dismissProjectIdLink: () => void;
+  /** Open one of the portfolios a Project ID link matched. */
+  openProjectIdCandidate: (p: Project) => void;
   // ---- scope (My / All toggle) ----
   scope: Scope;
   setScope: (s: Scope) => void;
@@ -116,6 +131,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [selectedClientId, _setSelectedClientId] = useState<number | null>(null);
   const [selectedProjectId, _setSelectedProjectId] = useState<number | null>(null);
   const [selectedSubProject, _setSelectedSubProject] = useState<string | null>(
+    null,
+  );
+  const [projectIdLink, setProjectIdLink] = useState<ProjectIdLinkOutcome | null>(
     null,
   );
 
@@ -259,12 +277,100 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   };
 
+  // ---- `?project_id=` deep links ----
+  // Other Castillo tools (the Planset QC app) know a project only by its
+  // Castillo Project ID, so they link to /portfolio?project_id=264-066.
+  // Resolved once, on load, against every portfolio: a Project ID says
+  // nothing about which client it belongs to.
+  //
+  // One match selects its client and portfolio -- through the same
+  // localStorage fallbacks the loaders below already honour -- and swaps the
+  // one-shot parameter for the usual ?client/?portfolio slugs, so a reload or
+  // a copied link behaves like any other. Zero or several matches leave the
+  // normal selection alone and raise `projectIdLink` for the shell to explain:
+  // a Project ID shared by two portfolios is legitimate, and guessing between
+  // them would open the wrong one without saying so.
+  //
+  // Returns true when it chose the client, so the caller skips its own pick.
+  const resolveProjectIdLink = async (cs: Client[]): Promise<boolean> => {
+    const projectId = (searchParams.get(PROJECT_ID_PARAM) ?? "").trim();
+    if (!projectId) return false;
+    let portfolios: Project[] = [];
+    try {
+      portfolios = await api.listAllPortfolios(false);
+    } catch (err) {
+      console.error(err);
+    }
+    const matches = portfoliosWithProjectId(portfolios, projectId);
+
+    urlSyncDirection.current = "writing";
+    if (matches.length === 1) {
+      const hit = matches[0];
+      const client = cs.find((c) => c.id === hit.client_id);
+      // Two portfolios of one client can share a name slug; then the slug
+      // would pick the first, so leave it out and let the stored id decide.
+      const slugIsUnique =
+        portfolios.filter(
+          (p) =>
+            p.client_id === hit.client_id &&
+            nameToSlug(p.name) === nameToSlug(hit.name),
+        ).length === 1;
+      localStorage.setItem("pmo360_client", String(hit.client_id));
+      localStorage.setItem("pmo360_project", String(hit.id));
+      localStorage.removeItem("pmo360_subproject");
+      _setSelectedClientId(hit.client_id);
+      setSearchParams(
+        (sp) => {
+          const next = new URLSearchParams(sp);
+          next.delete(PROJECT_ID_PARAM);
+          if (client) next.set("client", nameToSlug(client.name));
+          if (slugIsUnique) next.set("portfolio", nameToSlug(hit.name));
+          else next.delete("portfolio");
+          next.delete("project");
+          return next;
+        },
+        { replace: true },
+      );
+      return true;
+    }
+
+    setProjectIdLink({ projectId, candidates: matches });
+    setSearchParams(
+      (sp) => {
+        const next = new URLSearchParams(sp);
+        next.delete(PROJECT_ID_PARAM);
+        return next;
+      },
+      { replace: true },
+    );
+    // Several portfolios under one client: open that client at least.
+    const clientIds = new Set(matches.map((m) => m.client_id));
+    if (matches.length > 1 && clientIds.size === 1) {
+      localStorage.setItem("pmo360_client", String(matches[0].client_id));
+      _setSelectedClientId(matches[0].client_id);
+      return true;
+    }
+    return false;
+  };
+
+  const dismissProjectIdLink = () => setProjectIdLink(null);
+
+  const openProjectIdCandidate = (p: Project) => {
+    setProjectIdLink(null);
+    // The portfolio loader falls back to this id once the client's list loads.
+    localStorage.setItem("pmo360_project", String(p.id));
+    if (p.client_id !== selectedClientId) setSelectedClientId(p.client_id);
+    else setSelectedProjectId(p.id);
+  };
+
   // ---- Initial load: clients + settings ----
   useEffect(() => {
     api
       .listClients()
-      .then((cs) => {
+      .then(async (cs) => {
         setClients(cs);
+        // A Project ID link outranks every other source of selection.
+        if (await resolveProjectIdLink(cs)) return;
         // Resolution priority: URL > localStorage > first client.
         const urlSlug = searchParams.get("client");
         let pick: Client | null = findBySlug(cs, urlSlug);
@@ -472,6 +578,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSelectedClientId,
     setSelectedProjectId,
     setSelectedSubProject,
+    projectIdLink,
+    dismissProjectIdLink,
+    openProjectIdCandidate,
     scope,
     setScope,
     draftMeetingId,
