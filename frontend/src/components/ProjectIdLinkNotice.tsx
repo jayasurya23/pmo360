@@ -18,7 +18,7 @@ export default function ProjectIdLinkNotice() {
     useApp();
   if (!projectIdLink) return null;
 
-  const { projectId, candidates } = projectIdLink;
+  const { projectId, candidates, failed } = projectIdLink;
   const clientName = (id: number) => clients.find((c) => c.id === id)?.name;
 
   return (
@@ -28,7 +28,12 @@ export default function ProjectIdLinkNotice() {
     >
       <div className="min-w-0 space-y-2">
         <div className="text-sm font-semibold text-brand-black">
-          {candidates.length === 0 ? (
+          {failed ? (
+            <>
+              Couldn’t look up Project ID{" "}
+              <span className="tabular-nums">{projectId}</span>
+            </>
+          ) : candidates.length === 0 ? (
             <>
               No portfolio has Project ID{" "}
               <span className="tabular-nums">{projectId}</span>
@@ -40,7 +45,12 @@ export default function ProjectIdLinkNotice() {
             </>
           )}
         </div>
-        {candidates.length === 0 ? (
+        {failed ? (
+          <p className="text-xs text-brand-gray">
+            The portfolio list did not load. Reload the page to try the link
+            again.
+          </p>
+        ) : candidates.length === 0 ? (
           <p className="text-xs text-brand-gray">
             The link came from another Castillo tool. Check the value on the
             monday Portfolio board, or add it to the portfolio under Edit

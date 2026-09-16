@@ -37,6 +37,8 @@ export interface ProjectIdLinkOutcome {
   projectId: string;
   /** Empty: no portfolio carries it. Two or more: the PM picks. */
   candidates: Project[];
+  /** The portfolio list could not be fetched; says nothing about the value. */
+  failed: boolean;
 }
 
 interface AppState {
@@ -209,6 +211,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    setProjectIdLink(null);
     _setSelectedClientId(id);
     // Clear stale portfolio + project when client changes
     _setSelectedProjectId(null);
@@ -228,6 +231,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // dropping portfolio + project too — selection no longer applies
         next.delete("portfolio");
         next.delete("project");
+        next.delete(PROJECT_ID_PARAM);
         return next;
       },
       { replace: true },
@@ -235,6 +239,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const setSelectedProjectId = (id: number | null) => {
+    setProjectIdLink(null);
     _setSelectedProjectId(id);
     // Switching portfolio resets the Project tier (and its stored value, so a
     // tag name doesn't bleed across portfolios); the resolver effect below
@@ -251,6 +256,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (proj) next.set("portfolio", nameToSlug(proj.name));
         else next.delete("portfolio");
         next.delete("project");
+        next.delete(PROJECT_ID_PARAM);
         return next;
       },
       { replace: true },
@@ -279,31 +285,69 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // ---- `?project_id=` deep links ----
   // Other Castillo tools (the Planset QC app) know a project only by its
-  // Castillo Project ID, so they link to /portfolio?project_id=264-066.
-  // Resolved once, on load, against every portfolio: a Project ID says
-  // nothing about which client it belongs to.
+  // Castillo Project ID, so they link to /portfolio?project_id=264-066. The
+  // value is resolved against every portfolio -- a Project ID says nothing
+  // about which client it belongs to -- whenever the parameter appears, not
+  // only on first load: sign-in can hand the URL back after the app mounted.
   //
   // One match selects its client and portfolio -- through the same
   // localStorage fallbacks the loaders below already honour -- and swaps the
   // one-shot parameter for the usual ?client/?portfolio slugs, so a reload or
-  // a copied link behaves like any other. Zero or several matches leave the
-  // normal selection alone and raise `projectIdLink` for the shell to explain:
-  // a Project ID shared by two portfolios is legitimate, and guessing between
-  // them would open the wrong one without saying so.
-  //
-  // Returns true when it chose the client, so the caller skips its own pick.
-  const resolveProjectIdLink = async (cs: Client[]): Promise<boolean> => {
-    const projectId = (searchParams.get(PROJECT_ID_PARAM) ?? "").trim();
-    if (!projectId) return false;
-    let portfolios: Project[] = [];
+  // a copied link behaves like any other. Zero or several matches raise
+  // `projectIdLink` for the shell to explain instead of guessing: a Project ID
+  // shared by two portfolios is legitimate, and picking one would open the
+  // wrong one without saying so. A failed lookup is reported as a failure,
+  // and keeps the parameter so a reload tries again.
+  const linkedProjectId = (searchParams.get(PROJECT_ID_PARAM) ?? "").trim();
+  const resolvedProjectIdRef = useRef<string | null>(null);
+  // Set when the initial load left the client pick to a pending link.
+  const deferredDefaultPick = useRef(false);
+  const selectedClientIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    selectedClientIdRef.current = selectedClientId;
+  }, [selectedClientId]);
+
+  // URL > localStorage > first client.
+  const pickDefaultClient = (cs: Client[]) => {
+    const urlSlug = searchParams.get("client");
+    let pick: Client | null = findBySlug(cs, urlSlug);
+    if (!pick) {
+      const stored = Number(localStorage.getItem("pmo360_client"));
+      pick = (stored && cs.find((c) => c.id === stored)) || cs[0] || null;
+    }
+    if (pick) _setSelectedClientId(pick.id);
+  };
+
+  // Switch client the way setSelectedClientId does -- clearing the previous
+  // client's portfolios first, so nothing matches against the old list --
+  // but without touching the URL, which the resolver rewrites itself.
+  const switchClientForLink = (clientId: number) => {
+    if (clientId === selectedClientIdRef.current) return;
+    _setSelectedProjectId(null);
+    _setSelectedSubProject(null);
+    setProjects([]);
+    _setSelectedClientId(clientId);
+  };
+
+  const resolveProjectIdLink = async (cs: Client[], projectId: string) => {
+    const fallBackToDefaultPick = () => {
+      if (!deferredDefaultPick.current) return;
+      deferredDefaultPick.current = false;
+      pickDefaultClient(cs);
+    };
+
+    let portfolios: Project[];
     try {
       portfolios = await api.listAllPortfolios(false);
     } catch (err) {
       console.error(err);
+      setProjectIdLink({ projectId, candidates: [], failed: true });
+      fallBackToDefaultPick();
+      return;
     }
     const matches = portfoliosWithProjectId(portfolios, projectId);
-
     urlSyncDirection.current = "writing";
+
     if (matches.length === 1) {
       const hit = matches[0];
       const client = cs.find((c) => c.id === hit.client_id);
@@ -315,10 +359,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
             p.client_id === hit.client_id &&
             nameToSlug(p.name) === nameToSlug(hit.name),
         ).length === 1;
+      deferredDefaultPick.current = false;
+      setProjectIdLink(null);
       localStorage.setItem("pmo360_client", String(hit.client_id));
       localStorage.setItem("pmo360_project", String(hit.id));
       localStorage.removeItem("pmo360_subproject");
-      _setSelectedClientId(hit.client_id);
+      if (hit.client_id === selectedClientIdRef.current) {
+        _setSelectedSubProject(null);
+        _setSelectedProjectId(hit.id);
+      } else {
+        switchClientForLink(hit.client_id);
+      }
       setSearchParams(
         (sp) => {
           const next = new URLSearchParams(sp);
@@ -331,10 +382,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         },
         { replace: true },
       );
-      return true;
+      return;
     }
 
-    setProjectIdLink({ projectId, candidates: matches });
+    setProjectIdLink({ projectId, candidates: matches, failed: false });
     setSearchParams(
       (sp) => {
         const next = new URLSearchParams(sp);
@@ -346,17 +397,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Several portfolios under one client: open that client at least.
     const clientIds = new Set(matches.map((m) => m.client_id));
     if (matches.length > 1 && clientIds.size === 1) {
-      localStorage.setItem("pmo360_client", String(matches[0].client_id));
-      _setSelectedClientId(matches[0].client_id);
-      return true;
+      const clientId = matches[0].client_id;
+      deferredDefaultPick.current = false;
+      localStorage.setItem("pmo360_client", String(clientId));
+      switchClientForLink(clientId);
+      return;
     }
-    return false;
+    fallBackToDefaultPick();
   };
+
+  useEffect(() => {
+    if (!linkedProjectId) {
+      // Resolved (the parameter is gone): a later link to the same value,
+      // in this tab, resolves again.
+      resolvedProjectIdRef.current = null;
+      return;
+    }
+    if (!clients.length || resolvedProjectIdRef.current === linkedProjectId) return;
+    resolvedProjectIdRef.current = linkedProjectId;
+    void resolveProjectIdLink(clients, linkedProjectId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkedProjectId, clients]);
 
   const dismissProjectIdLink = () => setProjectIdLink(null);
 
   const openProjectIdCandidate = (p: Project) => {
-    setProjectIdLink(null);
     // The portfolio loader falls back to this id once the client's list loads.
     localStorage.setItem("pmo360_project", String(p.id));
     if (p.client_id !== selectedClientId) setSelectedClientId(p.client_id);
@@ -367,18 +432,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     api
       .listClients()
-      .then(async (cs) => {
+      .then((cs) => {
         setClients(cs);
-        // A Project ID link outranks every other source of selection.
-        if (await resolveProjectIdLink(cs)) return;
-        // Resolution priority: URL > localStorage > first client.
-        const urlSlug = searchParams.get("client");
-        let pick: Client | null = findBySlug(cs, urlSlug);
-        if (!pick) {
-          const stored = Number(localStorage.getItem("pmo360_client"));
-          pick = (stored && cs.find((c) => c.id === stored)) || cs[0] || null;
+        // A pending Project ID link makes this pick itself, or falls back to
+        // it -- picking first would briefly open an unrelated portfolio.
+        if ((searchParams.get(PROJECT_ID_PARAM) ?? "").trim()) {
+          deferredDefaultPick.current = true;
+          return;
         }
-        if (pick) _setSelectedClientId(pick.id);
+        pickDefaultClient(cs);
       })
       .catch(console.error);
 
