@@ -1401,7 +1401,7 @@ function firstNameOf(value: string): string {
 function Footer() {
   return (
     <footer className="border-t border-surface-border bg-surface-card px-9 py-3.5 mt-auto flex justify-between text-xs text-brand-gray">
-      <span>Castillo Engineering · Project Management Office · v1.0.1 · Jayasurya Bhaskar</span>
+      <span>Castillo Engineering · Project Management Office</span>
       <span className="hidden md:inline">© {new Date().getFullYear()}</span>
     </footer>
   );
