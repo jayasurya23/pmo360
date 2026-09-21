@@ -94,7 +94,7 @@ def create_app() -> FastAPI:
     # ---- Health check ----
     @app.get("/api/health", tags=["health"])
     def health():
-        return {"status": "ok", "service": "pmo360-backend"}
+        return {"status": "ok", "service": "pmo360-backend", "deploy_check": "2026-09-21T1"}
 
     # ---- Init DB at startup ----
     @app.on_event("startup")
