@@ -432,6 +432,9 @@ export default function Settings() {
           client — the two cards are one loop, in the order you walk it. */}
       {tab === "clients" && (
         <div className="space-y-[18px]">
+          <p className="text-sm text-brand-gray">
+            Click a section to open or close it. Use <b>+ New contact</b> or <b>+ New client</b> any time — they stay in view when a section is closed.
+          </p>
           <ClientContactsCard canManage={canManageClients} />
           <AdminClientsCard canDelete={canManageClients} />
         </div>

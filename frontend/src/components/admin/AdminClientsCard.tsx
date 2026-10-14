@@ -116,6 +116,8 @@ export default function AdminClientsCard({
 
   return (
     <AdminSection
+      collapsible
+      defaultOpen={false}
       title="Clients"
       hint={`${clients.length} on file`}
       actions={
