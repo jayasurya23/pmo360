@@ -103,6 +103,9 @@ export default function ClientContactsCard({
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<ImportOutcome | null>(null);
+  // Folded by default; controlled here (not inside AdminSection) so a finished
+  // import can open it — the result banner lives in the body.
+  const [open, setOpen] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -235,9 +238,11 @@ export default function ClientContactsCard({
     try {
       const result = await importClientContacts();
       setImportResult(result);
+      setOpen(true);
       await reload();
     } catch (e: any) {
       setImportError(e?.message || "The import could not be run.");
+      setOpen(true);
     } finally {
       setImportBusy(false);
     }
@@ -247,6 +252,9 @@ export default function ClientContactsCard({
 
   return (
     <AdminSection
+      collapsible
+      open={open}
+      onOpenChange={setOpen}
       title="Client Contacts"
       hint={
         loading
