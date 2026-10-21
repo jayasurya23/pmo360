@@ -15,11 +15,12 @@ those assets are missing the builder degrades gracefully to the data page alone.
 
 The data page header carries Date / Version / Location / Client / State / Size MW;
 the body is a "Change Order Details" table (line details + cost) with a red
-"Total Proposal" bar, a two-party signature block, and a footer with the standard
-terms + hourly billing rates. The app-only "Internal Notes" never render here.
-Neither do the internal PMO/admin cost adders: they are marked into the printed
-line amounts via co_pricing.distribute_markup, so the lines still add up to the
-"Total Proposal" on their own and nothing on the page hints the markup exists.
+"Total Change Order" bar, a two-party signature block, and a footer with the
+standard terms + hourly billing rates. The app-only "Internal Notes" never render
+here. Neither do the internal PMO/admin cost adders: they are marked into the
+printed line amounts via co_pricing.distribute_markup, so the lines still add up
+to the "Total Change Order" on their own and nothing on the page hints the markup
+exists.
 Jost font + brand red are reused from docgen.pdf_builder for consistency.
 """
 from io import BytesIO
@@ -62,7 +63,7 @@ _USABLE = PAGE_W - 2 * _MARGIN   # 7.3in content width
 _FOOTER_RATES_L = [("Project Engineer", "$250"), ("Project Manager", "$300")]
 _FOOTER_RATES_R = [("Senior Engineer", "$350"), ("Administrative Tasks", "$150")]
 _FOOTER_TERMS = [
-    "Proposal Valid for 30 days.",
+    "Change Order Valid for 30 days.",
     "30% Deposit. Remaining deliverables invoiced upon their respective milestones.",
     "All documents delivered in PDF format. Hard copies - $0.50 per sq. ft.",
 ]
@@ -298,7 +299,7 @@ def _build_data_page(co) -> bytes:
     # Print the sum of the rendered lines so the total always matches what's shown
     # (falls back to the stored total only when there are no lines).
     grand_total = sum(shown) if items else _num(co.total_amount)
-    data.append([Paragraph("Total Proposal", S["totk"]),
+    data.append([Paragraph("Total Change Order", S["totk"]),
                  Paragraph("$", S["totv"]),
                  Paragraph(_amt(grand_total), S["totv"])])
 

@@ -10,11 +10,14 @@ working without a sign-in.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from auth import get_current_db_user, require_db_user
+from auth.permissions import PERMISSIONS_BY_NAME
 from core.deps import get_db
 from db.models import User as UserModel
 from schemas.common import UserPreferences, UserStub
@@ -38,6 +41,12 @@ def list_users(
     include_inactive: bool = Query(False, description=(
         "Include deactivated users. Off by default so offboarded people stop "
         "being offered as action owners."
+    )),
+    permission: Optional[str] = Query(None, description=(
+        "Restrict to active users who hold this permission (admins always "
+        "match, since they implicitly hold everything). Same vocabulary as "
+        "auth.permissions, e.g. 'co_approval' — for a picker that must only "
+        "offer people who can actually act on what's being asked of them."
     )),
     db: Session = Depends(get_db),
     _actor=Depends(get_current_db_user),
@@ -63,6 +72,16 @@ def list_users(
     rows = db.query(UserModel)
     if not include_inactive:
         rows = rows.filter(UserModel.is_active.is_(True))
+    if permission:
+        perm = PERMISSIONS_BY_NAME.get(permission)
+        if perm is None:
+            raise HTTPException(422, f"Unknown permission {permission!r}.")
+        # Admins implicitly hold every permission (see has_permission) — mirror
+        # that here rather than requiring an admin to also hold the named
+        # column, which would drop them off a list they can, in fact, act on.
+        rows = rows.filter(
+            or_(UserModel.is_admin.is_(True), getattr(UserModel, perm.column).is_(True))
+        )
     needle = q.strip().lower()
     if needle:
         rows = rows.filter(

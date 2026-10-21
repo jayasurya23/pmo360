@@ -5,7 +5,9 @@ import EmptyState from "@/components/EmptyState";
 import PdfPagePreview from "@/components/PdfPagePreview";
 import OwnerPicker from "@/components/actions/OwnerPicker";
 import SubProjectSelect, { loadSubProjects } from "@/components/SubProjectSelect";
-import RequestApprovalModal from "@/components/change-orders/RequestApprovalModal";
+import RequestApprovalModal, {
+  changeOrderApprovalLink,
+} from "@/components/change-orders/RequestApprovalModal";
 import ApprovalRequestsPanel from "@/components/change-orders/ApprovalRequestsPanel";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useApp } from "@/lib/state";
@@ -258,6 +260,7 @@ export default function ChangeOrders() {
     setSelectedProjectId,
     me,
   } = useApp();
+  const { getMailSendToken } = useAuth();
   const confirm = useConfirm();
   // `location` is already a CO form field below, so alias the router hook.
   const routerLoc = useLocation();
@@ -883,6 +886,47 @@ export default function ChangeOrders() {
     );
   }
 
+  /**
+   * Tell the creator their change order was approved — best-effort, the same
+   * philosophy as `_archive_pdf` server-side: a courtesy notification must
+   * never contaminate the approval it is reporting on. The caller fires this
+   * without awaiting it into the main flow (`void ... .catch(() => {})`), so
+   * a Graph refusal here is silent — the approval already happened and is
+   * recorded either way; only the heads-up failed to go out.
+   *
+   * Skipped, not sent, when there is nobody to tell (no creator on file — a
+   * pre-attribution row) or when the creator IS the approver: the only way
+   * that happens is the sole-admin self-approval fallback in
+   * `assert_change_order_approvable`, and nobody needs an email telling them
+   * what they just clicked.
+   */
+  async function notifyCreatorOfApproval(co: ChangeOrder) {
+    const to = (co.created_by?.email || "").trim();
+    if (!to) return;
+    if (me?.id != null && co.created_by?.id === me.id) return;
+    const link = changeOrderApprovalLink(co.id);
+    const coLabel = co.title?.trim() || "Untitled change order";
+    const clientName = co.client_name?.trim() || "—";
+    const portfolioName = co.project_name?.trim() || "—";
+    const firstName = co.created_by?.name?.trim().split(/\s+/)[0];
+    const body =
+      `Hi${firstName ? ` ${firstName}` : ""},\n\n` +
+      `${me?.name || "Someone"} approved this change order — it's ready to ` +
+      `send to the client.\n\n` +
+      `  Change order: ${coLabel}\n` +
+      `  Client:       ${clientName}\n` +
+      `  Portfolio:    ${portfolioName}\n` +
+      `  Version:      ${co.co_version || "V1"}\n` +
+      `  Total:        ${money(co.total_amount)}\n\n` +
+      `Open it here:\n${link}\n\n` +
+      `Thanks,\nPMO 360`;
+    const token = await getMailSendToken();
+    await sendMail(
+      { to, subject: `Approved: ${coLabel} — ${clientName}`, body },
+      token,
+    );
+  }
+
   async function doApprove(co: ChangeOrder) {
     // "You were asked at X, this is Y" — the price half of the staleness story,
     // said BEFORE the click rather than as a 409 after it. The server refuses a
@@ -919,6 +963,9 @@ export default function ChangeOrders() {
       }
       return;
     }
+    // Fire-and-forget: see the doc comment above notifyCreatorOfApproval for
+    // why this must never gate or fail the approval it is reporting on.
+    void notifyCreatorOfApproval(co).catch(() => {});
     await load();
     // Every other request on this CO just became "superseded" server-side.
     setApprovalsKey((k) => k + 1);
@@ -1576,7 +1623,7 @@ export default function ChangeOrders() {
                     Dashboard and Proposals. With no adders the two are the same
                     number and this reads exactly as it always has. */}
                 <span className="text-[13px] text-brand-gray">
-                  {hasAdders ? "Total to client" : "Total proposal"}
+                  {hasAdders ? "Total to client" : "Total change order"}
                 </span>
                 <span className="text-[19px] font-bold tabular-nums text-brand-black">
                   {money(clientTotal)}

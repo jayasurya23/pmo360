@@ -166,19 +166,29 @@ export default function RequestApprovalModal({ co, onClose, onRequested }: Props
   // Load once. Neither call needs a Graph token, so this is safe on mount —
   // the Castillo M365 directory (the only place a job title like "VP" shows) is
   // still behind OwnerPicker's own explicit "Search Castillo directory" button.
+  //
+  // TWO different user lists, on purpose. `users` (unfiltered) only feeds
+  // `pmEmails` — the classifier that decides whether a typed-in address is
+  // Castillo staff, so it must know about every colleague, not just approvers,
+  // or a legitimate internal address would misclassify as "Outside Castillo"
+  // and trip the external-recipient warning for no reason. `approvers` (scoped
+  // to CO_APPROVAL holders, admins included server-side) is what actually
+  // populates the one-tap chips below: this dialog exists to ask someone who
+  // can approve, so the suggested list should only ever be people who can.
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
       listUsers("", 500).catch(() => []),
+      listUsers("", 500, "co_approval").catch(() => []),
       listClientContacts().catch(() => []),
-    ]).then(([users, contacts]) => {
+    ]).then(([users, approvers, contacts]) => {
       if (cancelled) return;
       setPmEmails(new Set(users.map((u) => (u.email || "").toLowerCase()).filter(Boolean)));
       setClientEmails(
         new Set(contacts.map((c) => (c.email || "").toLowerCase()).filter(Boolean)),
       );
       setCastilloPeople(
-        users
+        approvers
           .filter((u) => u.email)
           .map((u) => ({
             email: (u.email || "").toLowerCase(),
@@ -488,12 +498,14 @@ export default function RequestApprovalModal({ co, onClose, onRequested }: Props
                 </p>
               )}
 
-              {/* Castillo colleagues, one tap. This is the DEFAULT path on
-                  purpose — an approval request is an internal document, and
-                  every person listed here signs in to PMO 360. */}
+              {/* Castillo colleagues who hold CO Approval, one tap. This is the
+                  DEFAULT path on purpose — an approval request is an internal
+                  document, and everyone listed here can actually act on it
+                  (an admin picking up the ask counts too, even without the
+                  named permission — see /api/users?permission=). */}
               {castilloPeople.length > 0 && (
                 <div className="mt-2">
-                  <span className="micro-label">Castillo people</span>
+                  <span className="micro-label">Castillo approvers</span>
                   <div className="mt-1 flex flex-wrap gap-1">
                     {castilloPeople
                       .filter((p) => !recipients.some((r) => r.email === p.email))

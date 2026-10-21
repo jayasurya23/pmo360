@@ -1112,9 +1112,13 @@ export interface UserStub {
   name: string | null;
   email: string | null;
 }
-export const listUsers = (q = "", limit = 20) =>
+/** `permission` restricts the directory to holders of that permission (plus
+ *  admins) — e.g. "co_approval" for a picker that must only offer people who
+ *  can actually act on what's being asked of them. Omitted, behaviour is
+ *  unchanged: every active user. */
+export const listUsers = (q = "", limit = 20, permission?: string) =>
   apiClient
-    .get<UserStub[]>("/users", { params: { q, limit } })
+    .get<UserStub[]>("/users", { params: { q, limit, permission } })
     .then((r) => r.data);
 
 // ---------- project members (PM membership) ----------
