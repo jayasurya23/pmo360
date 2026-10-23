@@ -3,15 +3,21 @@
 Reproduces the Castillo "Change Order - Summary of Services" template (the Word
 output template Gary uses). The deliverable is four pages:
 
-  1. cover      — "PROPOSAL / PROFESSIONAL ENGINEERING SERVICES" brand cover
+  1. cover      — "CHANGE ORDER / PROFESSIONAL ENGINEERING SERVICES" brand cover
   2. data       — the generated "CHANGE ORDER - SUMMARY OF SERVICES" page
   3. services   — "SERVICES OFFERED" brand page
   4. back        — Castillo "C" back cover + "PREPARED BY" contact block
 
 Only page 2 is generated from the ChangeOrder; the cover / services / back pages
-are the static Castillo brand pages (assets/co_template/, extracted verbatim from
-the source template) and are merged around the generated page with pikepdf. If
+are the static Castillo brand pages (assets/co_template/, extracted from the
+source template) and are merged around the generated page with pikepdf. If
 those assets are missing the builder degrades gracefully to the data page alone.
+
+The source Word template flattens each brand page into one full-page image, so
+the cover's title is pixels, not text: its "CHANGE ORDER" word was repainted into
+that image (Jost Bold ~59.5px on the flat #A81E2B banner), and the template's
+hidden footer text that sat underneath the images was stripped. To change the
+cover wording again, repaint the same spot — there is no editable text to edit.
 
 The data page header carries Date / Version / Location / Client / State / Size MW;
 the body is a "Change Order Details" table (line details + cost) with a red
