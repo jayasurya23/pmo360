@@ -279,9 +279,19 @@ export default function ChangeOrders() {
 
   const clientName =
     clients.find((c) => c.id === selectedClientId)?.name || "";
+  // "Outside PMO 360" mode: change orders for old clients/projects that are not
+  // in the system, raised here only so every CO looks the same. Client, project
+  // and CO number are typed in; there is no portfolio, and these never feed a
+  // portfolio rollup. Independent of the header's context switcher.
+  const [outside, setOutside] = useState(false);
+  const [outsideClient, setOutsideClient] = useState("");
+  /** Blank = let the server pick the next number for that client + project. */
+  const [coNumberText, setCoNumberText] = useState("");
   // No portfolio picked ("All clients" / "all portfolios") → aggregate, read +
   // approve view across every portfolio (optionally narrowed to a client).
-  const inAll = !currentProject;
+  const inAll = !outside && !currentProject;
+  /** Client label for the form and filenames, whichever mode is active. */
+  const formClient = outside ? outsideClient.trim() : clientName;
 
   // ---- lists per tab ----
   const [drafts, setDrafts] = useState<ChangeOrder[]>([]);
@@ -378,9 +388,11 @@ export default function ChangeOrders() {
   const load = async () => {
     setLoading(true);
     try {
-      const all = currentProject
-        ? await listChangeOrders(currentProject.id)
-        : await listChangeOrders(undefined, undefined, selectedClientId || undefined);
+      const all = outside
+        ? await listChangeOrders(undefined, undefined, undefined, undefined, true)
+        : currentProject
+          ? await listChangeOrders(currentProject.id)
+          : await listChangeOrders(undefined, undefined, selectedClientId || undefined);
       setDrafts(all.filter((c) => c.status === "draft"));
       setPending(all.filter((c) => c.status === "pending"));
       setSentBack(all.filter((c) => c.status === "sent_back"));
@@ -407,16 +419,16 @@ export default function ChangeOrders() {
     resetForm();
     // In the aggregate (no-portfolio) view the Create tab can't be used, so land
     // on Pending ("open") where the cross-portfolio list lives.
-    if (!currentProject) setTab((t) => (t === "create" ? "pending" : t));
+    if (!currentProject && !outside) setTab((t) => (t === "create" ? "pending" : t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentProject?.id, selectedClientId]);
+  }, [currentProject?.id, selectedClientId, outside]);
 
   // Does this portfolio use the project tier? Drives whether the "File under
   // project" field appears at all. `alive` guards a fast portfolio switch —
   // without it a slow answer for portfolio A can land after B's and show the
   // field on a portfolio that has no projects.
   useEffect(() => {
-    if (!currentProject) {
+    if (!currentProject || outside) {
       setHasSubProjects(false);
       return;
     }
@@ -427,7 +439,7 @@ export default function ChangeOrders() {
     return () => {
       alive = false;
     };
-  }, [currentProject?.id]);
+  }, [currentProject?.id, outside]);
 
   // Seed the create form from a "Create change order" hand-off (e.g. the meeting
   // Review page passes { coPrefill: { title, details } } via router state).
@@ -501,16 +513,21 @@ export default function ChangeOrders() {
   // `projects`, which is why the portfolio itself is parked in `wantProjectId`
   // for step 3 rather than set here.
   useEffect(() => {
+    if (linked && linked.project_id == null) {
+      setOutside(true);
+      return;
+    }
     if (!linked || linked.project_id === selectedProjectId) return;
     if (resolvedFor.current === linked.id) return;
     resolvedFor.current = linked.id;
     let cancelled = false;
     (async () => {
-      let target = projects.find((p) => p.id === linked.project_id) ?? null;
+      const wantId = linked.project_id;
+      let target = projects.find((p) => p.id === wantId) ?? null;
       if (!target) {
         try {
           const all = await listAllPortfolios(false);
-          target = all.find((p) => p.id === linked.project_id) ?? null;
+          target = all.find((p) => p.id === wantId) ?? null;
         } catch {
           // Leave the context alone. The banner still renders the CO and its
           // actions, so an unresolvable portfolio costs the header, not the page.
@@ -611,7 +628,9 @@ export default function ChangeOrders() {
     setRateType("fixed");
     setRateChosen(false);
     setCoVersion("V1");
-    setProjectName(currentProject?.name || "");
+    setProjectName(outside ? "" : currentProject?.name || "");
+    setOutsideClient("");
+    setCoNumberText("");
     // A new CO starts untagged. Inheriting the last one's project would file
     // an unrelated change order under it without anyone choosing that.
     setSubProjectId(null);
@@ -619,9 +638,9 @@ export default function ChangeOrders() {
     setRequestedBy("");
     setRequestedByUserId(null);
     // Pre-fill the reusable project facts from the portfolio (editable per CO).
-    setLocation(currentProject?.location || "");
-    setStateCode(currentProject?.state || "");
-    setSizeMw(currentProject?.size_mw || "");
+    setLocation(outside ? "" : currentProject?.location || "");
+    setStateCode(outside ? "" : currentProject?.state || "");
+    setSizeMw(outside ? "" : currentProject?.size_mw || "");
     setSignatoryName("");
     setSignatoryUserId(null);
     setSignatoryTitle("");
@@ -645,6 +664,8 @@ export default function ChangeOrders() {
     setRateChosen(true);
     setCoVersion(co.co_version || "V1");
     setProjectName(co.project_name || currentProject?.name || "");
+    setOutsideClient(co.project_id == null ? co.client_name || "" : "");
+    setCoNumberText(co.project_id == null ? String(co.co_number) : "");
     setSubProjectId(co.portfolio_project_id ?? null);
     setRequestDate(co.request_date || today());
     setRequestedBy(co.requested_by || "");
@@ -701,12 +722,19 @@ export default function ChangeOrders() {
   }
 
   function buildPayload(): ChangeOrderCreate {
+    const coNum = parseInt(coNumberText, 10);
     return {
-      project_id: currentProject!.id,
+      ...(outside
+        ? {
+            project_id: null,
+            client_name: outsideClient.trim() || null,
+            co_number: Number.isFinite(coNum) && coNum > 0 ? coNum : null,
+          }
+        : { project_id: currentProject!.id }),
       co_version: coVersion,
       project_name: projectName.trim() || null,
       // Always sent, including as null, so clearing the tag actually clears it.
-      portfolio_project_id: subProjectId,
+      portfolio_project_id: outside ? null : subProjectId,
       title: title || null,
       rate_type: rateType,
       request_date: requestDate || null,
@@ -754,7 +782,11 @@ export default function ChangeOrders() {
   }
 
   async function save(submit: boolean): Promise<void> {
-    if (!currentProject) return;
+    if (!currentProject && !outside) return;
+    if (outside && (!outsideClient.trim() || !projectName.trim())) {
+      setErr("Type the client and the project — they are what prints on the change order.");
+      return;
+    }
     setSaving(true);
     setErr(null);
     try {
@@ -807,11 +839,15 @@ export default function ChangeOrders() {
    * and stores nothing, so it works on a form that has never been saved.
    */
   async function previewDraft() {
-    if (!currentProject) return;
+    if (!currentProject && !outside) return;
+    if (outside && (!outsideClient.trim() || !projectName.trim())) {
+      setErr("Type the client and the project first — the preview prints them.");
+      return;
+    }
     setPdfFor(null);
     setPdfTitle(`Preview · ${money(clientTotal)} · not saved`);
     setPdfName(
-      `${clientName || "Castillo"}-CO-${coVersion || "V1"}-PREVIEW.pdf`,
+      `${formClient || "Castillo"}-CO-${coVersion || "V1"}-PREVIEW.pdf`,
     );
     setPdfBusy(true);
     setPdfUrl(null);
@@ -847,7 +883,7 @@ export default function ChangeOrders() {
         : await previewChangeOrderDocxBlob(buildPayload());
       const name = pdfFor
         ? `${pdfFor.client_name || "Castillo"}-CO-${pdfFor.co_number}-${pdfFor.co_version || "V1"}-DRAFT.docx`
-        : `${clientName || "Castillo"}-CO-${coVersion || "V1"}-DRAFT.docx`;
+        : `${formClient || "Castillo"}-CO-${coVersion || "V1"}-DRAFT.docx`;
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -1141,15 +1177,19 @@ export default function ChangeOrders() {
     <div className="space-y-5">
       <PageHeader
         kicker={
-          inAll
-            ? `${clientName ? clientName + " / " : "All clients / "}all portfolios`
-            : `${clientName ? clientName + " / " : ""}${currentProject!.name}`
+          outside
+            ? "Outside PMO 360"
+            : inAll
+              ? `${clientName ? clientName + " / " : "All clients / "}all portfolios`
+              : `${clientName ? clientName + " / " : ""}${currentProject!.name}`
         }
         title="Change orders"
         subtitle={
-          inAll
-            ? "Viewing every change order across portfolios."
-            : undefined
+          outside
+            ? "Change orders for clients and projects that are not in PMO 360 — same document, typed-in details, kept out of portfolio rollups."
+            : inAll
+              ? "Viewing every change order across portfolios."
+              : undefined
         }
         actions={
           <div className="flex items-end gap-5">
@@ -1260,6 +1300,28 @@ export default function ChangeOrders() {
           )}
         </section>
       )}
+
+      <div className="inline-flex overflow-hidden rounded-lg border border-surface-border text-[13px]">
+        {([false, true] as const).map((o) => (
+          <button
+            key={String(o)}
+            type="button"
+            onClick={() => setOutside(o)}
+            className={
+              outside === o
+                ? "bg-brand-red px-3.5 py-1.5 font-semibold text-white"
+                : "px-3.5 py-1.5 text-brand-gray transition hover:bg-surface-page"
+            }
+            title={
+              o
+                ? "Old clients / projects that are not in PMO 360 — type the client, project and CO number"
+                : "Change orders for portfolios in PMO 360"
+            }
+          >
+            {o ? "Outside PMO 360" : "PMO 360 portfolios"}
+          </button>
+        ))}
+      </div>
 
       <div className="flex flex-wrap items-center gap-5 border-b border-surface-border">
         <TabBtn active={tab === "create"} onClick={() => setTab("create")}>
@@ -1373,27 +1435,55 @@ export default function ChangeOrders() {
               <div className="flex flex-col gap-3.5 px-5 py-4">
                 {/* header fields — two dense rows, then the free-text title */}
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_0.7fr_0.7fr]">
-                  <Field label="Client">
-                    <input
-                      className="input bg-surface-page text-brand-gray"
-                      value={clientName}
-                      disabled
-                    />
-                  </Field>
-                  <Field label="Project">
+                  {outside ? (
+                    <Field label="Client *">
+                      <input
+                        className="input"
+                        value={outsideClient}
+                        onChange={(e) => setOutsideClient(e.target.value)}
+                        placeholder="Client name as it should print"
+                      />
+                    </Field>
+                  ) : (
+                    <Field label="Client">
+                      <input
+                        className="input bg-surface-page text-brand-gray"
+                        value={clientName}
+                        disabled
+                      />
+                    </Field>
+                  )}
+                  <Field label={outside ? "Project *" : "Project"}>
                     <input
                       className="input"
                       value={projectName}
                       onChange={(e) => setProjectName(e.target.value)}
-                      placeholder={currentProject.name}
-                      title="Pre-filled from the portfolio; edit to set a custom project label on this change order and its PDF."
+                      placeholder={outside ? "Project name as it should print" : currentProject?.name}
+                      title={
+                        outside
+                          ? "Prints as the Project on the change order."
+                          : "Pre-filled from the portfolio; edit to set a custom project label on this change order and its PDF."
+                      }
                     />
                   </Field>
+                  {outside && (
+                    <Field label="CO number">
+                      <input
+                        type="number"
+                        min={1}
+                        className="input"
+                        value={coNumberText}
+                        onChange={(e) => setCoNumberText(e.target.value)}
+                        placeholder="Next"
+                        title="Earlier change orders on this job were issued outside PMO 360, so set this one's number. Blank = next after the last one raised here for the same client and project."
+                      />
+                    </Field>
+                  )}
                   {/* Separate from the "Project" label above, and deliberately
                       so: that one prints on the client's PDF, this one is
                       internal filing for rollups and filtering. Renders nothing
                       when the portfolio has no sub-projects. */}
-                  {(hasSubProjects || subProjectId != null) && (
+                  {!outside && currentProject && (hasSubProjects || subProjectId != null) && (
                     <Field label="File under project">
                       <SubProjectSelect
                         portfolioId={currentProject.id}
@@ -2415,8 +2505,16 @@ function CoRow({
             <span className="shrink-0 rounded bg-surface-mute px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-gray">
               {co.rate_type === "hourly" ? "Hourly" : "Fixed"}
             </span>
+            {co.project_id == null && (
+              <span
+                className="shrink-0 rounded border border-surface-border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-gray"
+                title="Client / project not in PMO 360 — kept out of portfolio rollups"
+              >
+                Outside PMO 360
+              </span>
+            )}
           </div>
-          {context && (co.project_name || co.client_name) && (
+          {(context || co.project_id == null) && (co.project_name || co.client_name) && (
             <div className="mt-0.5 truncate text-[11px] text-brand-gray">
               {co.client_name && (
                 <>
@@ -2615,7 +2713,11 @@ function CoEmailModal({
 
   // On a resend the previous recipients are the likely ones again. sent_to is a
   // flat To+Cc list, so it all lands in To for the PM to trim.
-  const [to, setTo] = useState(co.sent_to || "");
+  // An Outside-PMO-360 CO has no portfolio roster to pick from, so its client
+  // signatory's address (if one was typed) is the natural first recipient.
+  const [to, setTo] = useState(
+    co.sent_to || (co.project_id == null ? co.client_signatory_email || "" : ""),
+  );
   const [cc, setCc] = useState("");
 
   /** Every approved change order that goes to a client is copied to PO
@@ -2673,6 +2775,10 @@ function CoEmailModal({
   // rides along on the chip and the PM does the filtering. Scoping this to the
   // client's own contacts needs a client_id on the CO; see the handoff note.
   useEffect(() => {
+    if (co.project_id == null) {
+      setContacts([]);
+      return;
+    }
     listProjectRoster(co.project_id)
       .then((rows: any[]) =>
         setContacts(

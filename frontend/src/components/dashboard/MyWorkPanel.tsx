@@ -205,7 +205,9 @@ export default function MyWorkPanel({
           // right tab and highlights the row. The client + portfolio query
           // stays on the link anyway: it is what the header switcher reads, and
           // it means the page has the context before the CO fetch resolves.
-          nav(`/change-orders/${item.id}${q}`);
+          // An Outside-PMO-360 CO has no portfolio: its typed names are not a
+          // context the switcher could resolve, so the id alone opens it.
+          nav(`/change-orders/${item.id}${item.project_id == null ? "" : q}`);
       }
     },
     [contextQuery, nav],

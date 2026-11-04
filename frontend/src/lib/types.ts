@@ -1049,7 +1049,8 @@ export type MyWorkKind =
 export interface MyWorkItem {
   kind: MyWorkKind;
   id: number;
-  project_id: number;
+  /** Null only for an Outside-PMO-360 change order (no portfolio). */
+  project_id: number | null;
   project_name: string | null;
   client_name: string | null;
   /** Primary line, e.g. "CO-3 — Re-trenching". */
@@ -1220,7 +1221,9 @@ export interface ChangeOrderPricing {
 
 export interface ChangeOrder {
   id: number;
-  project_id: number;
+  /** Null for an "Outside PMO 360" CO: a legacy client/project that is not in
+   *  the system, identified by the typed-in `client_name` / `project_name`. */
+  project_id: number | null;
   /** Optional sub-project this CO was raised for. Null = the whole portfolio.
    *  INTERNAL filing only — the PDF's "Project" line is `project_name`, the
    *  free-text label the PM types. Settable while draft or pending; approved

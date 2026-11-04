@@ -480,7 +480,7 @@ def _co_approval_requests(db: Session, actor, labels) -> list[MyWorkCOApproval]:
         )
         .all()
     ):
-        project_name, client_name = labels.get(co.project_id, (None, None))
+        project_name, client_name = _co_labels(co, labels)
         requester = req.requested_by_user
         rows.append(MyWorkCOApproval(
             change_order_id=co.id,
@@ -498,6 +498,14 @@ def _co_approval_requests(db: Session, actor, labels) -> list[MyWorkCOApproval]:
             stale=req.co_version_at_request != (co.version or 1),
         ))
     return rows
+
+
+def _co_labels(co, labels) -> tuple:
+    """(project_name, client_name) for a queue row. An Outside-PMO-360 CO has no
+    portfolio to look up, so its typed-in names are the labels."""
+    if co.project_id is None:
+        return (co.project_name, co.client_name)
+    return labels.get(co.project_id, (None, None))
 
 
 def _waiting_on_me(db: Session, actor, labels, today: date) -> MyWorkWaitingOnMe:
@@ -524,7 +532,7 @@ def _waiting_on_me(db: Session, actor, labels, today: date) -> MyWorkWaitingOnMe
             .order_by(ChangeOrder.created_at.desc())
             .all()
         ):
-            project_name, client_name = labels.get(co.project_id, (None, None))
+            project_name, client_name = _co_labels(co, labels)
             amount = float(co.total_amount or 0.0)
             item = MyWorkQueueItem(
                 kind="co_approval" if co.status == "pending" else "co_send",

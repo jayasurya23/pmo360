@@ -1475,7 +1475,11 @@ export interface ChangeOrderLineItemInput {
   internal_notes?: string | null;
 }
 export interface ChangeOrderCreate {
-  project_id: number;
+  /** Null for an "Outside PMO 360" CO; then `client_name` and `project_name`
+   *  are required, and `co_number` may be typed in (null = next one). */
+  project_id: number | null;
+  client_name?: string | null;
+  co_number?: number | null;
   /** Optional sub-project under that portfolio — internal filing for rollups
    *  and filtering. Distinct from `project_name` below, which is the label
    *  that prints on the client's PDF. Null = the portfolio as a whole. */
@@ -1517,10 +1521,13 @@ export const listChangeOrders = (
   status?: "draft" | "pending" | "sent_back" | "approved",
   clientId?: number | null,
   sent?: boolean,
+  /** true = only Outside-PMO-360 COs, false = only portfolio COs, omit = both. */
+  outside?: boolean,
 ) =>
   apiClient
     .get<ChangeOrder[]>("/change-orders", {
       params: {
+        ...(outside != null ? { outside } : {}),
         ...(projectId != null ? { project_id: projectId } : {}),
         ...(clientId != null ? { client_id: clientId } : {}),
         ...(status ? { status } : {}),

@@ -110,7 +110,8 @@ export function useChangeOrders(): { cos: ChangeOrder[]; loading: boolean } {
       return;
     }
     setLoading(true);
-    listChangeOrders()
+    // Portfolio COs only: Outside-PMO-360 COs stay out of every rollup.
+    listChangeOrders(undefined, undefined, undefined, undefined, false)
       .then(setCos)
       .catch(() => setCos([]))
       .finally(() => setLoading(false));

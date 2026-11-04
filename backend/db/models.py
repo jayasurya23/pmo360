@@ -1154,7 +1154,11 @@ class ChangeOrder(Base):
     """
     __tablename__ = "change_orders"
     id = Column(Integer, primary_key=True)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False)
+    # NULL = an "Outside PMO 360" change order: a legacy client/project that is
+    # not in the system, raised here only so every CO Castillo sends looks the
+    # same. Its client and project are the free-text snapshots below, its
+    # co_number is typed in, and it stays out of every portfolio rollup.
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
     # OPTIONAL sub-project, same rules as the action-item and meeting columns:
     # NULL means the portfolio as a whole, which is every existing CO.
     #
@@ -1169,7 +1173,7 @@ class ChangeOrder(Base):
     portfolio_project_id = Column(
         Integer, ForeignKey("portfolio_projects.id"), nullable=True, index=True,
     )
-    co_number = Column(Integer, nullable=False, default=1)   # per-portfolio seq -> "CO-{n}"
+    co_number = Column(Integer, nullable=False, default=1)   # per-portfolio seq -> "CO-{n}" (typed in when outside PMO 360)
     co_version = Column(String(20), default="V1")            # workbook "Version" label
     title = Column(String(300))                              # optional short label
     rate_type = Column(String(10), nullable=False, default="fixed")  # fixed | hourly

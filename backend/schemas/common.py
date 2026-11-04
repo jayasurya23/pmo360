@@ -1328,7 +1328,9 @@ class MyWorkQueueItem(BaseModel):
     """
     kind: Literal["co_approval", "co_send", "agenda", "meeting_draft"]
     id: int
-    project_id: int
+    # Null only for an "Outside PMO 360" change order, which has no portfolio;
+    # the UI deep-links those by CO id alone.
+    project_id: Optional[int] = None
     project_name: Optional[str] = None
     client_name: Optional[str] = None
     label: str                        # primary line, e.g. "CO-3 — Re-trenching"
@@ -1872,7 +1874,9 @@ class ChangeOrderPricing(BaseModel):
 
 class ChangeOrderOut(ORMModel):
     id: int
-    project_id: int
+    # Null for an "Outside PMO 360" change order: a legacy client/project that is
+    # not in the system, typed in as free text (client_name / project_name).
+    project_id: Optional[int] = None
     # Optional sub-project this CO was raised for. Null = the portfolio as a
     # whole. INTERNAL filing only — the PDF's "Project" line is `project_name`.
     portfolio_project_id: Optional[int] = None
@@ -1928,7 +1932,13 @@ class ChangeOrderOut(ORMModel):
 
 
 class ChangeOrderIn(BaseModel):
-    project_id: int
+    # Omit for an "Outside PMO 360" change order — a legacy client/project that
+    # is not in the system. Then `client_name` and `project_name` are required
+    # free text, and `co_number` may be set by hand (earlier COs on that job
+    # were issued outside PMO 360).
+    project_id: Optional[int] = None
+    client_name: Optional[str] = None
+    co_number: Optional[int] = Field(default=None, ge=1, le=9999)
     # Optional sub-project under that portfolio. Omit or null for a
     # portfolio-wide change order, which is the default and the common case.
     portfolio_project_id: Optional[int] = None
@@ -1999,6 +2009,10 @@ class ChangeOrderReject(BaseModel):
 
 class ChangeOrderUpdate(BaseModel):
     expected_version: Optional[int] = None
+    # Outside-PMO-360 COs only: their client and number are typed in, so they
+    # are editable. A portfolio CO takes both from its portfolio and ignores these.
+    client_name: Optional[str] = None
+    co_number: Optional[int] = Field(default=None, ge=1, le=9999)
     # Pass an id to file this CO against a sub-project, null to put it back on
     # the portfolio as a whole, omit to leave it alone. Only while the CO is
     # still editable — approved and delivered ones are frozen outright.

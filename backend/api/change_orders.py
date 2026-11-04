@@ -128,7 +128,7 @@ def _apply_line_items(co: ChangeOrder, items: "list[ChangeOrderLineItemIn]") -> 
 
 def _out(co: ChangeOrder, db: Session) -> ChangeOrderOut:
     o = ChangeOrderOut.model_validate(co)
-    proj = db.get(Project, co.project_id)
+    proj = db.get(Project, co.project_id) if co.project_id is not None else None
     # Prefer the editable snapshot; fall back to the portfolio name (legacy rows).
     o.project_name = co.project_name or (proj.name if proj else None)
     # The sub-project tag is separate from `project_name` above and must stay
@@ -353,18 +353,103 @@ def _co_docx_filename(co: ChangeOrder) -> str:
     ) + ".docx"
 
 
+OUTSIDE_FOLDER = "Outside PMO 360"
+
+
+def _require_scope(guard, co: ChangeOrder) -> None:
+    """The portfolio half of the permission check, for a CO that HAS one.
+
+    An Outside-PMO-360 change order has no portfolio by design, and
+    `require_project(None)` refuses on the reading that a missing portfolio is a
+    route bug. Here it is not — so the WHAT half (the permission itself, already
+    enforced by the dependency) is the whole check for those rows.
+    """
+    if co.project_id is not None:
+        _require_scope(guard, co)
+
+
+def _clean(v) -> str:
+    return (v or "").strip()
+
+
+def _next_outside_number(db: Session, client_name: str, project_name: str) -> int:
+    """Next CO number for an outside client+project, matched case-insensitively
+    on the typed names — the only identity those rows have."""
+    top = (db.query(func.max(ChangeOrder.co_number))
+           .filter(ChangeOrder.project_id.is_(None))
+           .filter(func.lower(func.trim(ChangeOrder.client_name)) == client_name.lower())
+           .filter(func.lower(func.trim(ChangeOrder.project_name)) == project_name.lower())
+           .scalar())
+    return (top or 0) + 1
+
+
+def _resolve_context(db: Session, payload: ChangeOrderIn, guard) -> dict:
+    """Where a new (or previewed) CO belongs, and what that fixes about it.
+
+    With a project_id: the portfolio, as always — its client, name, job number
+    and the next per-portfolio number. Without one: an Outside-PMO-360 CO, whose
+    client and project are required free text and whose number is typed in
+    (earlier COs on an old job were issued outside the system) or else the next
+    one for that same client+project.
+    """
+    if payload.project_id is not None:
+        project = db.get(Project, payload.project_id)
+        if not project:
+            raise HTTPException(404, "Portfolio not found")
+        guard.require_project(project.id)
+        _resolve_sub_project(db, payload.project_id, payload.portfolio_project_id)
+        next_n = (db.query(func.max(ChangeOrder.co_number))
+                  .filter(ChangeOrder.project_id == payload.project_id)
+                  .scalar() or 0) + 1
+        return dict(
+            project_id=project.id,
+            portfolio_project_id=payload.portfolio_project_id,
+            co_number=next_n,
+            client_name=(project.client.name if project.client else None),
+            project_name=(payload.project_name or project.name),
+            project_number=(payload.project_number or project.project_number),
+        )
+    client_name, project_name = _clean(payload.client_name), _clean(payload.project_name)
+    if not client_name or not project_name:
+        raise HTTPException(
+            400,
+            "A change order outside PMO 360 needs the client and the project typed "
+            "in — they are what prints on the document.",
+        )
+    if payload.portfolio_project_id is not None:
+        raise HTTPException(400, "A change order outside PMO 360 has no portfolio projects.")
+    return dict(
+        project_id=None,
+        portfolio_project_id=None,
+        co_number=payload.co_number or _next_outside_number(db, client_name, project_name),
+        client_name=client_name,
+        project_name=project_name,
+        project_number=_clean(payload.project_number) or None,
+    )
+
+
 def _archive_pdf(co: ChangeOrder) -> None:
     """Best-effort: build the branded PDF and file it under the project's
     storage folder (SharePoint in prod, local FS in dev). Records the returned
     path on the CO. Never raises — archiving must not block approval."""
     try:
         proj = co.project
-        client = proj.client if proj else None
-        folder = "/".join(filter(None, [
-            safe_filename_slug(client.name) if client and client.name else None,
-            safe_filename_slug(proj.name) if proj and proj.name else "project",
-            "change-orders",
-        ]))
+        if proj is None:
+            # Outside PMO 360: filed by the typed names under their own root, so
+            # they never land inside a real client's folder by name collision.
+            folder = "/".join([
+                OUTSIDE_FOLDER,
+                safe_filename_slug(co.client_name or "client"),
+                safe_filename_slug(co.project_name or "project"),
+                "change-orders",
+            ])
+        else:
+            client = proj.client if proj else None
+            folder = "/".join(filter(None, [
+                safe_filename_slug(client.name) if client and client.name else None,
+                safe_filename_slug(proj.name) if proj and proj.name else "project",
+                "change-orders",
+            ]))
         path = get_storage().save(f"{folder}/{_co_pdf_filename(co)}", build_change_order_pdf(co))
         co.pdf_storage_path = path
     except Exception:
@@ -377,6 +462,10 @@ def list_change_orders(
     client_id: "int | None" = Query(None),
     status: "str | None" = Query(None),
     sent: "bool | None" = Query(None),
+    outside: "bool | None" = Query(None, description=(
+        "true = only Outside-PMO-360 COs (no portfolio); false = only portfolio "
+        "COs; omitted = both."
+    )),
     db: Session = Depends(get_db),
     _user=Depends(require_db_user),
 ):
@@ -393,6 +482,9 @@ def list_change_orders(
         q = q.join(Project, ChangeOrder.project_id == Project.id).filter(
             Project.client_id == client_id
         )
+    if outside is not None:
+        q = q.filter(ChangeOrder.project_id.is_(None) if outside
+                     else ChangeOrder.project_id.isnot(None))
     if status in _VALID_STATUS:
         q = q.filter(ChangeOrder.status == status)
     if sent is not None:
@@ -424,18 +516,11 @@ def create_change_order(
     actor=Depends(require_db_user),
     guard=Depends(require_permission(CO_CREATION)),
 ):
-    project = db.get(Project, payload.project_id)
-    if not project:
-        raise HTTPException(404, "Portfolio not found")
-    guard.require_project(project.id)
-    _resolve_sub_project(db, payload.project_id, payload.portfolio_project_id)
-    next_n = (db.query(func.max(ChangeOrder.co_number))
-              .filter(ChangeOrder.project_id == payload.project_id)
-              .scalar() or 0) + 1
+    ctx = _resolve_context(db, payload, guard)
     co = ChangeOrder(
-        project_id=payload.project_id,
-        portfolio_project_id=payload.portfolio_project_id,
-        co_number=next_n,
+        project_id=ctx["project_id"],
+        portfolio_project_id=ctx["portfolio_project_id"],
+        co_number=ctx["co_number"],
         co_version=payload.co_version or "V1",
         title=payload.title,
         rate_type=payload.rate_type if payload.rate_type in _VALID_RATE else "fixed",
@@ -443,13 +528,11 @@ def create_change_order(
         request_date=payload.request_date,
         requested_by=payload.requested_by,
         requested_by_user_id=payload.requested_by_user_id,
-        client_name=(project.client.name if project.client else None),
-        # Editable Project label: use the supplied value, else snapshot the
-        # portfolio name so existing behaviour is unchanged when left as-is.
-        project_name=(payload.project_name or (project.name if project else None)),
-        # Snapshot the portfolio's job number unless the PM supplied one.
-        project_number=(payload.project_number
-                        or (project.project_number if project else None)),
+        # Snapshots: from the portfolio (editable label / job number win), or the
+        # typed-in names for an Outside-PMO-360 CO. See _resolve_context.
+        client_name=ctx["client_name"],
+        project_name=ctx["project_name"],
+        project_number=ctx["project_number"],
         location=payload.location,
         state=payload.state,
         size_mw=payload.size_mw,
@@ -559,7 +642,7 @@ def check_change_order_sendable(
     GET in this app is deliberately ungated.
     """
     co = _get(db, co_id)
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     if co.status != "approved":
         raise HTTPException(
             409,
@@ -574,7 +657,7 @@ def check_change_order_sendable(
     )
 
 
-def _transient_co(payload: ChangeOrderIn, project: Project, next_n: int) -> ChangeOrder:
+def _transient_co(payload: ChangeOrderIn, ctx: dict) -> ChangeOrder:
     """A ChangeOrder built from the Create form that is NEVER added to a session.
 
     Shared by the PDF and Word previews so the two render the same document from
@@ -583,8 +666,8 @@ def _transient_co(payload: ChangeOrderIn, project: Project, next_n: int) -> Chan
     preview into a row; callers build inside `db.no_autoflush` as belt and braces.
     """
     co = ChangeOrder(
-        project_id=payload.project_id,
-        co_number=next_n,
+        project_id=ctx["project_id"],
+        co_number=ctx["co_number"],
         co_version=payload.co_version or "V1",
         title=payload.title,
         rate_type=payload.rate_type if payload.rate_type in _VALID_RATE else "fixed",
@@ -592,9 +675,9 @@ def _transient_co(payload: ChangeOrderIn, project: Project, next_n: int) -> Chan
         request_date=payload.request_date,
         requested_by=payload.requested_by,
         requested_by_user_id=payload.requested_by_user_id,
-        client_name=(project.client.name if project.client else None),
-        project_name=(payload.project_name or project.name),
-        project_number=(payload.project_number or project.project_number),
+        client_name=ctx["client_name"],
+        project_name=ctx["project_name"],
+        project_number=ctx["project_number"],
         location=payload.location,
         state=payload.state,
         size_mw=payload.size_mw,
@@ -636,20 +719,13 @@ def preview_change_order_pdf(
     document out of caller-supplied text, which is the create flow whether or
     not a row comes out the other end.
     """
-    project = db.get(Project, payload.project_id)
-    if not project:
-        raise HTTPException(404, "Portfolio not found")
-    guard.require_project(project.id)
-
-    # What the number WOULD be, so the preview matches the document that gets
-    # issued. Read-only — nothing reserves it, so two people previewing at once
-    # see the same number and neither has taken it.
-    next_n = (db.query(func.max(ChangeOrder.co_number))
-              .filter(ChangeOrder.project_id == payload.project_id)
-              .scalar() or 0) + 1
+    # Includes what the number WOULD be, so the preview matches the document
+    # that gets issued. Read-only — nothing reserves it, so two people
+    # previewing at once see the same number and neither has taken it.
+    ctx = _resolve_context(db, payload, guard)
 
     with db.no_autoflush:
-        co = _transient_co(payload, project, next_n)
+        co = _transient_co(payload, ctx)
         pdf = build_change_order_pdf(co)
 
     # The bytes are identical to the issued document — that is the point of a
@@ -680,15 +756,9 @@ def preview_change_order_docx(
     is a draft that has not been approved, and the filename ends -DRAFT; see
     docgen.change_order_docx.
     """
-    project = db.get(Project, payload.project_id)
-    if not project:
-        raise HTTPException(404, "Portfolio not found")
-    guard.require_project(project.id)
-    next_n = (db.query(func.max(ChangeOrder.co_number))
-              .filter(ChangeOrder.project_id == payload.project_id)
-              .scalar() or 0) + 1
+    ctx = _resolve_context(db, payload, guard)
     with db.no_autoflush:
-        co = _transient_co(payload, project, next_n)
+        co = _transient_co(payload, ctx)
         data = build_change_order_docx(co)
     return Response(
         content=data, media_type=DOCX_MEDIA_TYPE,
@@ -708,7 +778,7 @@ def update_change_order(
     _assert_editable(co)
     # Scope from the CO itself, never from the payload — the row's own portfolio
     # is where this write actually lands.
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     if payload.expected_version is not None and co.version != payload.expected_version:
         raise HTTPException(409, detail={
             "error": "stale_version",
@@ -725,7 +795,18 @@ def update_change_order(
                   "pmo_pct", "admin_pct", "notes"):
         if field in sent:
             setattr(co, field, getattr(payload, field))
-    if "portfolio_project_id" in sent:
+    if co.project_id is None:
+        # Outside PMO 360: the typed-in client and number are this CO's identity,
+        # so they are editable here — and the names that print must not be blank.
+        if "client_name" in sent:
+            co.client_name = _clean(payload.client_name) or co.client_name
+        if "project_name" in sent:
+            co.project_name = _clean(payload.project_name) or co.project_name
+        if "co_number" in sent and payload.co_number:
+            co.co_number = payload.co_number
+        if "portfolio_project_id" in sent and payload.portfolio_project_id is not None:
+            raise HTTPException(400, "A change order outside PMO 360 has no portfolio projects.")
+    elif "portfolio_project_id" in sent:
         # Validated against the CO's OWN portfolio, not the payload's — a PATCH
         # never re-homes a change order, so the portfolio here is fixed and the
         # sub-project has to belong to it. Read via model_fields_set so an
@@ -756,7 +837,7 @@ def submit_change_order(
     guard=Depends(require_permission(CO_CREATION)),
 ):
     co = _get(db, co_id)
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     if co.status not in ("draft", "sent_back"):
         raise HTTPException(
             409,
@@ -800,7 +881,7 @@ def request_change_order_approval(
     every approver who ever clicked the link.
     """
     co = _get(db, co_id)
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     if co.status != "pending":
         raise HTTPException(
             409,
@@ -983,7 +1064,7 @@ def cancel_change_order_approval_request(
     strand every other approver's snapshot (see request-approval).
     """
     co = _get(db, co_id)
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     req = db.get(ChangeOrderApprovalRequest, req_id)
     if req is None or req.change_order_id != co.id:
         raise HTTPException(404, "Approval request not found")
@@ -1014,7 +1095,7 @@ def approve_change_order(
     guard=Depends(require_permission(CO_APPROVAL)),
 ):
     co = _get(db, co_id)
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     if co.status != "pending":
         raise HTTPException(
             409,
@@ -1118,7 +1199,7 @@ def mark_change_order_sent(
     happens client-side — Microsoft Graph from the PM's mailbox, or handed off to
     the desktop Outlook client — so `method` is how the Sent tab tells them apart."""
     co = _get(db, co_id)
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     if co.status != "approved":
         # The record must not be able to claim a delivery the approval flow never
         # sanctioned. The send is client-side and cannot be stopped from here, so
@@ -1173,7 +1254,7 @@ def reject_change_order(
     nobody had ever been asked and nobody had ever agreed. They are closed out
     by status, and that is the whole of what happens to them."""
     co = _get(db, co_id)
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     if co.status not in ("pending", "approved"):
         raise HTTPException(
             409,
@@ -1223,7 +1304,7 @@ def delete_change_order(
     # with deciding on it. An approver's job is to say yes or no, not to make the
     # request disappear.
     co = _get(db, co_id)
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     if co.status not in ("draft", "sent_back"):
         # Deleting an approved or delivered CO drops the line items, orphans the
         # archived PDF with nothing pointing at it, drops the approved-$ rollup,
@@ -1254,7 +1335,7 @@ def serve_change_order_docx(
     Nothing edited in Word comes back — the approved PDF stays the record.
     """
     co = _get(db, co_id)
-    guard.require_project(co.project_id)
+    _require_scope(guard, co)
     return Response(
         content=build_change_order_docx(co), media_type=DOCX_MEDIA_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{_co_docx_filename(co)}"'},
