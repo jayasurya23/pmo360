@@ -1301,28 +1301,6 @@ export default function ChangeOrders() {
         </section>
       )}
 
-      <div className="inline-flex overflow-hidden rounded-lg border border-surface-border text-[13px]">
-        {([false, true] as const).map((o) => (
-          <button
-            key={String(o)}
-            type="button"
-            onClick={() => setOutside(o)}
-            className={
-              outside === o
-                ? "bg-brand-red px-3.5 py-1.5 font-semibold text-white"
-                : "px-3.5 py-1.5 text-brand-gray transition hover:bg-surface-page"
-            }
-            title={
-              o
-                ? "Old clients / projects that are not in PMO 360 — type the client, project and CO number"
-                : "Change orders for portfolios in PMO 360"
-            }
-          >
-            {o ? "Outside PMO 360" : "PMO 360 portfolios"}
-          </button>
-        ))}
-      </div>
-
       <div className="flex flex-wrap items-center gap-5 border-b border-surface-border">
         <TabBtn active={tab === "create"} onClick={() => setTab("create")}>
           Create
@@ -1357,6 +1335,29 @@ export default function ChangeOrders() {
         >
           Sent to client
         </TabBtn>
+        {/* Which change orders this page works on. Lives in the tab bar so it is
+            in reach from every tab, Create included. */}
+        <div className="ml-auto inline-flex overflow-hidden rounded-lg border border-surface-border text-[12.5px]">
+          {([false, true] as const).map((o) => (
+            <button
+              key={String(o)}
+              type="button"
+              onClick={() => setOutside(o)}
+              className={
+                outside === o
+                  ? "bg-brand-red px-3 py-1 font-semibold text-white"
+                  : "px-3 py-1 text-brand-gray transition hover:bg-surface-page"
+              }
+              title={
+                o
+                  ? "Old clients / projects that are not in PMO 360 — type the client, project and CO number"
+                  : "Change orders for portfolios in PMO 360"
+              }
+            >
+              {o ? "Outside PMO 360" : "PMO 360 portfolios"}
+            </button>
+          ))}
+        </div>
       </div>
 
       {err && (
@@ -1367,10 +1368,19 @@ export default function ChangeOrders() {
 
       {/* ============ CREATE / EDIT ============ */}
       {tab === "create" && inAll && (
-        <EmptyState
-          title="Select a portfolio to create a change order"
-          hint="Pick a client and portfolio in the context switcher above. The Pending approval and Approved tabs show every change order across all portfolios."
-        />
+        <div className="space-y-3">
+          <EmptyState
+            title="Select a portfolio to create a change order"
+            hint="Pick a client and portfolio in the context switcher above. The Pending approval and Approved tabs show every change order across all portfolios."
+          />
+          {canCreate && (
+            <div className="text-center">
+              <button className="btn-ghost" onClick={() => setOutside(true)}>
+                Or create one for a client / project outside PMO 360 →
+              </button>
+            </div>
+          )}
+        </div>
       )}
       {tab === "create" && !inAll && (
         <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-[1.5fr_1fr]">
