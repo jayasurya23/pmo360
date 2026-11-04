@@ -108,6 +108,53 @@ def _fmt_short_date(d) -> str:
         return ""
 
 
+def line_model(co):
+    """The change order's lines exactly as the CLIENT-FACING documents print them.
+
+    Returns ``(lines, shown)``. ``lines`` is one ``(details, sub_labels, base)``
+    per line item in print order: the free text, the per-person hour breakdown
+    for an hourly line worked by several people at different rates (plain labels
+    like "10 hours — Project Engineer"), and the line's amount before markup.
+    ``shown`` is the same lines' amounts AFTER the internal PMO/admin adders are
+    absorbed into them.
+
+    Shared by the PDF and the Word draft so the two can never print different
+    numbers. The adders are folded into the printed line amounts, never shown as
+    a row: a separate markup row, or lines that fell a cent short of the total,
+    would both hand the client the very number this is meant to keep private. So
+    the apportionment lives in co_pricing (one implementation, largest-remainder)
+    and the total bar prints the sum of exactly these lines, which is also what
+    the API stores as total_amount.
+    """
+    items = sorted(co.line_items, key=lambda li: (li.order_index or 0))
+    hourly = (co.rate_type or "fixed") == "hourly"
+    lines = []
+    for li in items:
+        details = (li.details or "").strip()
+        subs = []
+        allocs = (li.allocations or []) if hourly else []
+        if hourly and allocs:
+            # one task, several people at different rates: sum the line, and
+            # list the per-role hour breakdown as sub-bullets (template style).
+            line_total = sum(_num(a.get("rate")) * _num(a.get("hours")) for a in allocs)
+            for a in allocs:
+                hrs, role = _num(a.get("hours")), (a.get("role") or "").strip()
+                if not hrs and not role:
+                    continue
+                label = (f"{hrs:g} hours" if hrs else "")
+                if role:
+                    label = f"{label} — {role}" if label else role
+                subs.append(label)
+        elif hourly:
+            line_total = _num(li.hourly_rate) * _num(li.hours)
+        else:
+            line_total = _num(li.cost)
+        lines.append((details, subs, line_total))
+    shown = distribute_markup([amt for _, _, amt in lines],
+                              _num(co.pmo_pct), _num(co.admin_pct))
+    return lines, shown
+
+
 # ---------------------------------------------------------------------------
 # Page furniture drawn on every data page: top red band + footer block
 # ---------------------------------------------------------------------------
@@ -255,56 +302,28 @@ def _build_data_page(co) -> bytes:
 
     # ---- Change Order Details table (details | $ | amount) ----
     col_d, col_s, col_a = 5.2 * inch, 0.4 * inch, _USABLE - 5.6 * inch
-    items = sorted(co.line_items, key=lambda li: (li.order_index or 0))
-    hourly = (co.rate_type or "fixed") == "hourly"
-    rendered = []   # (details html, base amount) per line, before any markup
-    for li in items:
-        details = (li.details or "").strip().replace("\n", "<br/>")
-        allocs = (li.allocations or []) if hourly else []
-        if hourly and allocs:
-            # one task, several people at different rates: sum the line, and
-            # list the per-role hour breakdown as sub-bullets (template style).
-            line_total = sum(_num(a.get("rate")) * _num(a.get("hours")) for a in allocs)
-            subs = []
-            for a in allocs:
-                hrs, role = _num(a.get("hours")), (a.get("role") or "").strip()
-                if not hrs and not role:
-                    continue
-                label = (f"{hrs:g} hours" if hrs else "")
-                if role:
-                    label = f"{label} — {role}" if label else role
-                subs.append(f"&#8594;&nbsp;{label}")
-            if subs:
-                bullets = "<br/>".join(f'<font color="#4d4d4f" size="8">{s}</font>'
-                                       for s in subs)
-                details = (details + "<br/>" if details else "") + bullets
-        elif hourly:
-            line_total = _num(li.hourly_rate) * _num(li.hours)
-        else:
-            line_total = _num(li.cost)
-        rendered.append((details, line_total))
-
-    # The internal PMO/admin adders are absorbed INTO the printed line amounts.
-    # A separate markup row, or lines that fell a cent short of the total, would
-    # both hand the client the very number this is meant to keep private — so the
-    # apportionment lives in co_pricing (one implementation, largest-remainder)
-    # and the bar below prints the sum of exactly these lines, which is also what
-    # the API stores as total_amount.
-    shown = distribute_markup([amt for _, amt in rendered],
-                              _num(co.pmo_pct), _num(co.admin_pct))
+    lines, shown = line_model(co)
+    rendered = []   # details html per line
+    for details, subs, _ in lines:
+        html = details.replace("\n", "<br/>")
+        if subs:
+            bullets = "<br/>".join(
+                f'<font color="#4d4d4f" size="8">&#8594;&nbsp;{s}</font>' for s in subs)
+            html = (html + "<br/>" if html else "") + bullets
+        rendered.append(html)
 
     data = [[Paragraph("Change Order Details", S["bar"]), "", ""]]
-    for (details, _), amount in zip(rendered, shown):
+    for details, amount in zip(rendered, shown):
         data.append([
             Paragraph(details or "&nbsp;", S["td"]),
             Paragraph("$", S["td"]),
             Paragraph(_amt(amount), S["tdr"]),
         ])
-    if not items:   # no lines -> keep a blank body row so the bars frame it
+    if not lines:   # no lines -> keep a blank body row so the bars frame it
         data.append([Paragraph("&nbsp;", S["td"]), "", ""])
     # Print the sum of the rendered lines so the total always matches what's shown
     # (falls back to the stored total only when there are no lines).
-    grand_total = sum(shown) if items else _num(co.total_amount)
+    grand_total = sum(shown) if lines else _num(co.total_amount)
     data.append([Paragraph("Total Change Order", S["totk"]),
                  Paragraph("$", S["totv"]),
                  Paragraph(_amt(grand_total), S["totv"])])

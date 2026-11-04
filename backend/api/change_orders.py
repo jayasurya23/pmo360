@@ -49,6 +49,7 @@ from db.models import (
     Project, User,
 )
 from docgen.change_order_pdf import build_change_order_pdf
+from docgen.change_order_docx import DOCX_MEDIA_TYPE, build_change_order_docx
 from schemas.common import (
     ChangeOrderOut, ChangeOrderIn, ChangeOrderUpdate, ChangeOrderLineItemIn,
     ChangeOrderMarkSent, ChangeOrderPricing, ChangeOrderApprove,
@@ -344,6 +345,14 @@ def _co_pdf_filename(co: ChangeOrder) -> str:
     ) + ".pdf"
 
 
+def _co_docx_filename(co: ChangeOrder) -> str:
+    # -DRAFT on purpose, whatever the status: the Word file is an editable copy,
+    # and the approved PDF is the only thing that should be sent to a client.
+    return safe_filename_slug(
+        f"{co.client_name or 'Castillo'}-CO-{co.co_number}-{co.co_version or 'V1'}-DRAFT"
+    ) + ".docx"
+
+
 def _archive_pdf(co: ChangeOrder) -> None:
     """Best-effort: build the branded PDF and file it under the project's
     storage folder (SharePoint in prod, local FS in dev). Records the returned
@@ -565,6 +574,47 @@ def check_change_order_sendable(
     )
 
 
+def _transient_co(payload: ChangeOrderIn, project: Project, next_n: int) -> ChangeOrder:
+    """A ChangeOrder built from the Create form that is NEVER added to a session.
+
+    Shared by the PDF and Word previews so the two render the same document from
+    the same unsaved form. The line items hang off a transient parent, so nothing
+    here is reachable by cascade and no flush anywhere in the request can turn a
+    preview into a row; callers build inside `db.no_autoflush` as belt and braces.
+    """
+    co = ChangeOrder(
+        project_id=payload.project_id,
+        co_number=next_n,
+        co_version=payload.co_version or "V1",
+        title=payload.title,
+        rate_type=payload.rate_type if payload.rate_type in _VALID_RATE else "fixed",
+        status="draft",
+        request_date=payload.request_date,
+        requested_by=payload.requested_by,
+        requested_by_user_id=payload.requested_by_user_id,
+        client_name=(project.client.name if project.client else None),
+        project_name=(payload.project_name or project.name),
+        project_number=(payload.project_number or project.project_number),
+        location=payload.location,
+        state=payload.state,
+        size_mw=payload.size_mw,
+        signatory_name=payload.signatory_name,
+        signatory_title=payload.signatory_title,
+        signatory_phone=payload.signatory_phone,
+        signatory_email=payload.signatory_email,
+        client_signatory_name=payload.client_signatory_name,
+        client_signatory_title=payload.client_signatory_title,
+        client_signatory_email=payload.client_signatory_email,
+        client_signatory_phone=payload.client_signatory_phone,
+        pmo_pct=_num(payload.pmo_pct),
+        admin_pct=_num(payload.admin_pct),
+        notes=payload.notes,
+    )
+    _apply_line_items(co, payload.line_items)
+    _recompute_total(co)
+    return co
+
+
 @router.post("/preview")
 def preview_change_order_pdf(
     payload: ChangeOrderIn,
@@ -598,41 +648,8 @@ def preview_change_order_pdf(
               .filter(ChangeOrder.project_id == payload.project_id)
               .scalar() or 0) + 1
 
-    # Deliberately never added to the session. The line items hang off a
-    # transient parent, so nothing here is reachable by cascade and no flush
-    # anywhere in the request can turn a preview into a row. no_autoflush is
-    # belt and braces for the two queries above.
     with db.no_autoflush:
-        co = ChangeOrder(
-            project_id=payload.project_id,
-            co_number=next_n,
-            co_version=payload.co_version or "V1",
-            title=payload.title,
-            rate_type=payload.rate_type if payload.rate_type in _VALID_RATE else "fixed",
-            status="draft",
-            request_date=payload.request_date,
-            requested_by=payload.requested_by,
-            requested_by_user_id=payload.requested_by_user_id,
-            client_name=(project.client.name if project.client else None),
-            project_name=(payload.project_name or project.name),
-            project_number=(payload.project_number or project.project_number),
-            location=payload.location,
-            state=payload.state,
-            size_mw=payload.size_mw,
-            signatory_name=payload.signatory_name,
-            signatory_title=payload.signatory_title,
-            signatory_phone=payload.signatory_phone,
-            signatory_email=payload.signatory_email,
-            client_signatory_name=payload.client_signatory_name,
-            client_signatory_title=payload.client_signatory_title,
-            client_signatory_email=payload.client_signatory_email,
-            client_signatory_phone=payload.client_signatory_phone,
-            pmo_pct=_num(payload.pmo_pct),
-            admin_pct=_num(payload.admin_pct),
-            notes=payload.notes,
-        )
-        _apply_line_items(co, payload.line_items)
-        _recompute_total(co)
+        co = _transient_co(payload, project, next_n)
         pdf = build_change_order_pdf(co)
 
     # The bytes are identical to the issued document — that is the point of a
@@ -645,6 +662,37 @@ def preview_change_order_pdf(
     return Response(
         content=pdf, media_type="application/pdf",
         headers={"Content-Disposition": f'inline; filename="{slug}.pdf"'},
+    )
+
+
+@router.post("/preview-docx")
+def preview_change_order_docx(
+    payload: ChangeOrderIn,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_CREATION)),
+):
+    """The editable Word draft of the UNSAVED form — the .docx twin of /preview.
+
+    Same reasons as /preview for rendering from the payload and persisting
+    nothing, and the same permission for the same reason: it composes a
+    Castillo-branded document out of caller-supplied text. The document says it
+    is a draft that has not been approved, and the filename ends -DRAFT; see
+    docgen.change_order_docx.
+    """
+    project = db.get(Project, payload.project_id)
+    if not project:
+        raise HTTPException(404, "Portfolio not found")
+    guard.require_project(project.id)
+    next_n = (db.query(func.max(ChangeOrder.co_number))
+              .filter(ChangeOrder.project_id == payload.project_id)
+              .scalar() or 0) + 1
+    with db.no_autoflush:
+        co = _transient_co(payload, project, next_n)
+        data = build_change_order_docx(co)
+    return Response(
+        content=data, media_type=DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{_co_docx_filename(co)}"'},
     )
 
 
@@ -1190,6 +1238,27 @@ def delete_change_order(
         )
     db.delete(co)
     return None
+
+
+@router.get("/{co_id}/docx")
+def serve_change_order_docx(
+    co_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(require_db_user),
+    guard=Depends(require_permission(CO_CREATION)),
+):
+    """Download the editable Word draft of a saved change order, at any status.
+
+    Gated on the authoring permission, unlike the PDF view: an editable copy of a
+    priced client document is something you work on, not something you read.
+    Nothing edited in Word comes back — the approved PDF stays the record.
+    """
+    co = _get(db, co_id)
+    guard.require_project(co.project_id)
+    return Response(
+        content=build_change_order_docx(co), media_type=DOCX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{_co_docx_filename(co)}"'},
+    )
 
 
 @router.get("/{co_id}/pdf/file")

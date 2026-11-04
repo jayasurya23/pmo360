@@ -1721,6 +1721,41 @@ export const previewChangeOrderPdfBlob = async (payload: ChangeOrderCreate) => {
   }
 };
 
+/**
+ * The editable Word draft of a SAVED change order, at any status.
+ *
+ * A draft, not the issued document: the file says so on its first page while the
+ * CO is unapproved, and the caller names it `-DRAFT`. Nothing edited in Word
+ * comes back into PMO 360, so the approved PDF stays the only record of what the
+ * client was sent. Gated on CO_CREATION — an editable copy of a priced client
+ * document is something you author with, unlike the PDF, which anyone may read.
+ */
+export const fetchChangeOrderDocxBlob = async (id: number) => {
+  try {
+    const res = await apiClient.get(`/change-orders/${id}/docx`, {
+      responseType: "blob",
+    });
+    return res.data as Blob;
+  } catch (e) {
+    throw await readBlobDetail(e);
+  }
+};
+
+/** The Word draft of the UNSAVED Create form — the .docx twin of
+ *  `previewChangeOrderPdfBlob`, for the same reason: no row exists yet and
+ *  saving one just to look at it would litter the In-flight rail. Nothing is
+ *  persisted. */
+export const previewChangeOrderDocxBlob = async (payload: ChangeOrderCreate) => {
+  try {
+    const res = await apiClient.post("/change-orders/preview-docx", payload, {
+      responseType: "blob",
+    });
+    return res.data as Blob;
+  } catch (e) {
+    throw await readBlobDetail(e);
+  }
+};
+
 /** Reopen the JSON error body that `responseType: "blob"` sealed into a Blob,
  *  and rebuild the ApiError around the server's actual message.
  *

@@ -27,6 +27,8 @@ import {
   listProjectRoster,
   fetchChangeOrderPdfBlob,
   previewChangeOrderPdfBlob,
+  fetchChangeOrderDocxBlob,
+  previewChangeOrderDocxBlob,
   fetchChangeOrderApprovalRequests,
   isStaleVersionError,
   isStaleCoError,
@@ -337,6 +339,10 @@ export default function ChangeOrders() {
   const [pdfFor, setPdfFor] = useState<ChangeOrder | null>(null);
   const [pdfTitle, setPdfTitle] = useState<string | null>(null);
   const [pdfName, setPdfName] = useState("change-order.pdf");
+  // The Word draft lives in the same modal, so its failure shows there too — the
+  // page-level `err` banner sits behind the overlay and would never be seen.
+  const [wordBusy, setWordBusy] = useState(false);
+  const [wordErr, setWordErr] = useState<string | null>(null);
   const [emailFor, setEmailFor] = useState<ChangeOrder | null>(null);
 
   // ---- approvals ----
@@ -825,6 +831,34 @@ export default function ChangeOrders() {
     setPdfUrl(null);
     setPdfFor(null);
     setPdfTitle(null);
+    setWordErr(null);
+  }
+
+  /** Download the editable Word draft of whatever the preview modal is showing:
+   *  the saved change order behind it, or the unsaved Create form when there is
+   *  no row. Always named `-DRAFT` — it is an editable copy, and the approved PDF
+   *  is the only thing that should reach a client. */
+  async function downloadWord() {
+    setWordBusy(true);
+    setWordErr(null);
+    try {
+      const blob = pdfFor
+        ? await fetchChangeOrderDocxBlob(pdfFor.id)
+        : await previewChangeOrderDocxBlob(buildPayload());
+      const name = pdfFor
+        ? `${pdfFor.client_name || "Castillo"}-CO-${pdfFor.co_number}-${pdfFor.co_version || "V1"}-DRAFT.docx`
+        : `${clientName || "Castillo"}-CO-${coVersion || "V1"}-DRAFT.docx`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e: any) {
+      setWordErr(e?.message || "Could not prepare the Word draft");
+    } finally {
+      setWordBusy(false);
+    }
   }
   function downloadPdf() {
     if (!pdfUrl) return;
@@ -2125,6 +2159,16 @@ export default function ChangeOrders() {
             <div className="flex items-center justify-between mb-3">
               <h3 className="section-title">{pdfTitle}</h3>
               <div className="flex items-center gap-2">
+                {canCreate && (
+                  <button
+                    className="btn-ghost px-3 py-1.5 text-xs"
+                    onClick={() => void downloadWord()}
+                    disabled={wordBusy || pdfBusy}
+                    title="An editable Word copy to adjust wording in. It is marked as a draft and is not saved back to PMO 360 — send the approved PDF to the client."
+                  >
+                    {wordBusy ? "Preparing…" : "📝 Word draft"}
+                  </button>
+                )}
                 <button
                   className="btn-primary px-3 py-1.5 text-xs"
                   onClick={downloadPdf}
@@ -2140,6 +2184,11 @@ export default function ChangeOrders() {
                 </button>
               </div>
             </div>
+            {wordErr && (
+              <div className="mb-3 rounded-lg border border-status-open-border bg-status-open-bg px-3 py-2 text-sm text-status-open-text">
+                {wordErr}
+              </div>
+            )}
             {pdfBusy && (
               <div className="py-10 text-center text-sm text-brand-gray">
                 Generating PDF…
