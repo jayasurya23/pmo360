@@ -14,6 +14,7 @@ portfolio (see ``_require_write``) — or global when it has none.
 from __future__ import annotations
 
 import base64
+import logging
 import copy
 import io
 import os
@@ -54,17 +55,21 @@ from proposal.serialization import (
     tree_summary, tree_to_schedule_rows, _mdy_to_date, _to_mdy,
 )
 from proposal.scheduling import (
+    holiday_np_array,
     ScheduleConfig, calculate_all_dates, CircularDependencyError,
     PriceOnlyPredecessorError, assert_no_price_only_predecessors,
     find_price_only_predecessor_links,
     get_project_end_date,
 )
 from proposal.gantt import build_gantt_rows, render_gantt_bytes, brand_logo_path
+from proposal.p6_gantt import render_p6_gantt_bytes
 from proposal.pdf import render_schedule_table_bytes
 from proposal.template_xlsx import write_template_xlsx, read_template_xlsx
 
 XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/proposals", tags=["proposals"])
 
@@ -473,13 +478,26 @@ def _build_proposal_pdf(
                 project_start_date=cfg.project_start,
             )
             if rows:
-                parts.append(render_gantt_bytes(
-                    rows, title="Project Schedule",
+                gantt_args = dict(
+                    title="Project Schedule",
                     project_title=info.project_title, customer_name=info.customer_name,
                     version=info.version, project_location=info.project_location,
                     project_state=info.project_state, project_size_mw=info.project_size_mw,
                     logo_path=logo,
-                ))
+                )
+                # Same rows, P6 look (proposal/p6_gantt.py). The previous
+                # renderer stays as the fallback so a download never fails
+                # because of the new drawing.
+                try:
+                    span_years = [r["start"].year for r in rows] + [r["finish"].year for r in rows]
+                    p6_holidays = [d.item() for d in holiday_np_array(
+                        min(span_years), max(span_years),
+                        cfg.disabled_holidays, cfg.custom_holidays,
+                    )]
+                    parts.append(render_p6_gantt_bytes(rows, holidays=p6_holidays, **gantt_args))
+                except Exception:
+                    logger.exception("P6 Gantt render failed; using the previous Gantt")
+                    parts.append(render_gantt_bytes(rows, **gantt_args))
         return _merge_pdf_list(parts)
     finally:
         for _p in tmp_logo_paths:
