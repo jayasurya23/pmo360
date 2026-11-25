@@ -8,6 +8,8 @@ for rows shaped like ``gantt.build_gantt_rows`` output:
   * a 0-day task is a start milestone; a 0-day "Project Closeout" summary with
     nothing under it is a finish milestone, as the old Gantt drew it
   * no Activity IDs are invented and nothing is marked critical
+  * PMO 360's colours (red sections, grey phases, red bars and diamonds) apply
+    for the render only, leaving the vendored package's tables as they were
   * the PDF renders, paginating a long schedule onto more pages
 
 Run:  python scripts/p6_gantt_test.py   (exit 0 == pass)
@@ -75,7 +77,12 @@ def main() -> int:
     h = s.header
     assert (h.customer, h.location, h.size, h.revision) == ("Northern Sun", "Swansea, MA", "6.6 MW", "V2")
 
+    from castillo_schedule import render as R
+    before = (R.BARS, R.wbs_style)
     pdf = render_p6_gantt_bytes(ROWS, project_title="Old Providence")
+    assert (R.BARS, R.wbs_style) == before, "PMO 360 colours must not leak past one render"
+    from proposal.p6_gantt import _BARS, _wbs_style, OLD_RED
+    assert _BARS["planned"].color == OLD_RED == _BARS["milestone"].color == _wbs_style(2).fill
     assert pdf[:5] == b"%PDF-" and len(pdf) > 10_000
     many = [ROWS[0]] + [_r("task", 1, 3, "2027-01-05", "2027-01-07", f"Task {i}") for i in range(120)]
     big = render_p6_gantt_bytes(many, project_title="Long")

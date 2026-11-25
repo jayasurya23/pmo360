@@ -4,7 +4,7 @@ LOOK ONLY. The rows are exactly what ``gantt.build_gantt_rows`` already produces
 for PMO 360's own Gantt — same names, same dates, same utilization-adjusted
 durations, same milestone rule (a task whose adjusted duration is exactly 0 is a
 diamond; "Project Closeout" is one too) — and this module only changes how they
-are drawn. Deliberately NOT carried over from Proposal360's adapter: renaming
+are drawn, in PMO 360's own colours (see "colours" below). Deliberately NOT carried over from Proposal360's adapter: renaming
 activities, generated Activity IDs and a calculated critical path. Those are
 scheduling decisions, and PMO 360's scheduling stays PMO 360's.
 
@@ -19,14 +19,20 @@ backend/templates, the same files the old Gantt used.
 """
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
 from castillo_schedule import WBS, Activity, Revision, Schedule, ScheduleHeader, Theme
+from castillo_schedule import render as _render
 from castillo_schedule.render import ScheduleRenderer
-from castillo_schedule.theme import CLIENT_PRELIM_COLUMNS, ColumnSpec
+from castillo_schedule.theme import (
+    BARS as _P6_BARS, CLIENT_PRELIM_COLUMNS, PALETTE, BarStyle, ColumnSpec, RowStyle, tint,
+)
+from proposal.constants import PRIMARY as OLD_RED, SECONDARY as OLD_EDGE
 
 _TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
 FONTS_DIR = _TEMPLATES / "fonts"
@@ -40,6 +46,51 @@ COLUMNS = tuple(
     ColumnSpec("activity_id", "", 0.30, "left") if c.key == "activity_id" else c
     for c in CLIENT_PRELIM_COLUMNS
 )
+
+
+# ---------------------------------------------------------------- colours
+# PMO 360's own colour rules from the previous Gantt (proposal/gantt.py), kept
+# on the P6 layout: a discipline / section header (top-level summary) is a red
+# row with white bold text, a phase under it is a light-grey row with black bold
+# text, task bars are the same red, milestones are red diamonds with a black
+# edge, and summary brackets are black. The project band above them all, which
+# the old Gantt did not have, keeps the P6 charcoal so it reads as distinct.
+OLD_SUB_GRAY = "#D3D3D3"
+
+_BARS = {
+    **_P6_BARS,
+    "planned": BarStyle("Planned Activity", OLD_RED, 0.50),
+    "milestone": BarStyle("Milestone", OLD_RED, 0.62, edge=OLD_EDGE),
+    "summary": BarStyle("WBS Summary", OLD_EDGE, 0.16),
+}
+_LEVELS = {
+    1: RowStyle(PALETTE["charcoal"], PALETTE["white"], "bold", 11, tint(PALETTE["charcoal"], 0.10)),
+    2: RowStyle(OLD_RED, PALETTE["white"], "bold", 10, tint(OLD_RED, 0.12)),
+    3: RowStyle(OLD_SUB_GRAY, PALETTE["black"], "bold", 9, tint(OLD_SUB_GRAY, 0.35)),
+}
+_DEEPER = RowStyle(tint(OLD_SUB_GRAY, 0.55), PALETTE["black"], "semibold", 8, tint(OLD_SUB_GRAY, 0.20))
+
+
+def _wbs_style(level: int) -> RowStyle:
+    return _LEVELS.get(level, _DEEPER)
+
+
+_colour_lock = threading.Lock()
+
+
+@contextmanager
+def _pmo360_colours():
+    """The renderer reads its bar and band colours from module-level tables
+    (castillo_schedule.render.BARS / wbs_style). Point them at PMO 360's palette
+    for one render and put them back — the vendored files stay unedited. Locked
+    because a module global is shared by every thread drawing at the same time."""
+    with _colour_lock:
+        saved = (_render.BARS, _render.wbs_style)
+        _render.BARS, _render.wbs_style = _BARS, _wbs_style
+        try:
+            yield
+        finally:
+            _render.BARS, _render.wbs_style = saved
 
 
 def _d(v) -> Optional[date]:
@@ -148,13 +199,14 @@ def render_p6_gantt_bytes(rows: list[dict], *, logo_path: str = "", **header) ->
     from matplotlib.backends.backend_pdf import PdfPages
 
     s = build_schedule(rows, **header)
-    r = ScheduleRenderer(s, theme(logo_path))
     buf = BytesIO()
-    n = len(r.pages)
-    with PdfPages(buf, metadata={"Title": f"{s.header.title} - {s.header.project}",
-                                 "Author": "Castillo Engineering"}) as pdf:
-        for i, page_rows in enumerate(r.pages, 1):
-            fig = r._page_figure(page_rows, i, n)
-            pdf.savefig(fig)
-            plt.close(fig)
+    with _pmo360_colours():
+        r = ScheduleRenderer(s, theme(logo_path))
+        n = len(r.pages)
+        with PdfPages(buf, metadata={"Title": f"{s.header.title} - {s.header.project}",
+                                     "Author": "Castillo Engineering"}) as pdf:
+            for i, page_rows in enumerate(r.pages, 1):
+                fig = r._page_figure(page_rows, i, n)
+                pdf.savefig(fig)
+                plt.close(fig)
     return buf.getvalue()
